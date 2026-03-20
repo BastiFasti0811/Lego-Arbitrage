@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LEGO Arbitrage — Autonomous System Masterplan</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/inter-ui/3.19.3/inter.css" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --bg-card: #12121a;
+    --bg-card-hover: #1a1a26;
+    --border: #1e1e2e;
+    --border-active: #3b82f6;
+    --text: #e2e2e8;
+    --text-muted: #8888a0;
+    --text-dim: #55556a;
+    --accent: #3b82f6;
+    --accent-dim: #1e3a6e;
+    --green: #22c55e;
+    --green-dim: #0a3d1e;
+    --orange: #f59e0b;
+    --orange-dim: #3d2a08;
+    --red: #ef4444;
+    --red-dim: #3d1111;
+    --purple: #a855f7;
+    --purple-dim: #2d1650;
+    --cyan: #06b6d4;
+    --cyan-dim: #0a2d35;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: 'Inter', -apple-system, sans-serif; font-size: 14px; line-height: 1.6; }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  .fade-in { animation: fadeIn 0.3s ease; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+// ─── Data ────────────────────────────────────────────────────
+const PHASES = [
+  {
+    id: 'p1',
+    num: '01',
+    title: 'Foundation & Data Pipeline',
+    duration: '4-6 Wochen',
+    color: '#3b82f6',
+    status: 'Phase 1',
+    description: 'Grundgerüst: Scraper, Datenbank, API-Skeleton. Das System lernt, Daten zu sammeln und zu strukturieren.',
+    tasks: [
+      { name: 'Projekt-Setup & CI/CD', detail: 'Docker-Compose, GitHub Actions, Hetzner VPS (CX31), Poetry/UV für Python Deps', effort: '3d', priority: 'critical' },
+      { name: 'PostgreSQL Schema Design', detail: 'Sets, Preise, Angebote, Verkäufe, Watchlists, Feedback-Loop Tabellen. TimescaleDB für Zeitreihen.', effort: '2d', priority: 'critical' },
+      { name: 'BrickEconomy Scraper', detail: 'Playwright-basiert (JS-heavy Seite). Set-Daten, Preise, EOL-Status, Growth-%. Rate-limiting & Proxy-Rotation.', effort: '5d', priority: 'critical' },
+      { name: 'BrickMerge Scraper', detail: 'httpx + BeautifulSoup. Deutsche Retailpreise, Shop-Verfügbarkeit, Rabatte vs UVP.', effort: '3d', priority: 'high' },
+      { name: 'eBay Sold Items Scraper', detail: 'Playwright für JS-Filter. Verkaufte Artikel letzte 60 Tage, Median-Berechnung, Outlier-Filter (±30%).', effort: '5d', priority: 'critical' },
+      { name: 'Kleinanzeigen Scraper', detail: 'Playwright + Captcha-Handling. Privatangebote, Preise, Standorte. Anti-Bot Detection umgehen.', effort: '4d', priority: 'high' },
+      { name: 'Idealo Preisvergleich Scraper', detail: 'API-Reverse-Engineering oder Scraping. Preisspanne, Shops, Verfügbarkeit.', effort: '3d', priority: 'medium' },
+      { name: 'LEGO.com EOL-Checker', detail: 'Verfügbarkeits-Check, "Bald nicht mehr verfügbar" Detection, Retirement-Status.', effort: '2d', priority: 'high' },
+      { name: 'Redis Caching Layer', detail: 'Preis-Cache (TTL 4h), Rate-Limit Tracking, Scraper-Job Queue mit Redis Streams.', effort: '2d', priority: 'medium' },
+      { name: 'FastAPI Skeleton', detail: 'REST API für alle Endpunkte. Health-checks, Swagger Docs, Auth (API Keys).', effort: '2d', priority: 'critical' },
+    ],
+    techStack: ['Python 3.12', 'FastAPI', 'Playwright', 'PostgreSQL + TimescaleDB', 'Redis', 'Docker'],
+    risks: [
+      { risk: 'Anti-Bot Detection bei Kleinanzeigen/eBay', mitigation: 'Playwright Stealth, Proxy-Rotation (Bright Data), Human-like Delays' },
+      { risk: 'Scraper brechen bei Website-Änderungen', mitigation: 'CSS-Selector Monitoring, Fallback-Selektoren, Alerting bei Failures' },
+      { risk: 'Rate-Limiting / IP-Bans', mitigation: 'Residential Proxies, exponentielles Backoff, Request-Verteilung über 24h' },
+    ],
+    deliverables: ['Funktionsfähige Scraper für alle 6 Datenquellen', 'PostgreSQL mit vollständigem Schema', 'API mit /sets, /prices, /offers Endpoints', 'Automatische tägliche Datensammlung (Cron)'],
+    cost: '~25€/Monat (Hetzner CX31 + Proxies)',
+  },
+  {
+    id: 'p2',
+    num: '02',
+    title: 'Analysis Engine & Business Logic',
+    duration: '3-4 Wochen',
+    color: '#22c55e',
+    status: 'Phase 2',
+    description: 'Die gesamte Geschäftslogik aus deinem Agent-Prompt wird in Code übersetzt. ROI-Kalkulation, Risk-Scoring, GO/NO-GO Engine.',
+    tasks: [
+      { name: 'ROI-Kalkulator Engine', detail: 'Vollständige Kostenstruktur: Einkauf, Versand-Matrix, eBay 12.9%+0.35€, PayPal 1.9%+0.35€, Verpackung. Netto-Gewinn & Jahres-ROI.', effort: '3d', priority: 'critical' },
+      { name: 'Risk-Score Algorithmus (0-10)', detail: 'Implementiere alle Faktoren: Set-Alter, EOL-Status, Zustand, Karton, Liquidität, Datenqualität, Theme-Risiko. Cap bei 10.', effort: '3d', priority: 'critical' },
+      { name: 'Marktpreis-Konsens Engine', detail: 'Multi-Source Preis-Aggregation: Gewichtung (eBay 40%, BrickEconomy 30%, Idealo 20%, BrickMerge 10%). Abweichungs-Detection.', effort: '2d', priority: 'critical' },
+      { name: 'Set-Kategorisierung System', detail: 'Automatische Zuordnung: Frisch Retired, Sweet Spot, Etabliert, Vintage, Legacy. Mit allen Schwellwerten und Mindest-ROIs.', effort: '2d', priority: 'high' },
+      { name: 'GO/NO-GO Decision Engine', detail: 'Regelbasierte Entscheidung mit allen Kriterien: ROI-Schwelle, Risk-Score, Markt-Unsicherheit, Retail-Status, Optimal-ROI.', effort: '2d', priority: 'critical' },
+      { name: 'Opportunity-Score Ranking', detail: 'Score = ROI × (10 - Risk) × Liquiditäts-Faktor. Für Scout-Modus Top-Deal Ranking.', effort: '1d', priority: 'high' },
+      { name: 'Theme-Strategie-Modul', detail: 'Tier 1/2/3 Theme-Klassifizierung. Star Wars UCS Sonderbehandlung, BrickHeadz-Logik, etc.', effort: '2d', priority: 'medium' },
+      { name: 'Versandkosten-Kalkulator', detail: 'Box-Größen-Schätzung aus Set-Daten, DHL-Tarife, Versicherungsstufen nach Warenwert.', effort: '1d', priority: 'medium' },
+    ],
+    techStack: ['Python Dataclasses', 'Pydantic Models', 'NumPy/Pandas', 'SQLAlchemy ORM'],
+    risks: [
+      { risk: 'ROI-Kalkulation zu optimistisch', mitigation: 'Konservative Defaults, Safety-Margin von 5%, reale Verkaufsdaten zur Kalibrierung' },
+      { risk: 'Marktpreis-Quellen widersprechen sich', mitigation: 'Gewichtetes Konsens-Modell, Warnung bei >20% Abweichung, manuelle Überprüfung' },
+    ],
+    deliverables: ['Vollständige ROI-Engine mit allen Kostenkomponenten', 'Risk-Score System (0-10) mit transparenter Aufschlüsselung', 'Automatische GO/NO-GO Entscheidungen', 'Scout-Modus: Top 5 Deals nach Opportunity-Score'],
+    cost: '+0€ (läuft auf gleicher Infrastruktur)',
+  },
+  {
+    id: 'p3',
+    num: '03',
+    title: 'AI Agent & Autonomous Intelligence',
+    duration: '4-5 Wochen',
+    color: '#a855f7',
+    status: 'Phase 3',
+    description: 'Das Herzstück: Ein LLM-gesteuerter Agent der eigenständig Strategien entwickelt, Marktveränderungen erkennt und sich selbst verbessert.',
+    tasks: [
+      { name: 'LLM Integration (Claude API)', detail: 'Claude 3.5 Sonnet als Basis-LLM. Structured Outputs für Analyse. System-Prompt aus deinem Agent-Dokument.', effort: '3d', priority: 'critical' },
+      { name: 'Agent Orchestrator', detail: 'LangGraph-basierter Agent mit Tool-Use: Scraper aufrufen, DB abfragen, Analysen starten, Benachrichtigungen senden.', effort: '5d', priority: 'critical' },
+      { name: 'Strategie-Optimierer', detail: 'Agent analysiert vergangene Deals: Welche Regeln funktionieren? Welche ROI-Schwellen anpassen? A/B-Testing von Strategien.', effort: '5d', priority: 'high' },
+      { name: 'Anomalie-Detection', detail: 'Ungewöhnliche Preisbewegungen erkennen: Flash-Sales, Pricing-Errors, Markt-Shifts. Alert-System.', effort: '3d', priority: 'high' },
+      { name: 'Neue Datenquellen Discovery', detail: 'Agent sucht automatisch nach neuen Preisquellen, testet sie, und integriert sie bei Qualitäts-Check.', effort: '4d', priority: 'medium' },
+      { name: 'Predictive Pricing Model', detail: 'ML-Modell (XGBoost/LightGBM) für Preis-Vorhersagen basierend auf: Theme, Teileanzahl, Exklusivität, EOL-Timing, Saison.', effort: '5d', priority: 'high' },
+      { name: 'Self-Improvement Loop', detail: 'Feedback-Pipeline: Empfehlung → Kauf → Verkauf → Ergebnis → Model-Retraining. Automatische Gewichtungsanpassung.', effort: '4d', priority: 'critical' },
+      { name: 'Natural Language Reports', detail: 'Agent generiert tägliche/wöchentliche Marktberichte in natürlicher Sprache. Trend-Zusammenfassungen.', effort: '2d', priority: 'medium' },
+    ],
+    techStack: ['Claude API (Anthropic)', 'LangGraph', 'scikit-learn / XGBoost', 'MLflow (Experiment Tracking)', 'Celery (Task Queue)'],
+    risks: [
+      { risk: 'LLM-Kosten explodieren', mitigation: 'Haiku für einfache Tasks, Sonnet nur für komplexe Analysen. Caching von Responses. Budget-Cap.' },
+      { risk: 'Agent trifft schlechte Entscheidungen', mitigation: 'Human-in-the-Loop für Käufe >200€, Confidence-Threshold, Kill-Switch' },
+      { risk: 'ML-Modell Overfitting', mitigation: 'Cross-Validation, Hold-out Test Set, regelmäßiges Monitoring der Prediction-Accuracy' },
+    ],
+    deliverables: ['Autonomer AI-Agent mit Tool-Use Capabilities', 'Predictive Pricing Model (Ziel: <15% Abweichung)', 'Self-Improvement Pipeline mit automatischem Retraining', 'Tägliche AI-generierte Marktberichte'],
+    cost: '+30-80€/Monat (Claude API, je nach Volume)',
+  },
+  {
+    id: 'p4',
+    num: '04',
+    title: 'Monitoring Dashboard & Notifications',
+    duration: '3-4 Wochen',
+    color: '#06b6d4',
+    status: 'Phase 4',
+    description: 'Web-Dashboard für Echtzeit-Monitoring und Multi-Channel Benachrichtigungen bei profitablen Deals.',
+    tasks: [
+      { name: 'React Dashboard (Next.js)', detail: 'Portfolio-Übersicht, aktive Deals, Watchlist, Performance-Metriken, P&L Tracking.', effort: '5d', priority: 'critical' },
+      { name: 'Echtzeit-Deal-Feed', detail: 'WebSocket-basierter Live-Feed neuer Angebote mit sofortiger ROI-Bewertung und Farbkodierung.', effort: '3d', priority: 'high' },
+      { name: 'Telegram Bot', detail: 'Deal-Alerts, Watchlist-Updates, Portfolio-Summary. Inline-Buttons für "Kaufen"/"Ignorieren".', effort: '3d', priority: 'critical' },
+      { name: 'E-Mail Notifications', detail: 'Tägliche Zusammenfassung, Sofort-Alerts bei GO-Deals, Wöchentlicher Performance Report.', effort: '2d', priority: 'high' },
+      { name: 'Performance Analytics', detail: 'Charts: ROI über Zeit, Gewinn pro Theme, Risk-Score Accuracy, Agent-Performance Metriken.', effort: '3d', priority: 'medium' },
+      { name: 'Watchlist Management UI', detail: 'Sets hinzufügen/entfernen, Zielpreise setzen, Benachrichtigungs-Regeln konfigurieren.', effort: '2d', priority: 'high' },
+      { name: 'Mobile-Responsive Design', detail: 'PWA-fähig, funktioniert auf Handy für unterwegs Deal-Checks.', effort: '2d', priority: 'medium' },
+    ],
+    techStack: ['Next.js 14', 'TypeScript', 'Tailwind CSS', 'Recharts', 'python-telegram-bot', 'WebSockets'],
+    risks: [
+      { risk: 'Dashboard-Performance bei vielen Sets', mitigation: 'Virtualisierte Listen, Server-Side Pagination, Redis-Cache für Dashboard-Daten' },
+    ],
+    deliverables: ['Web-Dashboard mit Echtzeit-Deal-Feed', 'Telegram Bot für Instant-Alerts', 'E-Mail Benachrichtigungssystem', 'Performance Analytics mit historischen Charts'],
+    cost: '+5€/Monat (Domain + SSL)',
+  },
+  {
+    id: 'p5',
+    num: '05',
+    title: 'Hardening, Scaling & Go-Live',
+    duration: '2-3 Wochen',
+    color: '#f59e0b',
+    status: 'Phase 5',
+    description: 'Production-ready machen: Fehlerbehandlung, Monitoring, Backup, Security. Dann: Live-Betrieb starten.',
+    tasks: [
+      { name: 'Error Handling & Retry Logic', detail: 'Exponentielles Backoff, Dead Letter Queue, Graceful Degradation bei Scraper-Ausfällen.', effort: '3d', priority: 'critical' },
+      { name: 'Sentry Error Tracking', detail: 'Automatische Fehler-Erfassung, Alerting bei kritischen Failures, Performance Monitoring.', effort: '1d', priority: 'high' },
+      { name: 'Automated Backups', detail: 'Tägliche PostgreSQL Backups zu Hetzner Storage Box. 30-Tage Retention. Restore-Tests.', effort: '1d', priority: 'critical' },
+      { name: 'Security Hardening', detail: 'UFW Firewall, fail2ban, SSH-Key only, Secrets in HashiCorp Vault, Rate-Limiting auf API.', effort: '2d', priority: 'critical' },
+      { name: 'Scraper Health Monitoring', detail: 'Dashboard für Scraper-Status: Letzte Runs, Erfolgsrate, Datenqualität-Score, Auto-Recovery.', effort: '2d', priority: 'high' },
+      { name: 'Load Testing & Optimization', detail: 'Locust Load Tests, DB Query Optimization, Connection Pooling, Index Tuning.', effort: '2d', priority: 'medium' },
+      { name: 'Documentation & Runbooks', detail: 'System-Doku, Deployment Guide, Incident Response Playbooks, API Docs.', effort: '2d', priority: 'medium' },
+    ],
+    techStack: ['Sentry', 'Prometheus + Grafana', 'HashiCorp Vault', 'Locust', 'Nginx'],
+    risks: [
+      { risk: 'Unentdeckte Bugs in Production', mitigation: 'Staging Environment, Canary Deployments, Feature Flags' },
+    ],
+    deliverables: ['Production-ready System auf Hetzner', 'Monitoring Stack (Prometheus + Grafana)', 'Automatische Backups & Recovery', 'Security-gehärteter Server'],
+    cost: '~60-110€/Monat gesamt (alles inklusive)',
+  },
+];
+
+const ARCHITECTURE = {
+  layers: [
+    { name: 'Presentation', color: '#06b6d4', components: ['Next.js Dashboard', 'Telegram Bot', 'E-Mail Service', 'REST API'] },
+    { name: 'AI & Intelligence', color: '#a855f7', components: ['Claude LLM Agent', 'LangGraph Orchestrator', 'XGBoost Predictor', 'Strategy Optimizer'] },
+    { name: 'Business Logic', color: '#22c55e', components: ['ROI Calculator', 'Risk Scorer', 'GO/NO-GO Engine', 'Opportunity Ranker'] },
+    { name: 'Data Collection', color: '#3b82f6', components: ['BrickEconomy', 'BrickMerge', 'eBay Sold', 'Kleinanzeigen', 'Idealo', 'LEGO.com'] },
+    { name: 'Infrastructure', color: '#f59e0b', components: ['PostgreSQL + TimescaleDB', 'Redis Cache', 'Celery Workers', 'Docker / Hetzner'] },
+  ]
+};
+
+const COST_BREAKDOWN = [
+  { item: 'Hetzner CX31 (4 vCPU, 8GB RAM)', cost: 15, category: 'Infrastruktur' },
+  { item: 'Hetzner Storage Box (100GB Backups)', cost: 4, category: 'Infrastruktur' },
+  { item: 'Domain + SSL (Let\'s Encrypt)', cost: 2, category: 'Infrastruktur' },
+  { item: 'Bright Data Proxies (Residential)', cost: 15, category: 'Scraping' },
+  { item: 'Claude API (Sonnet + Haiku)', cost: 40, category: 'AI', note: 'variabel, ~30-80€' },
+  { item: 'Sentry (Free Tier)', cost: 0, category: 'Monitoring' },
+  { item: 'Telegram Bot API', cost: 0, category: 'Notifications' },
+];
+
+const SELF_IMPROVEMENT = [
+  { stage: 'Collect', desc: 'Agent empfiehlt Deal → User kauft (oder nicht)', icon: '📥' },
+  { stage: 'Track', desc: 'System trackt: Kaufpreis, Haltezeit, tatsächlicher Verkaufspreis', icon: '📊' },
+  { stage: 'Compare', desc: 'Predicted ROI vs. Actual ROI — Abweichung messen', icon: '🔍' },
+  { stage: 'Learn', desc: 'ML-Modell wird mit neuen Daten retrained (wöchentlich)', icon: '🧠' },
+  { stage: 'Adjust', desc: 'Agent passt Schwellwerte an: ROI-Minima, Risk-Gewichtungen, Theme-Ratings', icon: '⚙️' },
+  { stage: 'Deploy', desc: 'Neue Strategie wird A/B getestet gegen alte Strategie', icon: '🚀' },
+];
+
+const SECURITY_WARNINGS = [
+  { level: 'critical', title: 'Scraping Legalität', desc: 'Web-Scraping bewegt sich in einer Grauzone. AGB der Plattformen prüfen. robots.txt respektieren. Keine persönlichen Daten speichern.' },
+  { level: 'high', title: 'API-Keys & Secrets', desc: 'Niemals Credentials im Code. HashiCorp Vault oder .env mit Docker Secrets nutzen. Rotation alle 90 Tage.' },
+  { level: 'high', title: 'Rate-Limiting', desc: 'Aggressive Scraping = IP-Ban. Mindestens 2-5 Sekunden zwischen Requests. Residential Proxies nutzen.' },
+  { level: 'medium', title: 'Finanzielles Risiko', desc: 'System empfiehlt Käufe, kauft aber NICHT automatisch. Immer Human-in-the-Loop für Kaufentscheidungen über Schwellwert.' },
+  { level: 'medium', title: 'Daten-Backup', desc: 'Tägliche Backups der PostgreSQL DB. Mindestens 2 Backup-Locations. Restore regelmäßig testen.' },
+];
+
+// ─── Components ──────────────────────────────────────────────
+
+function StatusBadge({ status, color }) {
+  return React.createElement('span', {
+    style: {
+      display: 'inline-flex', alignItems: 'center', gap: 6,
+      padding: '3px 10px', borderRadius: 4, fontSize: 11, fontWeight: 600, letterSpacing: 0.5,
+      background: color + '18', color: color, border: `1px solid ${color}30`,
+    }
+  }, React.createElement('span', { style: { width: 6, height: 6, borderRadius: '50%', background: color } }), status);
+}
+
+function NavTab({ label, active, onClick, count }) {
+  return React.createElement('button', {
+    onClick,
+    style: {
+      padding: '10px 16px', background: active ? 'var(--bg-card)' : 'transparent',
+      color: active ? 'var(--text)' : 'var(--text-muted)', border: 'none',
+      borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
+      cursor: 'pointer', fontSize: 13, fontWeight: active ? 600 : 400,
+      fontFamily: 'inherit', transition: 'all 0.15s', display: 'flex', alignItems: 'center', gap: 8,
+    }
+  }, label, count !== undefined && React.createElement('span', {
+    style: { background: active ? 'var(--accent)' : 'var(--border)', color: active ? '#fff' : 'var(--text-muted)',
+      padding: '1px 7px', borderRadius: 10, fontSize: 11, fontWeight: 600 }
+  }, count));
+}
+
+function Card({ children, style, hover }) {
+  const [hovered, setHovered] = useState(false);
+  return React.createElement('div', {
+    style: {
+      background: hovered && hover ? 'var(--bg-card-hover)' : 'var(--bg-card)',
+      border: '1px solid var(--border)', borderRadius: 8, padding: 20,
+      transition: 'all 0.15s', ...style
+    },
+    onMouseEnter: () => setHovered(true), onMouseLeave: () => setHovered(false),
+  }, children);
+}
+
+function SectionHeader({ title, subtitle }) {
+  return React.createElement('div', { style: { marginBottom: 20 } },
+    React.createElement('h2', { style: { fontSize: 18, fontWeight: 700, marginBottom: 4 } }, title),
+    subtitle && React.createElement('p', { style: { color: 'var(--text-muted)', fontSize: 13 } }, subtitle)
+  );
+}
+
+// ─── Tab: Overview ───────────────────────────────────────────
+function OverviewTab() {
+  return React.createElement('div', { className: 'fade-in' },
+    // Hero Stats
+    React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24 } },
+      [
+        { label: 'Geschätzte Entwicklungszeit', value: '16-22 Wochen', sub: '~4-5 Monate', color: 'var(--accent)' },
+        { label: 'Monatliche Kosten', value: '60-110€', sub: 'All-inclusive', color: 'var(--green)' },
+        { label: 'Datenquellen', value: '6+', sub: 'Automatisch erweiterbar', color: 'var(--purple)' },
+        { label: 'Autonomie-Level', value: 'Voll', sub: 'Human-in-the-Loop für Käufe', color: 'var(--orange)' },
+      ].map((stat, i) => React.createElement(Card, { key: i, style: { textAlign: 'center' } },
+        React.createElement('div', { style: { fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 } }, stat.label),
+        React.createElement('div', { style: { fontSize: 28, fontWeight: 800, color: stat.color, marginBottom: 4, fontVariantNumeric: 'tabular-nums' } }, stat.value),
+        React.createElement('div', { style: { fontSize: 12, color: 'var(--text-dim)' } }, stat.sub),
+      ))
+    ),
+
+    // Vision Statement
+    React.createElement(Card, { style: { marginBottom: 24, borderLeft: '3px solid var(--accent)' } },
+      React.createElement('div', { style: { fontSize: 15, fontWeight: 600, marginBottom: 8 } }, 'Vision: Autonomer LEGO Arbitrage Agent'),
+      React.createElement('p', { style: { color: 'var(--text-muted)', fontSize: 13, lineHeight: 1.8 } },
+        'Ein System das 24/7 den deutschen LEGO-Markt überwacht, profitable Deals erkennt, dich sofort benachrichtigt — und mit jedem abgeschlossenen Deal besser wird. ',
+        'Dein Agent-Prompt wird zur lebenden Software: Scraper sammeln Daten, die Analysis-Engine bewertet Deals nach deinen Regeln, und ein LLM-Agent optimiert die Strategie autonom über Zeit.'
+      ),
+    ),
+
+    // Architecture Diagram
+    SectionHeader({ title: 'System-Architektur', subtitle: '5-Layer Architecture — von Datensammlung bis User Interface' }),
+    React.createElement(Card, { style: { marginBottom: 24, padding: 0, overflow: 'hidden' } },
+      ARCHITECTURE.layers.map((layer, i) => React.createElement('div', {
+        key: i,
+        style: {
+          display: 'flex', alignItems: 'center', borderBottom: i < ARCHITECTURE.layers.length - 1 ? '1px solid var(--border)' : 'none',
+          padding: '14px 20px', gap: 16,
+        }
+      },
+        React.createElement('div', { style: { width: 140, flexShrink: 0 } },
+          React.createElement('div', { style: { fontSize: 12, fontWeight: 700, color: layer.color, textTransform: 'uppercase', letterSpacing: 0.8 } }, layer.name),
+        ),
+        React.createElement('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
+          layer.components.map((comp, j) => React.createElement('span', {
+            key: j,
+            style: {
+              padding: '4px 12px', borderRadius: 4, fontSize: 12, fontWeight: 500,
+              background: layer.color + '15', color: layer.color, border: `1px solid ${layer.color}25`,
+            }
+          }, comp))
+        ),
+        i < ARCHITECTURE.layers.length - 1 && React.createElement('div', {
+          style: { marginLeft: 'auto', color: 'var(--text-dim)', fontSize: 18 }
+        }, '↕')
+      ))
+    ),
+
+    // Timeline
+    SectionHeader({ title: 'Roadmap', subtitle: 'Phasenplan von Foundation bis Go-Live' }),
+    React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 2, marginBottom: 24 } },
+      PHASES.map((phase, i) => React.createElement('div', {
+        key: i,
+        style: { display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', background: 'var(--bg-card)', borderRadius: i === 0 ? '8px 8px 2px 2px' : i === PHASES.length - 1 ? '2px 2px 8px 8px' : 2 }
+      },
+        React.createElement('span', { style: { fontWeight: 800, color: phase.color, fontSize: 13, width: 28, fontVariantNumeric: 'tabular-nums' } }, phase.num),
+        React.createElement('div', { style: { flex: 1 } },
+          React.createElement('span', { style: { fontWeight: 600, fontSize: 13 } }, phase.title),
+        ),
+        React.createElement('span', { style: { color: 'var(--text-muted)', fontSize: 12, width: 100, textAlign: 'right' } }, phase.duration),
+        React.createElement('div', { style: { width: 120 } },
+          React.createElement('div', { style: { height: 6, background: phase.color + '20', borderRadius: 3, overflow: 'hidden' } },
+            React.createElement('div', { style: { width: `${((i + 1) / PHASES.length) * 100}%`, height: '100%', background: phase.color, borderRadius: 3 } })
+          )
+        ),
+      ))
+    ),
+
+    // Key Metrics
+    SectionHeader({ title: 'Ziel-Metriken (nach 6 Monaten Betrieb)' }),
+    React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 } },
+      [
+        { metric: 'Deal-Erkennungsrate', target: '>95%', desc: 'Aller profitablen Deals auf überwachten Plattformen' },
+        { metric: 'ROI-Vorhersage-Genauigkeit', target: '±10%', desc: 'Abweichung zwischen Predicted und Actual ROI' },
+        { metric: 'GO-Empfehlungs-Erfolgsrate', target: '>80%', desc: 'Anteil der GO-Empfehlungen die tatsächlich profitabel sind' },
+        { metric: 'Durchschnittlicher ROI pro Deal', target: '>20%', desc: 'Netto-ROI nach allen Kosten und Gebühren' },
+        { metric: 'Time-to-Alert', target: '<15 Min', desc: 'Von neuem Angebot bis Telegram-Notification' },
+        { metric: 'System-Uptime', target: '>99.5%', desc: 'Verfügbarkeit des Scraping & Analysis Systems' },
+      ].map((m, i) => React.createElement(Card, { key: i },
+        React.createElement('div', { style: { fontSize: 22, fontWeight: 800, color: 'var(--green)', marginBottom: 4 } }, m.target),
+        React.createElement('div', { style: { fontSize: 13, fontWeight: 600, marginBottom: 6 } }, m.metric),
+        React.createElement('div', { style: { fontSize: 12, color: 'var(--text-muted)' } }, m.desc),
+      ))
+    ),
+  );
+}
+
+// ─── Tab: Phases Detail ──────────────────────────────────────
+function PhasesTab() {
+  const [selected, setSelected] = useState('p1');
+  const phase = PHASES.find(p => p.id === selected);
+
+  return React.createElement('div', { className: 'fade-in' },
+    // Phase Selector
+    React.createElement('div', { style: { display: 'flex', gap: 6, marginBottom: 20 } },
+      PHASES.map(p => React.createElement('button', {
+        key: p.id, onClick: () => setSelected(p.id),
+        style: {
+          flex: 1, padding: '10px 8px', background: selected === p.id ? p.color + '20' : 'var(--bg-card)',
+          border: selected === p.id ? `1px solid ${p.color}50` : '1px solid var(--border)',
+          borderRadius: 6, cursor: 'pointer', color: selected === p.id ? p.color : 'var(--text-muted)',
+          fontWeight: selected === p.id ? 700 : 400, fontSize: 12, fontFamily: 'inherit', transition: 'all 0.15s',
+        }
+      }, React.createElement('div', { style: { fontSize: 18, fontWeight: 800, marginBottom: 2 } }, p.num), p.title.split(' & ')[0]))
+    ),
+
+    // Phase Detail
+    phase && React.createElement('div', { key: phase.id, className: 'fade-in' },
+      React.createElement(Card, { style: { marginBottom: 16, borderLeft: `3px solid ${phase.color}` } },
+        React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 } },
+          React.createElement('div', null,
+            React.createElement('h2', { style: { fontSize: 20, fontWeight: 800, marginBottom: 4 } }, `Phase ${phase.num}: ${phase.title}`),
+            React.createElement('p', { style: { color: 'var(--text-muted)', fontSize: 13, maxWidth: 600 } }, phase.description),
+          ),
+          React.createElement('div', { style: { textAlign: 'right' } },
+            React.createElement('div', { style: { fontSize: 22, fontWeight: 800, color: phase.color } }, phase.duration),
+            React.createElement('div', { style: { fontSize: 11, color: 'var(--text-muted)' } }, `${phase.tasks.length} Tasks`),
+          )
+        ),
+        // Tech Stack
+        React.createElement('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
+          phase.techStack.map((tech, i) => React.createElement('span', {
+            key: i, style: { padding: '3px 10px', borderRadius: 4, fontSize: 11, background: 'var(--border)', color: 'var(--text-muted)', fontWeight: 500 }
+          }, tech))
+        ),
+      ),
+
+      // Tasks Table
+      React.createElement(Card, { style: { marginBottom: 16, padding: 0 } },
+        React.createElement('div', { style: { padding: '14px 20px', borderBottom: '1px solid var(--border)', fontWeight: 700, fontSize: 13 } }, 'Tasks'),
+        phase.tasks.map((task, i) => React.createElement('div', {
+          key: i, style: { display: 'flex', gap: 12, padding: '12px 20px', borderBottom: i < phase.tasks.length - 1 ? '1px solid var(--border)' : 'none', alignItems: 'flex-start' }
+        },
+          React.createElement('span', {
+            style: {
+              width: 8, height: 8, borderRadius: '50%', marginTop: 5, flexShrink: 0,
+              background: task.priority === 'critical' ? 'var(--red)' : task.priority === 'high' ? 'var(--orange)' : 'var(--green)',
+            }
+          }),
+          React.createElement('div', { style: { flex: 1 } },
+            React.createElement('div', { style: { fontWeight: 600, fontSize: 13, marginBottom: 2 } }, task.name),
+            React.createElement('div', { style: { fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 } }, task.detail),
+          ),
+          React.createElement('div', { style: { textAlign: 'right', flexShrink: 0 } },
+            React.createElement('span', { style: { fontSize: 12, color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' } }, task.effort),
+          ),
+        ))
+      ),
+
+      // Risks & Deliverables side by side
+      React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 } },
+        // Risks
+        React.createElement(Card, { style: { padding: 0 } },
+          React.createElement('div', { style: { padding: '14px 20px', borderBottom: '1px solid var(--border)', fontWeight: 700, fontSize: 13, color: 'var(--red)' } }, 'Risiken & Mitigations'),
+          phase.risks.map((r, i) => React.createElement('div', { key: i, style: { padding: '10px 20px', borderBottom: i < phase.risks.length - 1 ? '1px solid var(--border)' : 'none' } },
+            React.createElement('div', { style: { fontSize: 12, fontWeight: 600, marginBottom: 4 } }, r.risk),
+            React.createElement('div', { style: { fontSize: 11, color: 'var(--text-muted)' } }, '→ ', r.mitigation),
+          ))
+        ),
+        // Deliverables
+        React.createElement(Card, { style: { padding: 0 } },
+          React.createElement('div', { style: { padding: '14px 20px', borderBottom: '1px solid var(--border)', fontWeight: 700, fontSize: 13, color: 'var(--green)' } }, 'Deliverables'),
+          phase.deliverables.map((d, i) => React.createElement('div', { key: i, style: { padding: '8px 20px', borderBottom: i < phase.deliverables.length - 1 ? '1px solid var(--border)' : 'none', fontSize: 12, display: 'flex', gap: 8, alignItems: 'flex-start' } },
+            React.createElement('span', { style: { color: 'var(--green)', flexShrink: 0 } }, '✓'),
+            d,
+          ))
+        ),
+      ),
+
+      // Cost
+      phase.cost && React.createElement('div', { style: { marginTop: 12, textAlign: 'right', fontSize: 12, color: 'var(--text-muted)' } }, 'Kosten dieser Phase: ', React.createElement('span', { style: { fontWeight: 700, color: 'var(--text)' } }, phase.cost)),
+    )
+  );
+}
+
+// ─── Tab: Self-Improvement ───────────────────────────────────
+function SelfImprovementTab() {
+  return React.createElement('div', { className: 'fade-in' },
+    SectionHeader({ title: 'Selbst-Verbesserungs-Zyklus', subtitle: 'Wie das System mit jedem Deal intelligenter wird' }),
+
+    // Cycle Diagram
+    React.createElement(Card, { style: { marginBottom: 24 } },
+      React.createElement('div', { style: { display: 'flex', justifyContent: 'center', gap: 4, flexWrap: 'wrap', marginBottom: 16 } },
+        SELF_IMPROVEMENT.map((step, i) => React.createElement(React.Fragment, { key: i },
+          React.createElement('div', { style: { textAlign: 'center', padding: '16px 12px', width: 130 } },
+            React.createElement('div', { style: { fontSize: 28, marginBottom: 8 } }, step.icon),
+            React.createElement('div', { style: { fontSize: 13, fontWeight: 700, marginBottom: 4, color: 'var(--accent)' } }, step.stage),
+            React.createElement('div', { style: { fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 } }, step.desc),
+          ),
+          i < SELF_IMPROVEMENT.length - 1 && React.createElement('div', { style: { display: 'flex', alignItems: 'center', color: 'var(--text-dim)', fontSize: 20 } }, '→')
+        ))
+      ),
+      React.createElement('div', { style: { textAlign: 'center', padding: '12px 0', borderTop: '1px solid var(--border)', fontSize: 12, color: 'var(--text-muted)' } },
+        '↺ Zyklus wiederholt sich automatisch — System wird mit jedem Durchlauf besser'
+      ),
+    ),
+
+    // ML Pipeline Detail
+    SectionHeader({ title: 'ML-Pipeline im Detail' }),
+    React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 24 } },
+      React.createElement(Card, null,
+        React.createElement('div', { style: { fontSize: 14, fontWeight: 700, marginBottom: 12, color: 'var(--purple)' } }, 'Predictive Pricing Model'),
+        React.createElement('div', { style: { fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.8 } },
+          'Features für Preis-Vorhersage:',
+          React.createElement('div', { style: { marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 } },
+            ['Theme-Kategorie & Popularitäts-Index', 'Teileanzahl & Set-Komplexität', 'UVP & historische Rabatte',
+             'Monate seit EOL', 'Saisonale Faktoren (Weihnachten, etc.)', 'Exklusivitäts-Level (LEGO.com Only, GWP)',
+             'Minifiguren-Anzahl & Exklusivität', 'eBay Verkaufsfrequenz (Liquidität)'].map((f, i) =>
+              React.createElement('div', { key: i, style: { fontSize: 11, padding: '3px 0' } }, '• ', f)
+            )
+          )
+        ),
+      ),
+      React.createElement(Card, null,
+        React.createElement('div', { style: { fontSize: 14, fontWeight: 700, marginBottom: 12, color: 'var(--purple)' } }, 'Strategy Optimizer'),
+        React.createElement('div', { style: { fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.8 } },
+          'Was der Agent autonom anpasst:',
+          React.createElement('div', { style: { marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 } },
+            ['ROI-Mindest-Schwellwerte pro Kategorie', 'Risk-Score Gewichtungsfaktoren', 'Theme-Tier Klassifizierung (auf/absteigen)',
+             'Marktpreis-Quellen-Gewichtung', 'Optimale Haltezeit-Empfehlungen', 'Versandkosten-Schätzungen (Kalibrierung)',
+             'EOL-Timing Strategien', 'Neue profitable Nischen identifizieren'].map((f, i) =>
+              React.createElement('div', { key: i, style: { fontSize: 11, padding: '3px 0' } }, '• ', f)
+            )
+          )
+        ),
+      ),
+    ),
+
+    // Agent Decision Flow
+    SectionHeader({ title: 'Agent-Entscheidungsfluss' }),
+    React.createElement(Card, { style: { padding: 0 } },
+      [
+        { step: '1', title: 'Neues Angebot entdeckt', desc: 'Scraper findet neues Listing auf eBay/Kleinanzeigen', color: 'var(--accent)' },
+        { step: '2', title: 'Daten anreichern', desc: 'Automatisch Marktpreis aus 4-6 Quellen zusammentragen', color: 'var(--accent)' },
+        { step: '3', title: 'Regelbasierte Analyse', desc: 'ROI-Kalkulation, Risk-Score, GO/NO-GO nach festen Regeln', color: 'var(--green)' },
+        { step: '4', title: 'ML-Prediction', desc: 'XGBoost Modell validiert/adjustiert die ROI-Schätzung', color: 'var(--purple)' },
+        { step: '5', title: 'LLM-Agent Review', desc: 'Claude analysiert Kontext: Markt-Trends, saisonale Faktoren, unstrukturierte Daten', color: 'var(--purple)' },
+        { step: '6', title: 'Finale Empfehlung', desc: 'Konsens aus Regeln + ML + LLM → GO/NO-GO/PRÜFEN mit Confidence-Score', color: 'var(--orange)' },
+        { step: '7', title: 'Notification', desc: 'Bei GO: Sofort Telegram + E-Mail mit allen Details und Kauf-Link', color: 'var(--cyan)' },
+      ].map((s, i) => React.createElement('div', {
+        key: i, style: { display: 'flex', gap: 16, padding: '14px 20px', borderBottom: i < 6 ? '1px solid var(--border)' : 'none', alignItems: 'center' }
+      },
+        React.createElement('div', { style: { width: 28, height: 28, borderRadius: '50%', background: s.color + '20', color: s.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 800, flexShrink: 0 } }, s.step),
+        React.createElement('div', null,
+          React.createElement('div', { style: { fontWeight: 600, fontSize: 13 } }, s.title),
+          React.createElement('div', { style: { fontSize: 12, color: 'var(--text-muted)' } }, s.desc),
+        ),
+      ))
+    ),
+  );
+}
+
+// ─── Tab: Costs & Security ───────────────────────────────────
+function CostsTab() {
+  const total = COST_BREAKDOWN.reduce((s, c) => s + c.cost, 0);
+  return React.createElement('div', { className: 'fade-in' },
+    SectionHeader({ title: 'Monatliche Kosten', subtitle: 'Geschätzte laufende Kosten im Betrieb' }),
+
+    React.createElement(Card, { style: { marginBottom: 24, padding: 0 } },
+      React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', padding: '14px 20px', borderBottom: '1px solid var(--border)', fontWeight: 700, fontSize: 13 } },
+        React.createElement('span', null, 'Posten'),
+        React.createElement('span', null, '€/Monat'),
+      ),
+      COST_BREAKDOWN.map((item, i) => React.createElement('div', {
+        key: i, style: { display: 'flex', justifyContent: 'space-between', padding: '10px 20px', borderBottom: '1px solid var(--border)', fontSize: 13, alignItems: 'center' }
+      },
+        React.createElement('div', null,
+          React.createElement('span', null, item.item),
+          item.note && React.createElement('span', { style: { color: 'var(--text-dim)', fontSize: 11, marginLeft: 8 } }, `(${item.note})`),
+          React.createElement('div', { style: { fontSize: 11, color: 'var(--text-dim)' } }, item.category),
+        ),
+        React.createElement('span', { style: { fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: item.cost === 0 ? 'var(--green)' : 'var(--text)' } }, item.cost === 0 ? 'Kostenlos' : `${item.cost}€`),
+      )),
+      React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', padding: '14px 20px', fontWeight: 800, fontSize: 15, background: 'var(--accent-dim)' } },
+        React.createElement('span', null, 'Gesamt (geschätzt)'),
+        React.createElement('span', { style: { color: 'var(--accent)' } }, `~${total}-110€`),
+      ),
+    ),
+
+    // Break-even
+    React.createElement(Card, { style: { marginBottom: 24, borderLeft: '3px solid var(--green)' } },
+      React.createElement('div', { style: { fontSize: 14, fontWeight: 700, marginBottom: 8 } }, 'Break-Even Rechnung'),
+      React.createElement('div', { style: { fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.8 } },
+        'Bei 110€ monatlichen Kosten brauchst du nur 1-2 erfolgreiche Deals pro Monat mit je 55-110€ Gewinn, um die Systemkosten zu decken. ',
+        'Bei einem durchschnittlichen Netto-ROI von 20% und einem Einkaufspreis von 300€ wäre das ein Gewinn von 60€ pro Deal — also 2 Deals/Monat für Break-Even.',
+      ),
+      React.createElement('div', { style: { marginTop: 12, padding: '10px 14px', background: 'var(--green-dim)', borderRadius: 4, fontSize: 12, color: 'var(--green)', fontWeight: 600 } },
+        'Ziel: 4-8 Deals/Monat → 120-480€ Netto-Gewinn → System finanziert sich ab Monat 1'
+      ),
+    ),
+
+    // Security Warnings
+    SectionHeader({ title: 'Sicherheitshinweise & Risiken', subtitle: 'Kritische Punkte die vor Go-Live adressiert werden müssen' }),
+    React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+      SECURITY_WARNINGS.map((w, i) => React.createElement(Card, {
+        key: i,
+        style: {
+          borderLeft: `3px solid ${w.level === 'critical' ? 'var(--red)' : w.level === 'high' ? 'var(--orange)' : 'var(--orange)'}`,
+        }
+      },
+        React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 } },
+          StatusBadge({ status: w.level.toUpperCase(), color: w.level === 'critical' ? 'var(--red)' : w.level === 'high' ? 'var(--orange)' : '#f59e0b' }),
+          React.createElement('span', { style: { fontWeight: 700, fontSize: 13 } }, w.title),
+        ),
+        React.createElement('div', { style: { fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.7 } }, w.desc),
+      ))
+    ),
+  );
+}
+
+// ─── Tab: Tech Stack ─────────────────────────────────────────
+function TechStackTab() {
+  const stacks = [
+    { category: 'Backend & API', techs: [
+      { name: 'Python 3.12', why: 'Bestes Ecosystem für Scraping, Data Science und ML. Async-Support mit asyncio.' },
+      { name: 'FastAPI', why: 'Modernes, schnelles Web-Framework mit auto-generierter API-Doku (Swagger). Async-native.' },
+      { name: 'Pydantic v2', why: 'Datenvalidierung und -serialisierung. Type-safe Models für alle Business-Objekte.' },
+      { name: 'SQLAlchemy 2.0', why: 'ORM für PostgreSQL. Async-Support, Migrations mit Alembic.' },
+      { name: 'Celery + Redis', why: 'Distributed Task Queue für Scraper-Jobs, Scheduled Tasks, Background Processing.' },
+    ]},
+    { category: 'Scraping & Data', techs: [
+      { name: 'Playwright', why: 'Headless Browser für JS-heavy Seiten (eBay, Kleinanzeigen). Stealth-Mode möglich.' },
+      { name: 'httpx + BeautifulSoup', why: 'Lightweight Scraping für statische Seiten (BrickMerge, BrickEconomy). Async-fähig.' },
+      { name: 'Bright Data Proxies', why: 'Residential Proxies um IP-Bans zu vermeiden. Geo-Targeting auf Deutschland.' },
+    ]},
+    { category: 'Datenbank & Cache', techs: [
+      { name: 'PostgreSQL 16', why: 'Robuste relationale DB. JSON-Support für flexible Daten. Bewährt und zuverlässig.' },
+      { name: 'TimescaleDB', why: 'PostgreSQL-Extension für Zeitreihen-Daten. Perfekt für Preis-Historien.' },
+      { name: 'Redis 7', why: 'In-Memory Cache, Job Queue, Rate-Limiting Counter. Sub-Millisekunden Latenz.' },
+    ]},
+    { category: 'AI & Machine Learning', techs: [
+      { name: 'Claude API (Anthropic)', why: 'Bestes LLM für strukturierte Analyse. Haiku für einfache Tasks (günstig), Sonnet für komplexe.' },
+      { name: 'LangGraph', why: 'Agent-Framework mit State-Machine Logik. Tool-Use, Entscheidungsbäume, Memory.' },
+      { name: 'XGBoost / LightGBM', why: 'Gradient Boosting für Preis-Prediction. Schnelles Training, gute Performance mit wenig Daten.' },
+      { name: 'MLflow', why: 'Experiment Tracking, Model Registry, Reproducibility. Vergleich von Modell-Versionen.' },
+    ]},
+    { category: 'Frontend & UI', techs: [
+      { name: 'Next.js 14', why: 'React-Framework mit SSR, API Routes, App Router. Ideal für Dashboard.' },
+      { name: 'TypeScript', why: 'Type-Safety im Frontend. Weniger Bugs, bessere Developer Experience.' },
+      { name: 'Tailwind CSS', why: 'Utility-first CSS. Schnelles Prototyping, konsistentes Design.' },
+      { name: 'Recharts', why: 'React-native Charting Library. Preis-Charts, ROI-Trends, Portfolio-Übersichten.' },
+    ]},
+    { category: 'Infrastructure & DevOps', techs: [
+      { name: 'Hetzner Cloud CX31', why: '4 vCPU, 8GB RAM, 80GB SSD. Standort: Falkenstein/DE. DSGVO-konform. 15€/Monat.' },
+      { name: 'Docker Compose', why: 'Container-Orchestrierung. Alle Services als Container: API, Workers, DB, Redis, Dashboard.' },
+      { name: 'GitHub Actions', why: 'CI/CD Pipeline. Automatisches Testen, Bauen und Deployen bei Push.' },
+      { name: 'Nginx', why: 'Reverse Proxy, SSL Termination, Rate-Limiting. Let\'s Encrypt für HTTPS.' },
+      { name: 'Prometheus + Grafana', why: 'Monitoring Stack. System-Metriken, Scraper-Health, Custom Business-Metriken.' },
+    ]},
+  ];
+
+  return React.createElement('div', { className: 'fade-in' },
+    SectionHeader({ title: 'Tech-Stack Entscheidungen', subtitle: 'Jede Technologie-Wahl mit Begründung' }),
+    React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 16 } },
+      stacks.map((stack, i) => React.createElement(Card, { key: i, style: { padding: 0 } },
+        React.createElement('div', { style: { padding: '14px 20px', borderBottom: '1px solid var(--border)', fontWeight: 700, fontSize: 14 } }, stack.category),
+        stack.techs.map((tech, j) => React.createElement('div', {
+          key: j, style: { display: 'flex', gap: 16, padding: '10px 20px', borderBottom: j < stack.techs.length - 1 ? '1px solid var(--border)' : 'none', alignItems: 'flex-start' }
+        },
+          React.createElement('span', { style: { fontWeight: 600, fontSize: 13, width: 180, flexShrink: 0, color: 'var(--accent)' } }, tech.name),
+          React.createElement('span', { style: { fontSize: 12, color: 'var(--text-muted)' } }, tech.why),
+        ))
+      ))
+    ),
+  );
+}
+
+// ─── Tab: Projektstruktur ────────────────────────────────────
+function ProjectStructureTab() {
+  const structure = `lego-arbitrage/
+├── docker-compose.yml
+├── .github/
+│   └── workflows/
+│       ├── ci.yml
+│       └── deploy.yml
+├── backend/
+│   ├── pyproject.toml
+│   ├── alembic/
+│   │   └── versions/
+│   ├── app/
+│   │   ├── main.py                    # FastAPI Entry
+│   │   ├── config.py                  # Settings (Pydantic)
+│   │   ├── models/
+│   │   │   ├── set.py                 # LEGO Set Model
+│   │   │   ├── price.py               # Preis-History
+│   │   │   ├── offer.py               # Aktive Angebote
+│   │   │   ├── analysis.py            # ROI/Risk Analyse
+│   │   │   ├── watchlist.py           # User Watchlists
+│   │   │   └── feedback.py            # Deal-Feedback Loop
+│   │   ├── scrapers/
+│   │   │   ├── base.py                # Abstract Scraper
+│   │   │   ├── brickeconomy.py        # BrickEconomy
+│   │   │   ├── brickmerge.py          # BrickMerge
+│   │   │   ├── ebay_sold.py           # eBay Verkaufte
+│   │   │   ├── kleinanzeigen.py       # Kleinanzeigen
+│   │   │   ├── idealo.py              # Idealo
+│   │   │   ├── lego_com.py            # LEGO.com EOL
+│   │   │   └── proxy_manager.py       # Proxy Rotation
+│   │   ├── engine/
+│   │   │   ├── roi_calculator.py      # ROI-Kalkulation
+│   │   │   ├── risk_scorer.py         # Risk-Score 0-10
+│   │   │   ├── market_consensus.py    # Multi-Source Preis
+│   │   │   ├── decision_engine.py     # GO/NO-GO Logic
+│   │   │   ├── opportunity_ranker.py  # Opportunity Score
+│   │   │   └── categorizer.py         # Set-Kategorien
+│   │   ├── agent/
+│   │   │   ├── orchestrator.py        # LangGraph Agent
+│   │   │   ├── tools.py               # Agent Tools
+│   │   │   ├── strategy_optimizer.py  # Selbst-Verbesserung
+│   │   │   ├── anomaly_detector.py    # Preis-Anomalien
+│   │   │   └── report_generator.py    # NL-Reports
+│   │   ├── ml/
+│   │   │   ├── price_predictor.py     # XGBoost Model
+│   │   │   ├── feature_engineering.py # Feature Pipeline
+│   │   │   ├── training.py            # Model Training
+│   │   │   └── evaluation.py          # Model Evaluation
+│   │   ├── notifications/
+│   │   │   ├── telegram_bot.py        # Telegram Alerts
+│   │   │   ├── email_service.py       # E-Mail
+│   │   │   └── templates/             # Notification Templates
+│   │   ├── api/
+│   │   │   ├── routes/
+│   │   │   │   ├── sets.py
+│   │   │   │   ├── analysis.py
+│   │   │   │   ├── scout.py
+│   │   │   │   ├── watchlist.py
+│   │   │   │   └── feedback.py
+│   │   │   └── deps.py                # Dependencies
+│   │   └── tasks/
+│   │       ├── scrape_daily.py        # Tägliche Scraper
+│   │       ├── analyze_new.py         # Neue Angebote
+│   │       ├── retrain_model.py       # Wöchentliches ML
+│   │       └── generate_report.py     # Reports
+│   └── tests/
+│       ├── test_scrapers/
+│       ├── test_engine/
+│       ├── test_agent/
+│       └── test_api/
+├── frontend/
+│   ├── package.json
+│   ├── app/
+│   │   ├── layout.tsx
+│   │   ├── page.tsx                   # Dashboard Home
+│   │   ├── deals/page.tsx             # Deal Feed
+│   │   ├── watchlist/page.tsx         # Watchlist
+│   │   ├── portfolio/page.tsx         # Portfolio P&L
+│   │   ├── analytics/page.tsx         # Performance
+│   │   └── settings/page.tsx          # Konfiguration
+│   ├── components/
+│   │   ├── DealCard.tsx
+│   │   ├── RoiCalculator.tsx
+│   │   ├── RiskBadge.tsx
+│   │   ├── PriceChart.tsx
+│   │   └── WatchlistTable.tsx
+│   └── lib/
+│       └── api.ts                     # API Client
+├── infra/
+│   ├── Dockerfile.backend
+│   ├── Dockerfile.frontend
+│   ├── nginx.conf
+│   ├── prometheus.yml
+│   └── grafana/
+│       └── dashboards/
+└── docs/
+    ├── ARCHITECTURE.md
+    ├── DEPLOYMENT.md
+    └── RUNBOOKS.md`;
+
+  return React.createElement('div', { className: 'fade-in' },
+    SectionHeader({ title: 'Projekt-Struktur', subtitle: 'Vollständige Ordnerstruktur des Systems' }),
+    React.createElement(Card, { style: { padding: 0 } },
+      React.createElement('pre', { style: { padding: 20, fontSize: 12, lineHeight: 1.6, color: 'var(--text-muted)', overflow: 'auto', fontFamily: '"JetBrains Mono", "Fira Code", monospace', margin: 0 } }, structure)
+    ),
+
+    React.createElement('div', { style: { marginTop: 24 } },
+      SectionHeader({ title: 'Docker Compose Services' }),
+      React.createElement(Card, { style: { padding: 0 } },
+        [
+          { service: 'api', desc: 'FastAPI Backend (Port 8000)', deps: 'PostgreSQL, Redis' },
+          { service: 'worker', desc: 'Celery Worker für Scraping & Analysis Tasks', deps: 'Redis, PostgreSQL' },
+          { service: 'beat', desc: 'Celery Beat Scheduler (Cron-Jobs)', deps: 'Redis' },
+          { service: 'dashboard', desc: 'Next.js Frontend (Port 3000)', deps: 'API' },
+          { service: 'postgres', desc: 'PostgreSQL 16 + TimescaleDB', deps: '-' },
+          { service: 'redis', desc: 'Redis 7 (Cache + Queue)', deps: '-' },
+          { service: 'nginx', desc: 'Reverse Proxy + SSL', deps: 'API, Dashboard' },
+          { service: 'prometheus', desc: 'Metriken-Sammlung', deps: 'API, Worker' },
+          { service: 'grafana', desc: 'Monitoring Dashboard', deps: 'Prometheus' },
+        ].map((s, i) => React.createElement('div', {
+          key: i, style: { display: 'flex', gap: 16, padding: '10px 20px', borderBottom: i < 8 ? '1px solid var(--border)' : 'none', alignItems: 'center', fontSize: 13 }
+        },
+          React.createElement('span', { style: { fontWeight: 600, width: 120, flexShrink: 0, color: 'var(--cyan)', fontFamily: 'monospace' } }, s.service),
+          React.createElement('span', { style: { flex: 1, color: 'var(--text-muted)', fontSize: 12 } }, s.desc),
+          React.createElement('span', { style: { fontSize: 11, color: 'var(--text-dim)', width: 160, textAlign: 'right' } }, 'Deps: ', s.deps),
+        ))
+      ),
+    ),
+  );
+}
+
+// ─── Tab: Next Steps ─────────────────────────────────────────
+function NextStepsTab() {
+  return React.createElement('div', { className: 'fade-in' },
+    SectionHeader({ title: 'Nächste Schritte', subtitle: 'Was jetzt passieren muss, um loszulegen' }),
+
+    React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+      [
+        { num: '01', title: 'Hetzner Account & Server aufsetzen', desc: 'CX31 Server bestellen (Falkenstein), Ubuntu 22.04, SSH-Key einrichten, Docker installieren.', action: 'hetzner.com/cloud', time: '1 Stunde', critical: true },
+        { num: '02', title: 'GitHub Repository anlegen', desc: 'Privates Repo erstellen, Branch Protection, GitHub Actions Secrets konfigurieren.', action: 'github.com/new', time: '30 Min', critical: true },
+        { num: '03', title: 'Anthropic API Key besorgen', desc: 'Account bei console.anthropic.com, API Key generieren, Budget-Limit setzen (z.B. 100€/Monat).', action: 'console.anthropic.com', time: '15 Min', critical: true },
+        { num: '04', title: 'Bright Data Proxy Setup', desc: 'Account erstellen, Residential Proxy Zone für Deutschland konfigurieren. Free Trial nutzen.', action: 'brightdata.com', time: '30 Min', critical: false },
+        { num: '05', title: 'Telegram Bot erstellen', desc: '@BotFather auf Telegram kontaktieren, Bot erstellen, Token sichern.', action: 'Telegram: @BotFather', time: '10 Min', critical: false },
+        { num: '06', title: 'Domain registrieren (optional)', desc: 'z.B. lego-arbitrage.de — für Dashboard-Zugriff von überall. Cloudflare DNS empfohlen.', action: 'Optional', time: '15 Min', critical: false },
+        { num: '07', title: 'Phase 1 starten: Erstes Scraper-Skeleton', desc: 'Docker Compose aufsetzen, PostgreSQL Schema, erster Scraper (BrickMerge — am einfachsten).', action: 'Entwicklung beginnen', time: '~1 Woche', critical: true },
+      ].map((step, i) => React.createElement(Card, {
+        key: i, hover: true,
+        style: { borderLeft: step.critical ? '3px solid var(--accent)' : '3px solid var(--border)' }
+      },
+        React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' } },
+          React.createElement('div', { style: { display: 'flex', gap: 16, alignItems: 'flex-start' } },
+            React.createElement('span', { style: { fontSize: 22, fontWeight: 800, color: step.critical ? 'var(--accent)' : 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' } }, step.num),
+            React.createElement('div', null,
+              React.createElement('div', { style: { fontWeight: 700, fontSize: 14, marginBottom: 4 } }, step.title),
+              React.createElement('div', { style: { fontSize: 12, color: 'var(--text-muted)', marginBottom: 8, maxWidth: 500 } }, step.desc),
+              React.createElement('span', { style: { padding: '3px 10px', borderRadius: 4, fontSize: 11, background: 'var(--border)', color: 'var(--text-muted)' } }, step.action),
+            ),
+          ),
+          React.createElement('div', { style: { textAlign: 'right', flexShrink: 0 } },
+            React.createElement('div', { style: { fontSize: 12, color: 'var(--text-muted)' } }, step.time),
+            step.critical && StatusBadge({ status: 'KRITISCH', color: 'var(--accent)' }),
+          ),
+        ),
+      ))
+    ),
+
+    // Final note
+    React.createElement(Card, { style: { marginTop: 24, borderLeft: '3px solid var(--green)', background: 'var(--green-dim)' } },
+      React.createElement('div', { style: { fontSize: 14, fontWeight: 700, marginBottom: 8, color: 'var(--green)' } }, 'Bereit zum Start'),
+      React.createElement('div', { style: { fontSize: 13, color: 'var(--text)', lineHeight: 1.8 } },
+        'Dieser Plan transformiert deinen kompletten Agent-Prompt in eine autonome Software. Das System wird 24/7 laufen, den Markt scannen, und mit jedem Deal intelligenter werden. ',
+        'Soll ich mit Phase 1 anfangen und das Projekt-Skeleton aufsetzen?'
+      ),
+    ),
+  );
+}
+
+// ─── Main App ────────────────────────────────────────────────
+function App() {
+  const [tab, setTab] = useState('overview');
+  const tabs = [
+    { id: 'overview', label: 'Übersicht' },
+    { id: 'phases', label: 'Phasen', count: 5 },
+    { id: 'ai', label: 'Self-Improvement' },
+    { id: 'tech', label: 'Tech Stack' },
+    { id: 'structure', label: 'Projektstruktur' },
+    { id: 'costs', label: 'Kosten & Security' },
+    { id: 'next', label: 'Nächste Schritte' },
+  ];
+
+  return React.createElement('div', { style: { maxWidth: 1000, margin: '0 auto', padding: '24px 20px' } },
+    // Header
+    React.createElement('div', { style: { marginBottom: 24 } },
+      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 } },
+        React.createElement('div', { style: { width: 36, height: 36, borderRadius: 8, background: 'linear-gradient(135deg, #3b82f6, #a855f7)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 } }, '🧱'),
+        React.createElement('div', null,
+          React.createElement('h1', { style: { fontSize: 22, fontWeight: 800, letterSpacing: -0.5 } }, 'LEGO Arbitrage — Autonomous System'),
+          React.createElement('div', { style: { fontSize: 12, color: 'var(--text-muted)' } }, 'Masterplan für eine selbstlernende Profit-Maschine'),
+        ),
+      ),
+    ),
+
+    // Nav
+    React.createElement('div', { style: { display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: 24, overflowX: 'auto' } },
+      tabs.map(t => NavTab({ key: t.id, label: t.label, active: tab === t.id, onClick: () => setTab(t.id), count: t.count }))
+    ),
+
+    // Content
+    tab === 'overview' && React.createElement(OverviewTab),
+    tab === 'phases' && React.createElement(PhasesTab),
+    tab === 'ai' && React.createElement(SelfImprovementTab),
+    tab === 'tech' && React.createElement(TechStackTab),
+    tab === 'structure' && React.createElement(ProjectStructureTab),
+    tab === 'costs' && React.createElement(CostsTab),
+    tab === 'next' && React.createElement(NextStepsTab),
+
+    // Footer
+    React.createElement('div', { style: { marginTop: 40, paddingTop: 16, borderTop: '1px solid var(--border)', fontSize: 11, color: 'var(--text-dim)', display: 'flex', justifyContent: 'space-between' } },
+      React.createElement('span', null, 'LEGO Arbitrage Masterplan v1.0 — März 2026'),
+      React.createElement('span', null, 'Erstellt für Sebastian · conuti.de'),
+    ),
+  );
+}
+
+ReactDOM.render(React.createElement(App), document.getElementById('root'));
+</script>
+</body>
+</html>
