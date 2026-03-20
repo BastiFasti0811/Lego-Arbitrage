@@ -1,0 +1,110 @@
+version: "3.9"
+
+services:
+  # ── PostgreSQL Database ────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: lego-postgres
+    environment:
+      POSTGRES_DB: lego_arbitrage
+      POSTGRES_USER: lego
+      POSTGRES_PASSWORD: lego_secret
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lego -d lego_arbitrage"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Redis Cache & Queue ────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: lego-redis
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── FastAPI Backend ────────────────────────────────────
+  api:
+    build:
+      context: ./backend
+      dockerfile: ../infra/Dockerfile.backend
+    container_name: lego-api
+    env_file: ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://lego:lego_secret@postgres:5432/lego_arbitrage
+      DATABASE_URL_SYNC: postgresql://lego:lego_secret@postgres:5432/lego_arbitrage
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/app:/app/app  # Hot reload in dev
+    restart: unless-stopped
+
+  # ── Celery Worker (Scraping & Analysis) ────────────────
+  worker:
+    build:
+      context: ./backend
+      dockerfile: ../infra/Dockerfile.backend
+    container_name: lego-worker
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
+    env_file: ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://lego:lego_secret@postgres:5432/lego_arbitrage
+      DATABASE_URL_SYNC: postgresql://lego:lego_secret@postgres:5432/lego_arbitrage
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Celery Beat Scheduler (Cron Jobs) ──────────────────
+  beat:
+    build:
+      context: ./backend
+      dockerfile: ../infra/Dockerfile.backend
+    container_name: lego-beat
+    command: celery -A app.tasks.celery_app beat --loglevel=info
+    env_file: ./backend/.env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Nginx Reverse Proxy ────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: lego-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
