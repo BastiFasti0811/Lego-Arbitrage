@@ -32,6 +32,8 @@ class InventoryAdd(BaseModel):
 
 
 class InventoryUpdate(BaseModel):
+    set_name: str | None = None
+    theme: str | None = None
     buy_price: float | None = None
     buy_shipping: float | None = None
     buy_date: date | None = None

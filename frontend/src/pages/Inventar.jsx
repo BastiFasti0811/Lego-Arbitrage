@@ -10,6 +10,8 @@ export default function Inventar() {
   const [sellDate, setSellDate] = useState(new Date().toISOString().split("T")[0]);
   const [sellPlatform, setSellPlatform] = useState("");
   const [addModal, setAddModal] = useState(false);
+  const [editModal, setEditModal] = useState(null);
+  const [editForm, setEditForm] = useState({});
   const [lookupLoading, setLookupLoading] = useState(false);
   const [addForm, setAddForm] = useState({
     set_number: "", set_name: "", theme: "", buy_price: "", buy_shipping: "0",
@@ -42,6 +44,15 @@ export default function Inventar() {
   const deleteMutation = useMutation({
     mutationFn: (id) => api.deleteInventory(id),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["inventory"] });
+      queryClient.invalidateQueries({ queryKey: ["portfolio"] });
+    },
+  });
+
+  const editMutation = useMutation({
+    mutationFn: ({ id, data }) => api.updateInventory(id, data),
+    onSuccess: () => {
+      setEditModal(null);
       queryClient.invalidateQueries({ queryKey: ["inventory"] });
       queryClient.invalidateQueries({ queryKey: ["portfolio"] });
     },
@@ -88,6 +99,37 @@ export default function Inventar() {
     }
   }, []);
 
+  const openEdit = (item) => {
+    setEditModal(item);
+    setEditForm({
+      set_name: item.set_name,
+      theme: item.theme || "",
+      buy_price: String(item.buy_price),
+      buy_shipping: String(item.buy_shipping),
+      buy_date: item.buy_date,
+      buy_platform: item.buy_platform || "",
+      condition: item.condition,
+      notes: item.notes || "",
+    });
+  };
+
+  const handleEdit = (e) => {
+    e.preventDefault();
+    editMutation.mutate({
+      id: editModal.id,
+      data: {
+        set_name: editForm.set_name,
+        theme: editForm.theme || null,
+        buy_price: parseFloat(editForm.buy_price),
+        buy_shipping: parseFloat(editForm.buy_shipping || "0"),
+        buy_date: editForm.buy_date,
+        buy_platform: editForm.buy_platform || null,
+        condition: editForm.condition,
+        notes: editForm.notes || null,
+      },
+    });
+  };
+
   const handleAdd = (e) => {
     e.preventDefault();
     addMutation.mutate({
@@ -129,6 +171,13 @@ export default function Inventar() {
             color={profitColor(summary.unrealized_profit)}
           />
         </div>
+      )}
+
+      {/* Valuation Info */}
+      {summary && (
+        <p className="text-text-muted text-xs mb-4">
+          Marktwerte werden automatisch alle 6 Stunden aktualisiert (Celery Beat)
+        </p>
       )}
 
       {/* Sell Signals Banner */}
@@ -212,6 +261,12 @@ export default function Inventar() {
               {/* Actions */}
               <div className="flex gap-2 mt-3 pt-3 border-t border-border/50">
                 <button
+                  onClick={() => openEdit(item)}
+                  className="bg-lego-blue/10 text-lego-blue text-xs px-3 py-1.5 rounded-lg hover:bg-lego-blue/20 transition-colors"
+                >
+                  Bearbeiten
+                </button>
+                <button
                   onClick={() => { setSellModal(item); setSellPrice(""); setSellPlatform(""); }}
                   className="bg-go-star/10 text-go-star text-xs px-3 py-1.5 rounded-lg hover:bg-go-star/20 transition-colors"
                 >
@@ -275,6 +330,68 @@ export default function Inventar() {
                 {sellMutation.isPending ? "..." : "Verkauft"}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Modal */}
+      {editModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-bg-card border border-border rounded-xl p-6 w-full max-w-md mx-4">
+            <h2 className="text-text-primary text-lg font-bold mb-2">Set bearbeiten</h2>
+            <p className="text-lego-yellow font-[family-name:var(--font-mono)] text-sm mb-4">{editModal.set_number}</p>
+            <form onSubmit={handleEdit} className="space-y-3">
+              <div>
+                <label className="block text-text-muted text-xs mb-1">Set-Name</label>
+                <input type="text" value={editForm.set_name} onChange={(e) => setEditForm({ ...editForm, set_name: e.target.value })} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
+              </div>
+              <div>
+                <label className="block text-text-muted text-xs mb-1">Theme</label>
+                <input type="text" value={editForm.theme} onChange={(e) => setEditForm({ ...editForm, theme: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-text-muted text-xs mb-1">Kaufpreis (€)</label>
+                  <input type="number" step="0.01" value={editForm.buy_price} onChange={(e) => setEditForm({ ...editForm, buy_price: e.target.value })} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
+                </div>
+                <div>
+                  <label className="block text-text-muted text-xs mb-1">Versand (€)</label>
+                  <input type="number" step="0.01" value={editForm.buy_shipping} onChange={(e) => setEditForm({ ...editForm, buy_shipping: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-text-muted text-xs mb-1">Kaufdatum</label>
+                  <input type="date" value={editForm.buy_date} onChange={(e) => setEditForm({ ...editForm, buy_date: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
+                </div>
+                <div>
+                  <label className="block text-text-muted text-xs mb-1">Plattform</label>
+                  <input type="text" value={editForm.buy_platform} onChange={(e) => setEditForm({ ...editForm, buy_platform: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-text-muted text-xs mb-1">Zustand</label>
+                <select value={editForm.condition} onChange={(e) => setEditForm({ ...editForm, condition: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm">
+                  <option value="NEW_SEALED">Neu & Versiegelt</option>
+                  <option value="NEW_OPEN">Neu & Geöffnet</option>
+                  <option value="USED_COMPLETE">Gebraucht (komplett)</option>
+                  <option value="USED_INCOMPLETE">Gebraucht (unvollständig)</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-text-muted text-xs mb-1">Notizen</label>
+                <textarea value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} placeholder="Eigene Notizen..." rows={2} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm resize-none" />
+              </div>
+              <div className="flex gap-3 mt-4">
+                <button type="button" onClick={() => setEditModal(null)} className="flex-1 bg-bg-hover text-text-secondary py-2 rounded-lg">Abbrechen</button>
+                <button type="submit" disabled={editMutation.isPending} className="flex-1 bg-lego-yellow text-black font-bold py-2 rounded-lg disabled:opacity-50">
+                  {editMutation.isPending ? "..." : "Speichern"}
+                </button>
+              </div>
+              {editMutation.isError && (
+                <p className="text-no-go text-sm">{editMutation.error.message}</p>
+              )}
+            </form>
           </div>
         </div>
       )}
