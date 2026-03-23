@@ -12,6 +12,7 @@ celery_app = Celery(
     include=[
         "app.tasks.scrape_daily",
         "app.tasks.analyze_new",
+        "app.tasks.update_inventory",
     ],
 )
 
@@ -54,5 +55,11 @@ celery_app.conf.beat_schedule = {
         "task": "app.tasks.analyze_new.retrain_model",
         "schedule": crontab(minute=0, hour=3, day_of_week=0),
         "options": {"queue": "ml"},
+    },
+    # Update inventory valuations every 6 hours (offset from scraping)
+    "update-inventory": {
+        "task": "app.tasks.update_inventory.update_inventory_valuations",
+        "schedule": crontab(minute=30, hour="*/6"),
+        "options": {"queue": "analysis"},
     },
 }
