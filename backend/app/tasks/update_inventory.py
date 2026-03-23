@@ -75,7 +75,7 @@ def update_inventory_valuations() -> dict:
 
 async def _update_valuations_async() -> dict:
     summary = {"updated": 0, "sell_signals": 0, "errors": 0}
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()  # naive datetime — matches DB column type
 
     async with async_session() as session:
         result = await session.execute(
