@@ -263,16 +263,30 @@ async def parse_listing_url(request: ParseUrlRequest):
     elif "amazon.de" in url or "amazon.com" in url:
         platform = "AMAZON"
 
-    # Try to fetch the page
+    # First: try to extract set number from URL slug (fast, no HTTP needed)
+    # Kleinanzeigen URLs look like: /s-anzeige/lego-naboo-starfighter-7877/2994338498-23-3902
+    url_set_number = None
+    slug_match = re.search(r"/([^/]*lego[^/]*)/", url, re.IGNORECASE)
+    if slug_match:
+        slug = slug_match.group(1)
+        num_match = re.search(r"(\d{4,6})", slug)
+        if num_match:
+            url_set_number = num_match.group(1)
+    if not url_set_number:
+        # Fallback: any 4-6 digit number in the URL
+        num_match = re.search(r"(\d{4,6})", url)
+        if num_match:
+            url_set_number = num_match.group(1)
+
+    # Try to fetch the page for more details
     try:
-        async with BaseScraper() as scraper:
+        from app.scrapers.kleinanzeigen import KleinanzeigenScraper
+        async with KleinanzeigenScraper() as scraper:
             html = await scraper._fetch(url)
     except Exception as e:
         logger.warning("parse_url.fetch_failed", url=url, error=str(e))
-        # Still try to extract from URL pattern
-        set_match = re.search(r"(\d{4,6})", url)
         return ParseUrlResponse(
-            set_number=set_match.group(1) if set_match else None,
+            set_number=url_set_number,
             platform=platform,
             url=url,
         )
@@ -342,6 +356,10 @@ async def parse_listing_url(request: ParseUrlRequest):
             condition = "NEW_OPEN"
         elif any(kw in title_lower for kw in ["gebraucht", "used", "bespielt"]):
             condition = "USED_COMPLETE"
+
+    # Fallback: use set number extracted from URL if HTML parsing didn't find one
+    if not set_number and url_set_number:
+        set_number = url_set_number
 
     logger.info("parse_url.done", set_number=set_number, price=price, platform=platform)
 

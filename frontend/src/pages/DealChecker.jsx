@@ -34,16 +34,29 @@ export default function DealChecker() {
   const [buyPlatform, setBuyPlatform] = useState("");
   const [buyDate, setBuyDate] = useState(new Date().toISOString().split("T")[0]);
 
+  // URL parse status message
+  const [parseMessage, setParseMessage] = useState("");
+
   // URL parsing mutation
   const parseUrl = useMutation({
     mutationFn: (url) => api.parseUrl(url),
     onSuccess: (data) => {
       if (data.set_number) setSetNumber(data.set_number);
-      if (data.price) setOfferPrice(String(data.price));
+      if (data.price) {
+        setOfferPrice(String(data.price));
+        setParseMessage(`✓ Set ${data.set_number} erkannt, Preis ${data.price}€`);
+      } else if (data.set_number) {
+        setParseMessage(`✓ Set ${data.set_number} erkannt — bitte Preis manuell eingeben`);
+      } else {
+        setParseMessage("Set-Nummer nicht erkannt — bitte manuell eingeben");
+      }
       if (data.condition) setCondition(data.condition);
       if (data.url) setSourceUrl(data.url);
       if (data.platform) setSourcePlatform(data.platform);
       setSmartInput("");
+    },
+    onError: () => {
+      setParseMessage("URL konnte nicht geladen werden — bitte manuell eingeben");
     },
   });
 
@@ -288,8 +301,8 @@ export default function DealChecker() {
           ) : "Analysieren"}
         </button>
 
-        {parseUrl.isError && (
-          <p className="text-check text-sm mt-3">URL konnte nicht geparst werden — gib Set-Nummer manuell ein</p>
+        {parseMessage && (
+          <p className={`text-sm mt-3 ${parseMessage.startsWith("✓") ? "text-go" : "text-check"}`}>{parseMessage}</p>
         )}
         {analyze.isError && (
           <p className="text-no-go text-sm mt-3">Fehler: {analyze.error.message}</p>

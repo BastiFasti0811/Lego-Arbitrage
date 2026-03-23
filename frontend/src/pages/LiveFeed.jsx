@@ -117,7 +117,7 @@ export default function LiveFeed() {
           <div className="text-4xl mb-4">{"\uD83D\uDCE1"}</div>
           <h2 className="text-text-primary text-lg font-semibold mb-2">Kein Live Feed aktiv</h2>
           <p className="text-text-muted text-sm">
-            F\u00FCge Sets zur Watchlist hinzu, um den Live Feed zu aktivieren.
+            Füge Sets zur Watchlist hinzu, um den Live Feed zu aktivieren.
           </p>
         </div>
       ) : isLoading ? (
