@@ -1,10 +1,10 @@
 """Market Consensus Engine — aggregates prices from multiple sources.
 
-Implements weighted consensus pricing:
-- eBay Sold: 40% (actual transactions)
-- BrickEconomy: 30% (global market data)
-- Idealo: 20% (German retail)
-- BrickMerge: 10% (shop aggregator)
+Implements weighted consensus pricing with outlier detection:
+- eBay Sold: 40% (actual transactions — most reliable)
+- BrickMerge: 30% (German shop aggregator with price history)
+- BrickEconomy: 20% (global market data)
+- Idealo: 10% (often wrong product match — lowest trust)
 """
 
 from dataclasses import dataclass, field
@@ -17,14 +17,15 @@ from app.scrapers.base import ScrapedPrice
 logger = structlog.get_logger()
 
 
+# Rebalanced weights: BrickMerge + eBay Sold are primary sources
 SOURCE_WEIGHTS = {
-    "EBAY_SOLD": settings.weight_ebay_sold,
-    "BRICKECONOMY": settings.weight_brickeconomy,
-    "IDEALO": settings.weight_idealo,
-    "BRICKMERGE": settings.weight_brickmerge,
-    "AMAZON": 0.0,  # Amazon not used for consensus (often inflated)
-    "KLEINANZEIGEN": 0.0,  # Asking prices, not market value
-    "LEGO_COM": 0.0,  # UVP, not market value
+    "EBAY_SOLD": 0.40,      # Actual transactions — gold standard
+    "BRICKMERGE": 0.30,     # German shop aggregator — reliable
+    "BRICKECONOMY": 0.20,   # Global market data — good reference
+    "IDEALO": 0.10,         # Often wrong product — lowest trust
+    "AMAZON": 0.0,          # Not used for consensus (often inflated)
+    "KLEINANZEIGEN": 0.0,   # Asking prices, not market value
+    "LEGO_COM": 0.0,        # UVP, not market value
 }
 
 
@@ -41,28 +42,89 @@ class MarketConsensus:
     divergence_percent: float = 0.0  # Max divergence between sources
     is_reliable: bool = True
     warnings: list[str] = field(default_factory=list)
+    outliers_removed: dict[str, float] = field(default_factory=dict)
+
+
+def _remove_outliers(
+    market_prices: dict[str, float],
+    warnings: list[str],
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Remove obvious outlier prices.
+
+    Strategy:
+    1. If we have 3+ sources, remove any price that deviates >60% from the median
+    2. If we have 2 sources and they differ >80%, flag as unreliable
+    3. If a price is < 5€ for a LEGO set, it's almost certainly wrong
+    """
+    outliers = {}
+
+    if not market_prices:
+        return market_prices, outliers
+
+    prices_list = list(market_prices.values())
+
+    # Rule 1: Absolute minimum — no LEGO set is worth less than 5€
+    MIN_PLAUSIBLE_PRICE = 5.0
+    for source, price in list(market_prices.items()):
+        if price < MIN_PLAUSIBLE_PRICE:
+            outliers[source] = price
+            warnings.append(
+                f"{source} Preis ({price:.2f}€) unrealistisch niedrig — ignoriert"
+            )
+
+    # Remove absolute outliers first
+    cleaned = {s: p for s, p in market_prices.items() if s not in outliers}
+
+    if len(cleaned) < 2:
+        return cleaned, outliers
+
+    # Rule 2: Statistical outlier detection (>60% from median)
+    prices_list = sorted(cleaned.values())
+    median = prices_list[len(prices_list) // 2]
+
+    if len(cleaned) >= 3:
+        OUTLIER_THRESHOLD = 0.60
+        for source, price in list(cleaned.items()):
+            deviation = abs(price - median) / median if median > 0 else 0
+            if deviation > OUTLIER_THRESHOLD:
+                outliers[source] = price
+                warnings.append(
+                    f"{source} Preis ({price:.2f}€) weicht {deviation:.0%} vom Median "
+                    f"({median:.2f}€) ab — als Ausreißer entfernt"
+                )
+
+    cleaned = {s: p for s, p in market_prices.items() if s not in outliers}
+    return cleaned, outliers
 
 
 def calculate_consensus(prices: list[ScrapedPrice]) -> MarketConsensus:
     """Calculate weighted consensus price from multiple sources.
 
     Logic:
-    1. If all sources agree (±10%): Use median
-    2. If large divergence (>20%): Use weighted average with warnings
-    3. If only 1-2 sources: Conservative estimate with warning
+    1. Filter out obvious outliers
+    2. If all sources agree (±10%): Use median
+    3. If large divergence (>20%): Use weighted average with warnings
+    4. If only 1-2 sources: Conservative estimate with warning
     """
     # Filter to sources that have weight > 0
-    market_prices = {}
+    raw_prices = {}
     for p in prices:
         if p.source in SOURCE_WEIGHTS and p.is_reliable and p.price_eur > 0:
             # For eBay, prefer median_price if available
             price = p.median_price if p.median_price and p.source == "EBAY_SOLD" else p.price_eur
-            market_prices[p.source] = price
+            raw_prices[p.source] = price
+
+    warnings: list[str] = []
+
+    # Remove outliers before consensus calculation
+    market_prices, outliers = _remove_outliers(raw_prices, warnings)
 
     result = MarketConsensus(
         consensus_price=0.0,
         num_sources=len(market_prices),
         source_prices=market_prices,
+        outliers_removed=outliers,
+        warnings=warnings,
     )
 
     if not market_prices:
@@ -82,9 +144,10 @@ def calculate_consensus(prices: list[ScrapedPrice]) -> MarketConsensus:
 
     # ── Case 1: Only one source ──────────────────────────
     if len(market_prices) == 1:
+        source = list(market_prices.keys())[0]
         result.consensus_price = prices_list[0]
         result.is_reliable = False
-        result.warnings.append("Nur 1 Datenquelle — unsichere Datenlage!")
+        result.warnings.append(f"Nur 1 Datenquelle ({source}) — unsichere Datenlage!")
         return result
 
     # ── Case 2: Sources agree (±10%) → Use median ───────
@@ -96,7 +159,7 @@ def calculate_consensus(prices: list[ScrapedPrice]) -> MarketConsensus:
     # ── Case 3: Divergence → Weighted average ────────────
     if result.divergence_percent > settings.price_divergence_warning:
         result.warnings.append(
-            f"Große Preisabweichung zwischen Quellen: {result.divergence_percent:.0%}. "
+            f"Preisabweichung zwischen Quellen: {result.divergence_percent:.0%}. "
             f"Gewichteter Durchschnitt wird verwendet."
         )
 
