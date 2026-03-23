@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.api.routes import sets, analysis, scout, watchlist, feedback
+from app.api.routes import sets, analysis, scout, watchlist, feedback, inventory
 
 logger = structlog.get_logger()
 
@@ -42,6 +42,7 @@ app.include_router(analysis.router, prefix="/api/analysis", tags=["Analysis"])
 app.include_router(scout.router, prefix="/api/scout", tags=["Scout"])
 app.include_router(watchlist.router, prefix="/api/watchlist", tags=["Watchlist"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["Feedback"])
+app.include_router(inventory.router, prefix="/api/inventory", tags=["Inventory"])
 
 
 @app.get("/health")

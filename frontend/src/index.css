@@ -1,0 +1,34 @@
+/* ── Custom Fonts ──────────────────────────────────── */
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=DM+Sans:wght@400;500;600;700&display=swap");
+
+@import "tailwindcss";
+
+/* ── Design Tokens ─────────────────────────────────── */
+@theme {
+  --color-bg-primary: #0f172a;
+  --color-bg-card: #1e293b;
+  --color-bg-hover: #334155;
+  --color-border: #334155;
+  --color-text-primary: #f1f5f9;
+  --color-text-secondary: #94a3b8;
+  --color-text-muted: #64748b;
+
+  --color-lego-red: #e3000b;
+  --color-lego-yellow: #f5c518;
+  --color-lego-blue: #006db7;
+
+  --color-go-star: #22c55e;
+  --color-go: #4ade80;
+  --color-check: #f59e0b;
+  --color-no-go: #ef4444;
+  --color-sell-signal: #06b6d4;
+
+  --font-display: "DM Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
+}
+
+body {
+  font-family: var(--font-display);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+}

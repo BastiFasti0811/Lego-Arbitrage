@@ -142,3 +142,33 @@ class BrickMergeScraper(BaseScraper):
             logger.error("brickmerge.offers_failed", set_number=set_number, error=str(e))
 
         return offers
+
+    async def get_price_history(self, set_number: str) -> list[dict] | None:
+        """Get historical price data from BrickMerge for trend analysis."""
+        try:
+            html = await self._fetch(f"{BASE_URL}/?sn={set_number}")
+            soup = BeautifulSoup(html, "lxml")
+
+            history = []
+            scripts = soup.find_all("script")
+            for script in scripts:
+                text = script.string or ""
+                date_matches = re.findall(r'"(\d{4}-\d{2}-\d{2})"', text)
+                price_matches = re.findall(r'(\d+\.\d{2})', text)
+
+                if date_matches and price_matches and len(date_matches) == len(price_matches):
+                    for d, p in zip(date_matches, price_matches):
+                        history.append({
+                            "date": d,
+                            "price": float(p),
+                            "source": "BRICKMERGE",
+                        })
+
+            if not history:
+                logger.debug("brickmerge.no_history", set_number=set_number)
+                return None
+
+            return sorted(history, key=lambda x: x["date"])
+        except Exception as e:
+            logger.error("brickmerge.history_failed", set_number=set_number, error=str(e))
+            return None
