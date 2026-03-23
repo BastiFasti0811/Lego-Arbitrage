@@ -28,6 +28,7 @@ class InventoryAdd(BaseModel):
     buy_platform: str | None = None
     buy_url: str | None = None
     condition: str = "NEW_SEALED"
+    quantity: int = 1
     notes: str | None = None
 
 
@@ -39,6 +40,7 @@ class InventoryUpdate(BaseModel):
     buy_date: date | None = None
     buy_platform: str | None = None
     condition: str | None = None
+    quantity: int | None = None
     notes: str | None = None
 
 
@@ -60,6 +62,7 @@ class InventoryResponse(BaseModel):
     buy_date: date
     buy_platform: str | None
     condition: str
+    quantity: int
     notes: str | None
     current_market_price: float | None
     market_price_updated_at: datetime | None
@@ -92,6 +95,27 @@ class PortfolioSummary(BaseModel):
 
 
 # ── Routes ────────────────────────────────────────────────
+
+@router.get("/platforms")
+async def list_platforms(session: AsyncSession = Depends(get_session)):
+    """Get all previously used buy/sell platforms for dropdown auto-complete."""
+    result = await session.execute(
+        select(InventoryItem.buy_platform)
+        .where(InventoryItem.buy_platform.is_not(None))
+        .distinct()
+    )
+    buy_platforms = [r[0] for r in result.all() if r[0]]
+
+    result2 = await session.execute(
+        select(InventoryItem.sell_platform)
+        .where(InventoryItem.sell_platform.is_not(None))
+        .distinct()
+    )
+    sell_platforms = [r[0] for r in result2.all() if r[0]]
+
+    all_platforms = sorted(set(buy_platforms + sell_platforms))
+    return all_platforms
+
 
 @router.get("/", response_model=list[InventoryResponse])
 async def list_inventory(

@@ -15,7 +15,13 @@ export default function Inventar() {
   const [lookupLoading, setLookupLoading] = useState(false);
   const [addForm, setAddForm] = useState({
     set_number: "", set_name: "", theme: "", buy_price: "", buy_shipping: "0",
-    buy_date: new Date().toISOString().split("T")[0], buy_platform: "", condition: "NEW_SEALED",
+    buy_date: new Date().toISOString().split("T")[0], buy_platform: "", condition: "NEW_SEALED", quantity: "1",
+  });
+
+  // Platform dropdown data
+  const { data: platforms = [] } = useQuery({
+    queryKey: ["platforms"],
+    queryFn: api.listPlatforms,
   });
 
   // Queries
@@ -62,7 +68,7 @@ export default function Inventar() {
     mutationFn: (data) => api.addInventory(data),
     onSuccess: () => {
       setAddModal(false);
-      setAddForm({ set_number: "", set_name: "", theme: "", buy_price: "", buy_shipping: "0", buy_date: new Date().toISOString().split("T")[0], buy_platform: "", condition: "NEW_SEALED" });
+      setAddForm({ set_number: "", set_name: "", theme: "", buy_price: "", buy_shipping: "0", buy_date: new Date().toISOString().split("T")[0], buy_platform: "", condition: "NEW_SEALED", quantity: "1" });
       queryClient.invalidateQueries({ queryKey: ["inventory"] });
       queryClient.invalidateQueries({ queryKey: ["portfolio"] });
     },
@@ -109,6 +115,7 @@ export default function Inventar() {
       buy_date: item.buy_date,
       buy_platform: item.buy_platform || "",
       condition: item.condition,
+      quantity: String(item.quantity || 1),
       notes: item.notes || "",
     });
   };
@@ -125,6 +132,7 @@ export default function Inventar() {
         buy_date: editForm.buy_date,
         buy_platform: editForm.buy_platform || null,
         condition: editForm.condition,
+        quantity: parseInt(editForm.quantity || "1"),
         notes: editForm.notes || null,
       },
     });
@@ -136,6 +144,7 @@ export default function Inventar() {
       ...addForm,
       buy_price: parseFloat(addForm.buy_price),
       buy_shipping: parseFloat(addForm.buy_shipping || "0"),
+      quantity: parseInt(addForm.quantity || "1"),
     });
   };
 
@@ -221,6 +230,11 @@ export default function Inventar() {
                     <span className="text-lego-yellow font-[family-name:var(--font-mono)] text-sm font-semibold">
                       {item.set_number}
                     </span>
+                    {item.quantity > 1 && (
+                      <span className="bg-lego-blue/20 text-lego-blue text-xs px-1.5 py-0.5 rounded font-[family-name:var(--font-mono)] font-bold">
+                        ×{item.quantity}
+                      </span>
+                    )}
                     {item.sell_signal_active && (
                       <span className="bg-sell-signal/20 text-sell-signal text-xs px-2 py-0.5 rounded-full animate-pulse font-medium">
                         SELL
@@ -366,17 +380,33 @@ export default function Inventar() {
                 </div>
                 <div>
                   <label className="block text-text-muted text-xs mb-1">Plattform</label>
-                  <input type="text" value={editForm.buy_platform} onChange={(e) => setEditForm({ ...editForm, buy_platform: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
+                  <input
+                    type="text"
+                    list="platforms-list"
+                    value={editForm.buy_platform}
+                    onChange={(e) => setEditForm({ ...editForm, buy_platform: e.target.value })}
+                    placeholder="Auswählen oder eingeben..."
+                    className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm"
+                  />
+                  <datalist id="platforms-list">
+                    {platforms.map((p) => <option key={p} value={p} />)}
+                  </datalist>
                 </div>
               </div>
-              <div>
-                <label className="block text-text-muted text-xs mb-1">Zustand</label>
-                <select value={editForm.condition} onChange={(e) => setEditForm({ ...editForm, condition: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm">
-                  <option value="NEW_SEALED">Neu & Versiegelt</option>
-                  <option value="NEW_OPEN">Neu & Geöffnet</option>
-                  <option value="USED_COMPLETE">Gebraucht (komplett)</option>
-                  <option value="USED_INCOMPLETE">Gebraucht (unvollständig)</option>
-                </select>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-text-muted text-xs mb-1">Zustand</label>
+                  <select value={editForm.condition} onChange={(e) => setEditForm({ ...editForm, condition: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm">
+                    <option value="NEW_SEALED">Neu & Versiegelt</option>
+                    <option value="NEW_OPEN">Neu & Geöffnet</option>
+                    <option value="USED_COMPLETE">Gebraucht (komplett)</option>
+                    <option value="USED_INCOMPLETE">Gebraucht (unvollständig)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-text-muted text-xs mb-1">Anzahl</label>
+                  <input type="number" min="1" value={editForm.quantity} onChange={(e) => setEditForm({ ...editForm, quantity: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
+                </div>
               </div>
               <div>
                 <label className="block text-text-muted text-xs mb-1">Notizen</label>
@@ -414,9 +444,20 @@ export default function Inventar() {
                 <input type="number" step="0.01" placeholder="Kaufpreis € *" value={addForm.buy_price} onChange={(e) => setAddForm({ ...addForm, buy_price: e.target.value })} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
                 <input type="number" step="0.01" placeholder="Versand €" value={addForm.buy_shipping} onChange={(e) => setAddForm({ ...addForm, buy_shipping: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <input type="date" value={addForm.buy_date} onChange={(e) => setAddForm({ ...addForm, buy_date: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-                <input type="text" placeholder="Plattform" value={addForm.buy_platform} onChange={(e) => setAddForm({ ...addForm, buy_platform: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
+                <input
+                  type="text"
+                  list="platforms-add-list"
+                  placeholder="Plattform"
+                  value={addForm.buy_platform}
+                  onChange={(e) => setAddForm({ ...addForm, buy_platform: e.target.value })}
+                  className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm"
+                />
+                <datalist id="platforms-add-list">
+                  {platforms.map((p) => <option key={p} value={p} />)}
+                </datalist>
+                <input type="number" min="1" placeholder="Anz." value={addForm.quantity} onChange={(e) => setAddForm({ ...addForm, quantity: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
               </div>
               <div className="flex gap-3 mt-4">
                 <button type="button" onClick={() => setAddModal(false)} className="flex-1 bg-bg-hover text-text-secondary py-2 rounded-lg">Abbrechen</button>

@@ -33,6 +33,7 @@ export const api = {
 
   // Inventory
   listInventory: (params = {}) => request(`/inventory/?${new URLSearchParams(params)}`),
+  listPlatforms: () => request("/inventory/platforms"),
   addInventory: (data) => request("/inventory/", { method: "POST", body: JSON.stringify(data) }),
   updateInventory: (id, data) => request(`/inventory/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   sellInventory: (id, data) => request(`/inventory/${id}/sell`, { method: "POST", body: JSON.stringify(data) }),

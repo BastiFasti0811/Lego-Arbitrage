@@ -32,6 +32,7 @@ class InventoryItem(Base):
     buy_platform: Mapped[str | None] = mapped_column(String(100))
     buy_url: Mapped[str | None] = mapped_column(Text)
     condition: Mapped[str] = mapped_column(String(20), default="NEW_SEALED")
+    quantity: Mapped[int] = mapped_column(Integer, default=1)
     notes: Mapped[str | None] = mapped_column(Text)
 
     # Current valuation (auto-updated by Celery)
