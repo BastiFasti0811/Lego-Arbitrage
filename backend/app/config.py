@@ -9,7 +9,7 @@ class Settings(BaseSettings):
 
     # ── App ──────────────────────────────────────────────
     app_name: str = "LEGO Arbitrage System"
-    app_version: str = "0.1.0"
+    app_version: str = "0.2.0"
     debug: bool = False
     log_level: str = "INFO"
 
