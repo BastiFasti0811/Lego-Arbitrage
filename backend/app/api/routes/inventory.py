@@ -62,7 +62,7 @@ class InventoryResponse(BaseModel):
     buy_date: date
     buy_platform: str | None
     condition: str
-    quantity: int
+    quantity: int = 1
     notes: str | None
     current_market_price: float | None
     market_price_updated_at: datetime | None
@@ -270,6 +270,7 @@ def _to_response(item: InventoryItem) -> InventoryResponse:
         buy_date=item.buy_date,
         buy_platform=item.buy_platform,
         condition=item.condition,
+        quantity=item.quantity or 1,
         notes=item.notes,
         current_market_price=item.current_market_price,
         market_price_updated_at=item.market_price_updated_at,
