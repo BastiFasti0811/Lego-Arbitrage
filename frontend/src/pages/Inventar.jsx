@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import StatCard from "../components/StatCard";
@@ -10,6 +10,7 @@ export default function Inventar() {
   const [sellDate, setSellDate] = useState(new Date().toISOString().split("T")[0]);
   const [sellPlatform, setSellPlatform] = useState("");
   const [addModal, setAddModal] = useState(false);
+  const [lookupLoading, setLookupLoading] = useState(false);
   const [addForm, setAddForm] = useState({
     set_number: "", set_name: "", theme: "", buy_price: "", buy_shipping: "0",
     buy_date: new Date().toISOString().split("T")[0], buy_platform: "", condition: "NEW_SEALED",
@@ -63,6 +64,29 @@ export default function Inventar() {
       data: { sell_price: parseFloat(sellPrice), sell_date: sellDate, sell_platform: sellPlatform || null },
     });
   };
+
+  // Auto-lookup set info when set number changes
+  const handleSetNumberChange = useCallback(async (setNumber) => {
+    setAddForm((prev) => ({ ...prev, set_number: setNumber }));
+    // Auto-lookup when 4-6 digits entered
+    if (/^\d{4,6}$/.test(setNumber.trim())) {
+      setLookupLoading(true);
+      try {
+        const info = await api.lookupSet(setNumber.trim());
+        if (info.found) {
+          setAddForm((prev) => ({
+            ...prev,
+            set_name: info.set_name || prev.set_name,
+            theme: info.theme || prev.theme,
+          }));
+        }
+      } catch {
+        // Lookup failed, user enters manually
+      } finally {
+        setLookupLoading(false);
+      }
+    }
+  }, []);
 
   const handleAdd = (e) => {
     e.preventDefault();
@@ -261,7 +285,12 @@ export default function Inventar() {
           <div className="bg-bg-card border border-border rounded-xl p-6 w-full max-w-md mx-4">
             <h2 className="text-text-primary text-lg font-bold mb-4">Set manuell hinzufügen</h2>
             <form onSubmit={handleAdd} className="space-y-3">
-              <input type="text" placeholder="Set-Nummer *" value={addForm.set_number} onChange={(e) => setAddForm({ ...addForm, set_number: e.target.value })} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
+              <div className="relative">
+                <input type="text" placeholder="Set-Nummer *" value={addForm.set_number} onChange={(e) => handleSetNumberChange(e.target.value)} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
+                {lookupLoading && (
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-lego-yellow text-xs animate-pulse">Suche...</span>
+                )}
+              </div>
               <input type="text" placeholder="Set-Name *" value={addForm.set_name} onChange={(e) => setAddForm({ ...addForm, set_name: e.target.value })} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
               <input type="text" placeholder="Theme" value={addForm.theme} onChange={(e) => setAddForm({ ...addForm, theme: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
               <div className="grid grid-cols-2 gap-3">

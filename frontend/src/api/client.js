@@ -18,6 +18,7 @@ export const api = {
 
   // Analysis
   analyze: (data) => request("/analysis/analyze", { method: "POST", body: JSON.stringify(data) }),
+  lookupSet: (setNumber) => request(`/analysis/lookup/${setNumber}`),
   parseUrl: (url) => request("/analysis/parse-url", { method: "POST", body: JSON.stringify({ url }) }),
   sellerCheck: (sellerUrl) => request("/analysis/seller-check", { method: "POST", body: JSON.stringify({ seller_url: sellerUrl }) }),
   analysisHistory: () => request("/analysis/history"),

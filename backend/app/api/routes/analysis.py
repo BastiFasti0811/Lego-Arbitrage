@@ -24,6 +24,18 @@ logger = structlog.get_logger()
 router = APIRouter()
 
 
+class SetLookupResponse(BaseModel):
+    """Quick set info lookup result."""
+
+    set_number: str
+    set_name: str | None = None
+    theme: str | None = None
+    release_year: int | None = None
+    uvp: float | None = None
+    eol_status: str | None = None
+    found: bool = False
+
+
 class ParseUrlRequest(BaseModel):
     """Request to parse a Kleinanzeigen or other listing URL."""
 
@@ -270,6 +282,34 @@ _analysis_history: list[dict] = []
 async def get_analysis_history():
     """Get recent analysis history (newest first)."""
     return list(reversed(_analysis_history))
+
+
+@router.get("/lookup/{set_number}", response_model=SetLookupResponse)
+async def lookup_set(set_number: str):
+    """Quick set info lookup via BrickMerge.
+
+    Returns set name, theme, release year, UVP — used for auto-fill in forms.
+    """
+    logger.info("lookup.start", set_number=set_number)
+
+    try:
+        from app.scrapers.brickmerge import BrickMergeScraper
+        async with BrickMergeScraper() as scraper:
+            info = await scraper.get_set_info(set_number)
+            if info and info.set_name:
+                return SetLookupResponse(
+                    set_number=set_number,
+                    set_name=info.set_name,
+                    theme=info.theme,
+                    release_year=info.release_year,
+                    uvp=info.uvp_eur,
+                    eol_status=info.eol_status,
+                    found=True,
+                )
+    except Exception as e:
+        logger.warning("lookup.failed", set_number=set_number, error=str(e))
+
+    return SetLookupResponse(set_number=set_number, found=False)
 
 
 @router.post("/parse-url", response_model=ParseUrlResponse)

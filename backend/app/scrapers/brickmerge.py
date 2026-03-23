@@ -19,43 +19,81 @@ class BrickMergeScraper(BaseScraper):
     JB Spielwaren, etc. Good for finding retail deals and UVP comparison.
     """
 
+    async def _fetch_detail_page(self, set_number: str) -> str:
+        """Fetch BrickMerge detail page using ?find= redirect (avoids compression issues)."""
+        import httpx
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept-Encoding": "identity",
+        }
+        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=15.0) as client:
+            r = await client.get(f"{BASE_URL}/?find={set_number}")
+            r.raise_for_status()
+            return r.text
+
     async def get_set_info(self, set_number: str) -> ScrapedSetInfo | None:
-        """Get set info from BrickMerge."""
+        """Get set info from BrickMerge detail page."""
         try:
-            html = await self._fetch(f"{BASE_URL}/?sn={set_number}")
+            html = await self._fetch_detail_page(set_number)
             soup = BeautifulSoup(html, "lxml")
 
-            # Try to find the set name from the page title or heading
-            title_el = soup.select_one("h1, .set-title, title")
+            # Extract from title tag: "LEGO® Technic 42055 Schaufelradbagger (2016) ab 599,99 €..."
+            title_el = soup.select_one("title")
             set_name = None
-            if title_el:
-                text = title_el.get_text(strip=True)
-                # Remove "LEGO" prefix and set number for clean name
-                set_name = re.sub(rf"(?i)lego\s*{set_number}\s*[-–:]\s*", "", text).strip()
-                if not set_name or set_name == text:
-                    set_name = text
-
-            # UVP extraction
-            uvp = None
-            uvp_el = soup.find(string=re.compile(r"UVP|unverbindliche", re.I))
-            if uvp_el:
-                parent = uvp_el.parent if uvp_el.parent else None
-                if parent:
-                    uvp_match = re.search(r"(\d+[.,]\d{2})\s*€", parent.get_text())
-                    if uvp_match:
-                        uvp = float(uvp_match.group(1).replace(",", "."))
-
-            # Theme extraction
             theme = None
-            theme_el = soup.select_one(".theme, .set-theme, [class*=theme]")
-            if theme_el:
-                theme = theme_el.get_text(strip=True)
+            release_year = None
+            uvp = None
+
+            if title_el:
+                title_text = title_el.get_text(strip=True)
+                # Parse: "LEGO® Technic 42055 Schaufelradbagger (2016) ab 599,99 €"
+                name_match = re.search(
+                    rf"LEGO®?\s+(\w[\w\s]*?)\s+{set_number}\s+(.+?)\s*\((\d{{4}})\)",
+                    title_text,
+                )
+                if name_match:
+                    theme = name_match.group(1).strip()
+                    set_name = name_match.group(2).strip()
+                    release_year = int(name_match.group(3))
+
+            # H1 fallback: "LEGO® Technic 42055 Schaufelradbagger"
+            if not set_name:
+                h1 = soup.select_one("h1")
+                if h1:
+                    h1_text = h1.get_text(strip=True)
+                    h1_match = re.search(
+                        rf"LEGO®?\s*(\w[\w\s]*?)\s*{set_number}\s+(.+)",
+                        h1_text,
+                    )
+                    if h1_match:
+                        theme = theme or h1_match.group(1).strip()
+                        set_name = h1_match.group(2).strip()
+
+            # UVP extraction from page text
+            uvp_match = re.search(r"UVP\s*[:.]?\s*(\d+[.,]\d{2})\s*€", html)
+            if uvp_match:
+                uvp = float(uvp_match.group(1).replace(",", "."))
+
+            # EOL status
+            eol_status = None
+            if re.search(r"Auslaufartikel|EOL|End of Life", html, re.I):
+                eol_status = "RETIRING_SOON"
+
+            logger.info(
+                "brickmerge.set_info",
+                set_number=set_number,
+                set_name=set_name,
+                theme=theme,
+                year=release_year,
+            )
 
             return ScrapedSetInfo(
                 set_number=set_number,
                 set_name=set_name,
                 theme=theme,
+                release_year=release_year,
                 uvp_eur=uvp,
+                eol_status=eol_status,
             )
         except Exception as e:
             logger.error("brickmerge.set_info_failed", set_number=set_number, error=str(e))
