@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAppStore } from "../stores/appStore";
 import VerdictBadge from "../components/VerdictBadge";
@@ -11,27 +11,56 @@ const verdictBg = {
   NO_GO: "from-no-go/20 to-no-go/5 border-no-go/30",
 };
 
+const isUrl = (str) => /^https?:\/\//.test(str.trim());
+
 export default function DealChecker() {
   const queryClient = useQueryClient();
   const { setLastAnalysis } = useAppStore();
 
-  // Form state
+  // Smart input — accepts URL or set number
+  const [smartInput, setSmartInput] = useState("");
   const [setNumber, setSetNumber] = useState("");
   const [offerPrice, setOfferPrice] = useState("");
   const [showOptions, setShowOptions] = useState(false);
   const [condition, setCondition] = useState("NEW_SEALED");
   const [shipping, setShipping] = useState("");
   const [boxDamage, setBoxDamage] = useState(false);
+  const [sourceUrl, setSourceUrl] = useState("");
+  const [sourcePlatform, setSourcePlatform] = useState("");
+  const [showHistory, setShowHistory] = useState(false);
 
   // Gekauft modal
   const [showBuyModal, setShowBuyModal] = useState(false);
   const [buyPlatform, setBuyPlatform] = useState("");
   const [buyDate, setBuyDate] = useState(new Date().toISOString().split("T")[0]);
 
+  // URL parsing mutation
+  const parseUrl = useMutation({
+    mutationFn: (url) => api.parseUrl(url),
+    onSuccess: (data) => {
+      if (data.set_number) setSetNumber(data.set_number);
+      if (data.price) setOfferPrice(String(data.price));
+      if (data.condition) setCondition(data.condition);
+      if (data.url) setSourceUrl(data.url);
+      if (data.platform) setSourcePlatform(data.platform);
+      setSmartInput("");
+    },
+  });
+
   // Analysis mutation
   const analyze = useMutation({
     mutationFn: (data) => api.analyze(data),
-    onSuccess: (data) => setLastAnalysis(data),
+    onSuccess: (data) => {
+      setLastAnalysis(data);
+      queryClient.invalidateQueries({ queryKey: ["analysis-history"] });
+    },
+  });
+
+  // Analysis history
+  const { data: history = [] } = useQuery({
+    queryKey: ["analysis-history"],
+    queryFn: () => api.analysisHistory(),
+    staleTime: 10000,
   });
 
   // Add to inventory mutation
@@ -44,6 +73,17 @@ export default function DealChecker() {
     },
   });
 
+  const handleSmartInput = (value) => {
+    setSmartInput(value);
+    // Auto-detect URL on paste
+    if (isUrl(value)) {
+      parseUrl.mutate(value);
+    } else {
+      // Treat as set number
+      setSetNumber(value.replace(/\D/g, ""));
+    }
+  };
+
   const handleAnalyze = (e) => {
     e.preventDefault();
     if (!setNumber || !offerPrice) return;
@@ -53,6 +93,7 @@ export default function DealChecker() {
       condition,
       box_damage: boxDamage,
       purchase_shipping: shipping ? parseFloat(shipping) : null,
+      source_url: sourceUrl || null,
     });
   };
 
@@ -66,9 +107,15 @@ export default function DealChecker() {
       buy_price: result.offer_price,
       buy_shipping: shipping ? parseFloat(shipping) : 0,
       buy_date: buyDate,
-      buy_platform: buyPlatform || null,
+      buy_platform: buyPlatform || sourcePlatform || null,
       condition,
     });
+  };
+
+  const loadFromHistory = (item) => {
+    setSetNumber(item.set_number);
+    setOfferPrice(String(item.offer_price));
+    setShowHistory(false);
   };
 
   const result = analyze.data;
@@ -76,10 +123,82 @@ export default function DealChecker() {
 
   return (
     <div className="max-w-2xl mx-auto">
-      <h1 className="text-2xl font-bold text-text-primary mb-6">Deal Checker</h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold text-text-primary">Deal Checker</h1>
+        {history.length > 0 && (
+          <button
+            onClick={() => setShowHistory(!showHistory)}
+            className="text-text-muted text-sm hover:text-lego-yellow transition-colors flex items-center gap-1"
+          >
+            <span className="font-[family-name:var(--font-mono)]">{history.length}</span> History
+            <span>{showHistory ? "▴" : "▾"}</span>
+          </button>
+        )}
+      </div>
 
-      {/* Input Form */}
+      {/* History Panel */}
+      {showHistory && history.length > 0 && (
+        <div className="bg-bg-card border border-border rounded-xl mb-6 max-h-64 overflow-y-auto">
+          {history.map((item, i) => (
+            <button
+              key={i}
+              onClick={() => loadFromHistory(item)}
+              className="w-full flex items-center justify-between px-4 py-3 hover:bg-bg-hover transition-colors border-b border-border/50 last:border-0 text-left"
+            >
+              <div className="flex items-center gap-3">
+                <VerdictBadge verdict={item.recommendation} size="sm" />
+                <div>
+                  <span className="text-lego-yellow font-[family-name:var(--font-mono)] text-sm">{item.set_number}</span>
+                  <span className="text-text-muted text-sm ml-2">{item.set_name}</span>
+                </div>
+              </div>
+              <div className="text-right">
+                <div className={`font-[family-name:var(--font-mono)] text-sm font-bold ${item.roi_percent >= 20 ? "text-go-star" : item.roi_percent >= 0 ? "text-check" : "text-no-go"}`}>
+                  {item.roi_percent.toFixed(1)}%
+                </div>
+                <div className="text-text-muted text-xs">{item.offer_price}€</div>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Smart Input Form */}
       <form onSubmit={handleAnalyze} className="bg-bg-card border border-border rounded-xl p-6 mb-6">
+        {/* URL/Link Input */}
+        <div className="mb-4">
+          <label className="block text-text-muted text-xs mb-1">
+            Link einfügen (Kleinanzeigen, eBay, Amazon) oder direkt Set-Nummer eingeben
+          </label>
+          <div className="relative">
+            <input
+              type="text"
+              value={smartInput}
+              onChange={(e) => handleSmartInput(e.target.value)}
+              onPaste={(e) => {
+                const pasted = e.clipboardData.getData("text");
+                if (isUrl(pasted)) {
+                  e.preventDefault();
+                  handleSmartInput(pasted);
+                }
+              }}
+              placeholder="https://www.kleinanzeigen.de/s-anzeige/... oder 75192"
+              autoFocus
+              className="w-full bg-bg-primary border border-border rounded-lg px-4 py-3 text-text-primary text-sm placeholder:text-text-muted focus:border-lego-yellow focus:outline-none transition-colors"
+            />
+            {parseUrl.isPending && (
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-lego-yellow text-xs animate-pulse">
+                Parsing...
+              </span>
+            )}
+            {sourceUrl && (
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-go text-xs">
+                ✓ {sourcePlatform}
+              </span>
+            )}
+          </div>
+        </div>
+
         <div className="flex gap-4 mb-4">
           <div className="flex-1">
             <label className="block text-text-muted text-xs mb-1">Set-Nummer</label>
@@ -88,7 +207,6 @@ export default function DealChecker() {
               value={setNumber}
               onChange={(e) => setSetNumber(e.target.value)}
               placeholder="z.B. 75192"
-              autoFocus
               className="w-full bg-bg-primary border border-border rounded-lg px-4 py-3 text-text-primary font-[family-name:var(--font-mono)] text-lg placeholder:text-text-muted focus:border-lego-yellow focus:outline-none transition-colors"
             />
           </div>
@@ -162,9 +280,17 @@ export default function DealChecker() {
           disabled={analyze.isPending || !setNumber || !offerPrice}
           className="w-full bg-lego-yellow text-black font-bold py-3 rounded-lg hover:bg-lego-yellow/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {analyze.isPending ? "Analysiere..." : "Analysieren"}
+          {analyze.isPending ? (
+            <span className="flex items-center justify-center gap-2">
+              <span className="inline-block w-4 h-4 border-2 border-black/30 border-t-black rounded-full animate-spin" />
+              Analysiere... (kann bis zu 30s dauern)
+            </span>
+          ) : "Analysieren"}
         </button>
 
+        {parseUrl.isError && (
+          <p className="text-check text-sm mt-3">URL konnte nicht geparst werden — gib Set-Nummer manuell ein</p>
+        )}
         {analyze.isError && (
           <p className="text-no-go text-sm mt-3">Fehler: {analyze.error.message}</p>
         )}
@@ -302,7 +428,7 @@ export default function DealChecker() {
                 <label className="block text-text-muted text-xs mb-1">Plattform</label>
                 <input
                   type="text"
-                  value={buyPlatform}
+                  value={buyPlatform || sourcePlatform}
                   onChange={(e) => setBuyPlatform(e.target.value)}
                   placeholder="z.B. Kleinanzeigen, eBay, Amazon"
                   className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm"

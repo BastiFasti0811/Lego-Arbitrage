@@ -18,6 +18,8 @@ export const api = {
 
   // Analysis
   analyze: (data) => request("/analysis/analyze", { method: "POST", body: JSON.stringify(data) }),
+  parseUrl: (url) => request("/analysis/parse-url", { method: "POST", body: JSON.stringify({ url }) }),
+  analysisHistory: () => request("/analysis/history"),
 
   // Scout
   scoutQuick: (setNumber) => request(`/scout/quick/${setNumber}`),

@@ -1,6 +1,7 @@
 """Analysis API — run deal analysis on sets or offers."""
 
 import asyncio
+import re
 from datetime import datetime, timezone
 
 import structlog
@@ -16,10 +17,28 @@ from app.scrapers import (
     IdealoScraper,
     LegoComScraper,
 )
-from app.scrapers.base import ScrapedPrice
+from app.scrapers.base import BaseScraper, ScrapedPrice
+from app.scrapers.kleinanzeigen import _parse_ka_price
 
 logger = structlog.get_logger()
 router = APIRouter()
+
+
+class ParseUrlRequest(BaseModel):
+    """Request to parse a Kleinanzeigen or other listing URL."""
+
+    url: str
+
+
+class ParseUrlResponse(BaseModel):
+    """Extracted data from a listing URL."""
+
+    set_number: str | None = None
+    price: float | None = None
+    title: str | None = None
+    condition: str = "NEW_SEALED"
+    platform: str = "UNKNOWN"
+    url: str = ""
 
 
 class AnalyzeRequest(BaseModel):
@@ -30,6 +49,7 @@ class AnalyzeRequest(BaseModel):
     condition: str = "NEW_SEALED"
     box_damage: bool = False
     purchase_shipping: float | None = None
+    source_url: str | None = None  # Original listing URL
     # Optional overrides (if user already knows these)
     set_name: str | None = None
     theme: str | None = None
@@ -176,7 +196,7 @@ async def analyze_offer(request: AnalyzeRequest):
         risk=analysis.risk.total,
     )
 
-    return AnalysisResponse(
+    response = AnalysisResponse(
         set_number=analysis.set_number,
         set_name=analysis.set_name,
         release_year=analysis.release_year,
@@ -203,4 +223,133 @@ async def analyze_offer(request: AnalyzeRequest):
         warnings=analysis.market_consensus.warnings,
         source_prices=analysis.market_consensus.source_prices,
         analyzed_at=analysis.analyzed_at.isoformat(),
+    )
+
+    # Store in analysis history
+    _analysis_history.append(response.model_dump())
+    if len(_analysis_history) > 100:
+        _analysis_history.pop(0)
+
+    return response
+
+
+# ── In-memory analysis history (persisted per server restart) ──
+_analysis_history: list[dict] = []
+
+
+@router.get("/history")
+async def get_analysis_history():
+    """Get recent analysis history (newest first)."""
+    return list(reversed(_analysis_history))
+
+
+@router.post("/parse-url", response_model=ParseUrlResponse)
+async def parse_listing_url(request: ParseUrlRequest):
+    """Parse a Kleinanzeigen/eBay/Amazon URL to extract set number and price.
+
+    Supports:
+    - kleinanzeigen.de listing URLs
+    - ebay.de listing URLs
+    - amazon.de product URLs
+    """
+    url = request.url.strip()
+    logger.info("parse_url.start", url=url)
+
+    platform = "UNKNOWN"
+    if "kleinanzeigen.de" in url:
+        platform = "KLEINANZEIGEN"
+    elif "ebay.de" in url or "ebay.com" in url:
+        platform = "EBAY"
+    elif "amazon.de" in url or "amazon.com" in url:
+        platform = "AMAZON"
+
+    # Try to fetch the page
+    try:
+        async with BaseScraper() as scraper:
+            html = await scraper._fetch(url)
+    except Exception as e:
+        logger.warning("parse_url.fetch_failed", url=url, error=str(e))
+        # Still try to extract from URL pattern
+        set_match = re.search(r"(\d{4,6})", url)
+        return ParseUrlResponse(
+            set_number=set_match.group(1) if set_match else None,
+            platform=platform,
+            url=url,
+        )
+
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, "lxml")
+
+    title = ""
+    price = None
+    set_number = None
+    condition = "NEW_SEALED"
+
+    if platform == "KLEINANZEIGEN":
+        # Extract title
+        title_el = soup.select_one(
+            "#viewad-title, "
+            "[id*=title], "
+            "h1"
+        )
+        title = title_el.get_text(strip=True) if title_el else ""
+
+        # Extract price
+        price_el = soup.select_one(
+            "#viewad-price, "
+            "[id*=price], "
+            "h2[class*=price], "
+            "[class*=price]"
+        )
+        if price_el:
+            price = _parse_ka_price(price_el.get_text(strip=True))
+
+    elif platform == "EBAY":
+        title_el = soup.select_one("h1.x-item-title__mainTitle span, h1[id*=title]")
+        title = title_el.get_text(strip=True) if title_el else ""
+        price_el = soup.select_one("[class*=price] span, .x-price-primary span")
+        if price_el:
+            price_text = price_el.get_text(strip=True)
+            m = re.search(r"([\d.,]+)", price_text.replace(".", "").replace(",", "."))
+            if m:
+                price = float(m.group(1))
+
+    elif platform == "AMAZON":
+        title_el = soup.select_one("#productTitle, #title")
+        title = title_el.get_text(strip=True) if title_el else ""
+        price_el = soup.select_one(".a-price .a-offscreen, #priceblock_ourprice, #price_inside_buybox")
+        if price_el:
+            price_text = price_el.get_text(strip=True)
+            m = re.search(r"([\d.,]+)", price_text.replace(".", "").replace(",", "."))
+            if m:
+                price = float(m.group(1))
+
+    else:
+        title_el = soup.select_one("h1")
+        title = title_el.get_text(strip=True) if title_el else ""
+
+    # Extract LEGO set number from title (4-6 digit number)
+    if title:
+        set_match = re.search(r"\b(\d{4,6})\b", title)
+        if set_match:
+            set_number = set_match.group(1)
+
+        # Detect condition from title
+        title_lower = title.lower()
+        if any(kw in title_lower for kw in ["versiegelt", "sealed", "misb", "ovp", "neu"]):
+            condition = "NEW_SEALED"
+        elif any(kw in title_lower for kw in ["geöffnet", "open", "aufgebaut"]):
+            condition = "NEW_OPEN"
+        elif any(kw in title_lower for kw in ["gebraucht", "used", "bespielt"]):
+            condition = "USED_COMPLETE"
+
+    logger.info("parse_url.done", set_number=set_number, price=price, platform=platform)
+
+    return ParseUrlResponse(
+        set_number=set_number,
+        price=price,
+        title=title,
+        condition=condition,
+        platform=platform,
+        url=url,
     )
