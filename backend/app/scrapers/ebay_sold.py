@@ -101,23 +101,43 @@ class EbaySoldScraper(BaseScraper):
         return ScrapedSetInfo(set_number=set_number)
 
     def _extract_sold_prices(self, soup: BeautifulSoup) -> list[float]:
-        """Extract prices from eBay search results."""
+        """Extract prices from eBay search results.
+
+        Supports both old (.s-item) and new (ul.srp-results > li) eBay layouts.
+        """
         prices = []
-        items = soup.select(".s-item, .srp-results .s-item__wrapper")
 
-        for item in items:
-            # Skip sponsored/ad items
-            if item.select_one(".s-item__ad-badge, [class*=SPONSORED]"):
-                continue
+        # Strategy 1: New eBay layout (2025+) — ul.srp-results > li
+        ul = soup.select_one("ul.srp-results")
+        if ul:
+            items = ul.find_all("li", recursive=False)
+            for item in items:
+                # Skip sponsored/ad items
+                if item.select_one("[class*=SPONSORED], [class*=promoted]"):
+                    continue
 
-            # Get price
-            price_el = item.select_one(".s-item__price, .POSITIVE")
-            if not price_el:
-                continue
+                price_el = item.select_one(
+                    "[class*=price], .BOLD, .s-card__attribute-row"
+                )
+                if not price_el:
+                    continue
 
-            price = _parse_ebay_price(price_el.get_text())
-            if price and 5.0 < price < 10000.0:
-                prices.append(price)
+                price = _parse_ebay_price(price_el.get_text())
+                if price and 5.0 < price < 10000.0:
+                    prices.append(price)
+
+        # Strategy 2: Old eBay layout (fallback)
+        if not prices:
+            items = soup.select(".s-item, .srp-results .s-item__wrapper")
+            for item in items:
+                if item.select_one(".s-item__ad-badge, [class*=SPONSORED]"):
+                    continue
+                price_el = item.select_one(".s-item__price, .POSITIVE")
+                if not price_el:
+                    continue
+                price = _parse_ebay_price(price_el.get_text())
+                if price and 5.0 < price < 10000.0:
+                    prices.append(price)
 
         return prices
 
