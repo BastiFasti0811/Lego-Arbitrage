@@ -35,10 +35,39 @@ class ParseUrlResponse(BaseModel):
 
     set_number: str | None = None
     price: float | None = None
+    shipping: float | None = None
     title: str | None = None
     condition: str = "NEW_SEALED"
     platform: str = "UNKNOWN"
     url: str = ""
+    seller_url: str | None = None
+
+
+class SellerCheckRequest(BaseModel):
+    """Request to check a seller's other LEGO listings."""
+
+    seller_url: str  # Kleinanzeigen seller profile/listings URL
+    max_results: int = 20
+
+
+class SellerListing(BaseModel):
+    """A single listing from a seller."""
+
+    title: str
+    price: float | None = None
+    set_number: str | None = None
+    url: str
+    is_negotiable: bool = False
+
+
+class SellerCheckResponse(BaseModel):
+    """All LEGO listings from a seller."""
+
+    seller_name: str | None = None
+    total_listings: int = 0
+    lego_listings: list[SellerListing] = []
+    total_value: float = 0.0
+    bundle_suggestion: str | None = None
 
 
 class AnalyzeRequest(BaseModel):
@@ -366,8 +395,129 @@ async def parse_listing_url(request: ParseUrlRequest):
     return ParseUrlResponse(
         set_number=set_number,
         price=price,
+        shipping=None,  # Kleinanzeigen renders shipping via JS
         title=title,
         condition=condition,
         platform=platform,
         url=url,
+    )
+
+
+@router.post("/seller-check", response_model=SellerCheckResponse)
+async def check_seller(request: SellerCheckRequest):
+    """Check a Kleinanzeigen seller's other LEGO listings.
+
+    Accepts a seller profile URL or any Kleinanzeigen URL.
+    Scrapes their listings for LEGO items and extracts set numbers + prices.
+    """
+    url = request.seller_url.strip()
+    logger.info("seller_check.start", url=url)
+
+    # Normalize URL: if it's a regular listing, try to find seller link
+    # Typical seller listing URLs:
+    # https://www.kleinanzeigen.de/s-bestandsliste.html?userId=123456
+    # https://www.kleinanzeigen.de/s-anzeigen/USERNAME/s-bestandsliste
+    if "/s-anzeige/" in url and "/s-bestandsliste" not in url:
+        # This is a single listing, not a seller page — inform user
+        raise HTTPException(
+            status_code=400,
+            detail="Bitte den Seller-Profil-Link verwenden (z.B. 'Alle Anzeigen' auf Kleinanzeigen)",
+        )
+
+    from app.scrapers.kleinanzeigen import KleinanzeigenScraper, _parse_ka_price
+
+    lego_listings: list[SellerListing] = []
+    seller_name = None
+    total_listings = 0
+
+    try:
+        async with KleinanzeigenScraper() as scraper:
+            html = await scraper._fetch(url)
+            soup = BeautifulSoup(html, "lxml")
+
+            # Extract seller name from page
+            name_el = soup.select_one(
+                "h1, "
+                "[class*=username], "
+                "[class*=profile-name]"
+            )
+            if name_el:
+                seller_name = name_el.get_text(strip=True)
+
+            # Find all ad items
+            items = soup.select(
+                "[class*=aditem], "
+                "[data-testid*=ad-listitem], "
+                ".ad-listitem, "
+                "article[class*=ad]"
+            )
+            total_listings = len(items)
+
+            for item in items[:request.max_results]:
+                # Title
+                title_el = item.select_one("a[class*=title], [class*=title], h2, h3")
+                if not title_el:
+                    continue
+                title = title_el.get_text(strip=True)
+
+                # Only LEGO items
+                title_lower = title.lower()
+                if "lego" not in title_lower and "duplo" not in title_lower:
+                    continue
+
+                # Price
+                price_el = item.select_one("[class*=price], p[class*=price]")
+                price_text = price_el.get_text(strip=True) if price_el else ""
+                price = _parse_ka_price(price_text) if price_text else None
+                is_negotiable = "VB" in price_text
+
+                # Link
+                link_el = item.select_one("a[href*='/s-anzeige/']")
+                if not link_el:
+                    link_el = title_el if title_el.name == "a" else title_el.find_parent("a")
+                href = link_el.get("href", "") if link_el else ""
+                offer_url = href if href.startswith("http") else f"https://www.kleinanzeigen.de{href}"
+
+                # Extract set number from title
+                set_match = re.search(r"\b(\d{4,6})\b", title)
+                set_number = set_match.group(1) if set_match else None
+
+                lego_listings.append(SellerListing(
+                    title=title,
+                    price=price,
+                    set_number=set_number,
+                    url=offer_url,
+                    is_negotiable=is_negotiable,
+                ))
+
+    except Exception as e:
+        logger.error("seller_check.failed", url=url, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Seller-Check fehlgeschlagen: {str(e)}")
+
+    # Calculate totals and bundle suggestion
+    total_value = sum(l.price for l in lego_listings if l.price)
+    sets_with_numbers = [l for l in lego_listings if l.set_number]
+    bundle_suggestion = None
+
+    if len(lego_listings) >= 2:
+        bundle_suggestion = (
+            f"{len(lego_listings)} LEGO-Angebote gefunden "
+            f"(Gesamtwert: {total_value:.0f}€). "
+            f"Bundle-Verhandlung möglich — bei {len(lego_listings)} Sets "
+            f"Mengenrabatt anfragen!"
+        )
+
+    logger.info(
+        "seller_check.done",
+        seller=seller_name,
+        total=total_listings,
+        lego=len(lego_listings),
+    )
+
+    return SellerCheckResponse(
+        seller_name=seller_name,
+        total_listings=total_listings,
+        lego_listings=lego_listings,
+        total_value=total_value,
+        bundle_suggestion=bundle_suggestion,
     )

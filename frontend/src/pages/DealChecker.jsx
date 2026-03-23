@@ -11,6 +11,16 @@ const verdictBg = {
   NO_GO: "from-no-go/20 to-no-go/5 border-no-go/30",
 };
 
+const SHIPPING_PRESETS = [
+  { label: "Kein Versand", value: 0 },
+  { label: "DHL Päckchen S", value: 3.99 },
+  { label: "DHL Paket", value: 5.49 },
+  { label: "Hermes S", value: 4.50 },
+  { label: "Hermes M", value: 5.50 },
+  { label: "DHL Paket L", value: 7.49 },
+  { label: "Abholung", value: 0 },
+];
+
 const isUrl = (str) => /^https?:\/\//.test(str.trim());
 
 export default function DealChecker() {
@@ -28,6 +38,10 @@ export default function DealChecker() {
   const [sourceUrl, setSourceUrl] = useState("");
   const [sourcePlatform, setSourcePlatform] = useState("");
   const [showHistory, setShowHistory] = useState(false);
+
+  // Seller check
+  const [sellerUrl, setSellerUrl] = useState("");
+  const [showSellerCheck, setShowSellerCheck] = useState(false);
 
   // Gekauft modal
   const [showBuyModal, setShowBuyModal] = useState(false);
@@ -67,6 +81,11 @@ export default function DealChecker() {
       setLastAnalysis(data);
       queryClient.invalidateQueries({ queryKey: ["analysis-history"] });
     },
+  });
+
+  // Seller check mutation
+  const sellerCheck = useMutation({
+    mutationFn: (url) => api.sellerCheck(url),
   });
 
   // Analysis history
@@ -249,42 +268,61 @@ export default function DealChecker() {
         </button>
 
         {showOptions && (
-          <div className="grid grid-cols-3 gap-4 mb-4 p-3 bg-bg-primary rounded-lg">
-            <div>
-              <label className="block text-text-muted text-xs mb-1">Zustand</label>
-              <select
-                value={condition}
-                onChange={(e) => setCondition(e.target.value)}
-                className="w-full bg-bg-card border border-border rounded-lg px-2 py-1.5 text-text-primary text-sm"
-              >
-                <option value="NEW_SEALED">Neu & Versiegelt</option>
-                <option value="NEW_OPEN">Neu & Geöffnet</option>
-                <option value="USED_COMPLETE">Gebraucht (komplett)</option>
-                <option value="USED_INCOMPLETE">Gebraucht (unvollständig)</option>
-              </select>
+          <div className="space-y-3 mb-4 p-3 bg-bg-primary rounded-lg">
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <label className="block text-text-muted text-xs mb-1">Zustand</label>
+                <select
+                  value={condition}
+                  onChange={(e) => setCondition(e.target.value)}
+                  className="w-full bg-bg-card border border-border rounded-lg px-2 py-1.5 text-text-primary text-sm"
+                >
+                  <option value="NEW_SEALED">Neu & Versiegelt</option>
+                  <option value="NEW_OPEN">Neu & Geöffnet</option>
+                  <option value="USED_COMPLETE">Gebraucht (komplett)</option>
+                  <option value="USED_INCOMPLETE">Gebraucht (unvollständig)</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-text-muted text-xs mb-1">Versand</label>
+                <select
+                  value={shipping}
+                  onChange={(e) => setShipping(e.target.value)}
+                  className="w-full bg-bg-card border border-border rounded-lg px-2 py-1.5 text-text-primary text-sm"
+                >
+                  <option value="">Auswählen...</option>
+                  {SHIPPING_PRESETS.map((p) => (
+                    <option key={p.label} value={p.value}>
+                      {p.label} ({p.value.toFixed(2)}€)
+                    </option>
+                  ))}
+                  <option value="custom">Eigener Betrag</option>
+                </select>
+              </div>
+              <div className="flex items-end">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={boxDamage}
+                    onChange={(e) => setBoxDamage(e.target.checked)}
+                    className="accent-lego-yellow"
+                  />
+                  <span className="text-text-secondary text-sm">Box beschädigt</span>
+                </label>
+              </div>
             </div>
-            <div>
-              <label className="block text-text-muted text-xs mb-1">Versand (€)</label>
-              <input
-                type="number"
-                step="0.01"
-                value={shipping}
-                onChange={(e) => setShipping(e.target.value)}
-                placeholder="0.00"
-                className="w-full bg-bg-card border border-border rounded-lg px-2 py-1.5 text-text-primary text-sm font-[family-name:var(--font-mono)]"
-              />
-            </div>
-            <div className="flex items-end">
-              <label className="flex items-center gap-2 cursor-pointer">
+            {shipping === "custom" && (
+              <div className="w-1/3">
+                <label className="block text-text-muted text-xs mb-1">Versandkosten (€)</label>
                 <input
-                  type="checkbox"
-                  checked={boxDamage}
-                  onChange={(e) => setBoxDamage(e.target.checked)}
-                  className="accent-lego-yellow"
+                  type="number"
+                  step="0.01"
+                  onChange={(e) => setShipping(e.target.value)}
+                  placeholder="0.00"
+                  className="w-full bg-bg-card border border-border rounded-lg px-2 py-1.5 text-text-primary text-sm font-[family-name:var(--font-mono)]"
                 />
-                <span className="text-text-secondary text-sm">Box beschädigt</span>
-              </label>
-            </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -413,6 +451,103 @@ export default function DealChecker() {
               📦 Gekauft — ins Inventar aufnehmen
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Seller Check */}
+      {result && (
+        <div className="bg-bg-card border border-border rounded-xl p-6 mt-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-text-primary font-bold">🔍 Seller-Check</h2>
+            <button
+              onClick={() => setShowSellerCheck(!showSellerCheck)}
+              className="text-text-muted text-xs hover:text-lego-yellow transition-colors"
+            >
+              {showSellerCheck ? "▾ Schließen" : "▸ Weitere Angebote des Verkäufers prüfen"}
+            </button>
+          </div>
+
+          {showSellerCheck && (
+            <div>
+              <div className="flex gap-3 mb-4">
+                <input
+                  type="text"
+                  value={sellerUrl}
+                  onChange={(e) => setSellerUrl(e.target.value)}
+                  placeholder='Seller-Profil-URL einfügen (z.B. "Alle Anzeigen" Link)'
+                  className="flex-1 bg-bg-primary border border-border rounded-lg px-4 py-2 text-text-primary text-sm placeholder:text-text-muted focus:border-lego-yellow focus:outline-none"
+                />
+                <button
+                  onClick={() => sellerCheck.mutate(sellerUrl)}
+                  disabled={!sellerUrl || sellerCheck.isPending}
+                  className="bg-lego-blue text-white font-bold px-6 py-2 rounded-lg hover:bg-lego-blue/90 transition-colors disabled:opacity-50 text-sm whitespace-nowrap"
+                >
+                  {sellerCheck.isPending ? "Prüfe..." : "Prüfen"}
+                </button>
+              </div>
+
+              {sellerCheck.isError && (
+                <p className="text-no-go text-sm mb-3">{sellerCheck.error.message}</p>
+              )}
+
+              {sellerCheck.data && (
+                <div>
+                  {sellerCheck.data.bundle_suggestion && (
+                    <div className="bg-go-star/10 border border-go-star/30 rounded-lg p-3 mb-4">
+                      <p className="text-go-star text-sm font-medium">💡 {sellerCheck.data.bundle_suggestion}</p>
+                    </div>
+                  )}
+
+                  <p className="text-text-muted text-xs mb-3">
+                    {sellerCheck.data.lego_listings.length} LEGO-Angebote von {sellerCheck.data.total_listings} Gesamtanzeigen
+                  </p>
+
+                  <div className="space-y-2 max-h-64 overflow-y-auto">
+                    {sellerCheck.data.lego_listings.map((listing, i) => (
+                      <div
+                        key={i}
+                        className="flex items-center justify-between p-3 bg-bg-primary rounded-lg hover:bg-bg-hover transition-colors cursor-pointer"
+                        onClick={() => {
+                          if (listing.set_number) {
+                            setSetNumber(listing.set_number);
+                            if (listing.price) setOfferPrice(String(listing.price));
+                            setSourceUrl(listing.url);
+                            window.scrollTo({ top: 0, behavior: "smooth" });
+                          }
+                        }}
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            {listing.set_number && (
+                              <span className="text-lego-yellow font-[family-name:var(--font-mono)] text-xs">{listing.set_number}</span>
+                            )}
+                            <span className="text-text-secondary text-sm truncate">{listing.title}</span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 ml-3">
+                          {listing.is_negotiable && (
+                            <span className="text-check text-xs">VB</span>
+                          )}
+                          <span className="text-text-primary font-[family-name:var(--font-mono)] text-sm font-bold">
+                            {listing.price ? `${listing.price}€` : "—"}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {sellerCheck.data.total_value > 0 && (
+                    <div className="flex justify-between mt-3 pt-3 border-t border-border/50">
+                      <span className="text-text-muted text-sm">Gesamtwert LEGO</span>
+                      <span className="text-lego-yellow font-[family-name:var(--font-mono)] font-bold">
+                        {sellerCheck.data.total_value.toFixed(0)}€
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
