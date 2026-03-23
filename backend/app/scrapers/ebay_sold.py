@@ -61,9 +61,19 @@ class EbaySoldScraper(BaseScraper):
     - Calculate median, filter outliers
     """
 
-    def _build_sold_url(self, set_number: str, set_name: str = "") -> str:
-        """Build eBay search URL for sold items."""
-        query = f"LEGO {set_number} neu versiegelt"
+    def _build_sold_url(self, set_number: str, broad: bool = False) -> str:
+        """Build eBay search URL for sold items.
+
+        Args:
+            broad: If True, search without "neu versiegelt" filter
+                   (useful for older sets with fewer sealed sales)
+        """
+        if broad:
+            query = f"LEGO {set_number}"
+            condition = ""  # All conditions
+        else:
+            query = f"LEGO {set_number} neu versiegelt"
+            condition = f"&LH_ItemCondition=1000"  # New only
         params = (
             f"_nkw={query.replace(' ', '+')}"
             f"&LH_Complete=1"  # Completed
@@ -71,18 +81,17 @@ class EbaySoldScraper(BaseScraper):
             f"&LH_PrefLoc=1"  # Germany
             f"&_sop=13"  # Sort: newest first
             f"&rt=nc"
-            f"&LH_ItemCondition=1000"  # New
+            f"{condition}"
         )
         return f"{EBAY_BASE}/sch/i.html?{params}"
 
     def _build_active_url(self, set_number: str) -> str:
         """Build eBay search URL for active listings (Buy It Now)."""
-        query = f"LEGO {set_number} neu versiegelt"
+        query = f"LEGO {set_number}"
         params = (
             f"_nkw={query.replace(' ', '+')}"
             f"&LH_PrefLoc=1"  # Germany
             f"&LH_BIN=1"  # Buy It Now
-            f"&LH_ItemCondition=1000"  # New
             f"&_sop=15"  # Sort: price + shipping lowest
         )
         return f"{EBAY_BASE}/sch/i.html?{params}"
@@ -91,30 +100,50 @@ class EbaySoldScraper(BaseScraper):
         """eBay doesn't provide structured set info — return minimal."""
         return ScrapedSetInfo(set_number=set_number)
 
+    def _extract_sold_prices(self, soup: BeautifulSoup) -> list[float]:
+        """Extract prices from eBay search results."""
+        prices = []
+        items = soup.select(".s-item, .srp-results .s-item__wrapper")
+
+        for item in items:
+            # Skip sponsored/ad items
+            if item.select_one(".s-item__ad-badge, [class*=SPONSORED]"):
+                continue
+
+            # Get price
+            price_el = item.select_one(".s-item__price, .POSITIVE")
+            if not price_el:
+                continue
+
+            price = _parse_ebay_price(price_el.get_text())
+            if price and 5.0 < price < 10000.0:
+                prices.append(price)
+
+        return prices
+
     async def get_price(self, set_number: str) -> ScrapedPrice | None:
-        """Get market price from eBay sold items (median of last 60 days)."""
+        """Get market price from eBay sold items (median of last 60 days).
+
+        Strategy:
+        1. First try "LEGO {set_number} neu versiegelt" (new sealed)
+        2. If too few results, retry with broader "LEGO {set_number}" search
+        """
         try:
-            url = self._build_sold_url(set_number)
+            # Attempt 1: Narrow search (new sealed)
+            url = self._build_sold_url(set_number, broad=False)
             html = await self._fetch(url)
             soup = BeautifulSoup(html, "lxml")
+            prices = self._extract_sold_prices(soup)
+            search_type = "new_sealed"
 
-            # Extract sold prices from result items
-            prices = []
-            items = soup.select(".s-item, .srp-results .s-item__wrapper")
-
-            for item in items:
-                # Skip sponsored/ad items
-                if item.select_one(".s-item__ad-badge, [class*=SPONSORED]"):
-                    continue
-
-                # Get price
-                price_el = item.select_one(".s-item__price, .POSITIVE")
-                if not price_el:
-                    continue
-
-                price = _parse_ebay_price(price_el.get_text())
-                if price and 5.0 < price < 10000.0:
-                    prices.append(price)
+            # Attempt 2: Broad search if too few results
+            if len(prices) < 3:
+                logger.info("ebay_sold.broadening_search", set_number=set_number, narrow_count=len(prices))
+                url = self._build_sold_url(set_number, broad=True)
+                html = await self._fetch(url)
+                soup = BeautifulSoup(html, "lxml")
+                prices = self._extract_sold_prices(soup)
+                search_type = "all_conditions"
 
             if len(prices) < 3:
                 logger.warning("ebay_sold.too_few_results", set_number=set_number, count=len(prices))
@@ -132,7 +161,7 @@ class EbaySoldScraper(BaseScraper):
                 sold_count=len(prices),
                 source_url=url,
                 is_reliable=len(prices) >= 5,
-                notes=f"Median from {len(prices)} sold items (last 60d, outliers filtered)",
+                notes=f"Median from {len(prices)} sold items ({search_type}, outliers filtered)",
             )
         except Exception as e:
             logger.error("ebay_sold.price_failed", set_number=set_number, error=str(e))
