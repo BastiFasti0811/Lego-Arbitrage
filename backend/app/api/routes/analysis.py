@@ -46,6 +46,8 @@ class ParseUrlResponse(BaseModel):
     """Extracted data from a listing URL."""
 
     set_number: str | None = None
+    set_numbers: list[str] = []
+    is_konvolut: bool = False
     price: float | None = None
     shipping: float | None = None
     title: str | None = None
@@ -332,20 +334,18 @@ async def parse_listing_url(request: ParseUrlRequest):
     elif "amazon.de" in url or "amazon.com" in url:
         platform = "AMAZON"
 
-    # First: try to extract set number from URL slug (fast, no HTTP needed)
+    # First: try to extract set numbers from URL slug (fast, no HTTP needed)
     # Kleinanzeigen URLs look like: /s-anzeige/lego-naboo-starfighter-7877/2994338498-23-3902
-    url_set_number = None
+    url_set_numbers: list[str] = []
     slug_match = re.search(r"/([^/]*lego[^/]*)/", url, re.IGNORECASE)
     if slug_match:
         slug = slug_match.group(1)
-        num_match = re.search(r"(\d{4,6})", slug)
-        if num_match:
-            url_set_number = num_match.group(1)
-    if not url_set_number:
-        # Fallback: any 4-6 digit number in the URL
-        num_match = re.search(r"(\d{4,6})", url)
-        if num_match:
-            url_set_number = num_match.group(1)
+        url_set_numbers = re.findall(r"\b(\d{4,6})\b", slug)
+    if not url_set_numbers:
+        # Fallback: any 4-6 digit numbers in the URL path (before query string)
+        url_path = url.split("?")[0]
+        url_set_numbers = re.findall(r"\b(\d{4,6})\b", url_path)
+    url_set_number = url_set_numbers[0] if url_set_numbers else None
 
     # Try to fetch the page for more details
     try:
@@ -354,8 +354,11 @@ async def parse_listing_url(request: ParseUrlRequest):
             html = await scraper._fetch(url)
     except Exception as e:
         logger.warning("parse_url.fetch_failed", url=url, error=str(e))
+        all_set_numbers = list(dict.fromkeys(url_set_numbers))  # deduplicate, preserve order
         return ParseUrlResponse(
             set_number=url_set_number,
+            set_numbers=all_set_numbers,
+            is_konvolut=len(all_set_numbers) > 1,
             platform=platform,
             url=url,
         )
@@ -411,11 +414,12 @@ async def parse_listing_url(request: ParseUrlRequest):
         title_el = soup.select_one("h1")
         title = title_el.get_text(strip=True) if title_el else ""
 
-    # Extract LEGO set number from title (4-6 digit number)
+    # Extract LEGO set numbers from title (4-6 digit numbers)
+    title_set_numbers: list[str] = []
     if title:
-        set_match = re.search(r"\b(\d{4,6})\b", title)
-        if set_match:
-            set_number = set_match.group(1)
+        title_set_numbers = re.findall(r"\b(\d{4,6})\b", title)
+        if title_set_numbers:
+            set_number = title_set_numbers[0]
 
         # Detect condition from title
         title_lower = title.lower()
@@ -426,20 +430,181 @@ async def parse_listing_url(request: ParseUrlRequest):
         elif any(kw in title_lower for kw in ["gebraucht", "used", "bespielt"]):
             condition = "USED_COMPLETE"
 
+    # Merge set numbers from title and URL, deduplicate preserving order
+    all_set_numbers = list(dict.fromkeys(title_set_numbers + url_set_numbers))
+
     # Fallback: use set number extracted from URL if HTML parsing didn't find one
     if not set_number and url_set_number:
         set_number = url_set_number
 
-    logger.info("parse_url.done", set_number=set_number, price=price, platform=platform)
+    is_konvolut = len(all_set_numbers) > 1
+
+    logger.info(
+        "parse_url.done",
+        set_number=set_number,
+        set_numbers=all_set_numbers,
+        is_konvolut=is_konvolut,
+        price=price,
+        platform=platform,
+    )
 
     return ParseUrlResponse(
         set_number=set_number,
+        set_numbers=all_set_numbers,
+        is_konvolut=is_konvolut,
         price=price,
         shipping=None,  # Kleinanzeigen renders shipping via JS
         title=title,
         condition=condition,
         platform=platform,
         url=url,
+    )
+
+
+class AnalyzeMultiRequest(BaseModel):
+    """Request to analyze a Konvolut (multi-set bundle) deal."""
+
+    set_numbers: list[str]
+    total_price: float
+    condition: str = "NEW_SEALED"
+    box_damage: bool = False
+    purchase_shipping: float | None = None
+
+
+class MultiAnalysisResponse(BaseModel):
+    """Combined analysis result for a Konvolut."""
+
+    results: list[AnalysisResponse]
+    summary: dict  # total_market_value, total_investment, combined_roi, recommendation
+    price_allocation: dict[str, float]  # how total_price was split per set
+
+
+@router.post("/analyze-multi", response_model=MultiAnalysisResponse)
+async def analyze_multi(request: AnalyzeMultiRequest):
+    """Analyze a Konvolut (multi-set bundle) deal.
+
+    Looks up UVP for each set, allocates the total price proportionally,
+    then runs full analysis on each set in parallel.
+    """
+    if not request.set_numbers:
+        raise HTTPException(status_code=400, detail="set_numbers darf nicht leer sein")
+
+    logger.info(
+        "analyze_multi.start",
+        set_numbers=request.set_numbers,
+        total_price=request.total_price,
+    )
+
+    # ── Step 1: Look up UVP for each set via BrickMerge (parallel) ──
+    async def lookup_uvp(set_number: str) -> tuple[str, float | None]:
+        try:
+            from app.scrapers.brickmerge import BrickMergeScraper
+
+            async with BrickMergeScraper() as scraper:
+                info = await scraper.get_set_info(set_number)
+                if info and info.uvp_eur:
+                    return set_number, info.uvp_eur
+        except Exception as e:
+            logger.warning("analyze_multi.uvp_lookup_failed", set_number=set_number, error=str(e))
+        return set_number, None
+
+    uvp_results = await asyncio.gather(*[lookup_uvp(sn) for sn in request.set_numbers])
+    uvp_map: dict[str, float | None] = dict(uvp_results)
+
+    # ── Step 2: Allocate total_price proportionally based on UVP ──
+    known_uvps = {sn: uvp for sn, uvp in uvp_map.items() if uvp is not None}
+    price_allocation: dict[str, float] = {}
+
+    if known_uvps and len(known_uvps) == len(request.set_numbers):
+        # All UVPs known — proportional allocation
+        total_uvp = sum(known_uvps.values())
+        for sn in request.set_numbers:
+            price_allocation[sn] = round(request.total_price * (known_uvps[sn] / total_uvp), 2)
+    elif known_uvps:
+        # Some UVPs known — proportional for known, equal split for unknown
+        unknown_count = len(request.set_numbers) - len(known_uvps)
+        total_known_uvp = sum(known_uvps.values())
+        # Estimate average UVP for unknowns
+        avg_uvp = total_known_uvp / len(known_uvps)
+        total_estimated_uvp = total_known_uvp + avg_uvp * unknown_count
+        for sn in request.set_numbers:
+            uvp_val = known_uvps.get(sn, avg_uvp)
+            price_allocation[sn] = round(request.total_price * (uvp_val / total_estimated_uvp), 2)
+    else:
+        # No UVPs known — equal split
+        equal_share = round(request.total_price / len(request.set_numbers), 2)
+        for sn in request.set_numbers:
+            price_allocation[sn] = equal_share
+
+    # ── Step 3: Run analyze_offer for each set (parallel) ──
+    async def analyze_single(set_number: str, allocated_price: float) -> AnalysisResponse:
+        req = AnalyzeRequest(
+            set_number=set_number,
+            offer_price=allocated_price,
+            condition=request.condition,
+            box_damage=request.box_damage,
+            purchase_shipping=None,  # shipping applies to the bundle, not per-set
+        )
+        return await analyze_offer(req)
+
+    analysis_results = await asyncio.gather(
+        *[analyze_single(sn, price_allocation[sn]) for sn in request.set_numbers],
+        return_exceptions=True,
+    )
+
+    # Filter out failed analyses
+    valid_results: list[AnalysisResponse] = []
+    for i, result in enumerate(analysis_results):
+        if isinstance(result, Exception):
+            logger.warning(
+                "analyze_multi.single_failed",
+                set_number=request.set_numbers[i],
+                error=str(result),
+            )
+        else:
+            valid_results.append(result)
+
+    if not valid_results:
+        raise HTTPException(status_code=500, detail="Keine der Analysen war erfolgreich")
+
+    # ── Step 4: Calculate summary ──
+    total_market_value = sum(r.market_price for r in valid_results)
+    total_investment = request.total_price + (request.purchase_shipping or 0.0)
+    total_selling_costs = sum(r.total_selling_costs for r in valid_results)
+    total_net_profit = total_market_value - total_investment - total_selling_costs
+    combined_roi = (total_net_profit / total_investment * 100) if total_investment > 0 else 0.0
+
+    # Overall recommendation logic
+    recommendations = [r.recommendation for r in valid_results]
+    if any(r in ("GO_STAR", "GO") for r in recommendations):
+        overall_recommendation = "GO"
+    elif all(r == "NO_GO" for r in recommendations):
+        overall_recommendation = "NO_GO"
+    else:
+        overall_recommendation = "CHECK"
+
+    summary = {
+        "total_market_value": round(total_market_value, 2),
+        "total_investment": round(total_investment, 2),
+        "total_selling_costs": round(total_selling_costs, 2),
+        "total_net_profit": round(total_net_profit, 2),
+        "combined_roi": round(combined_roi, 1),
+        "recommendation": overall_recommendation,
+        "num_sets_analyzed": len(valid_results),
+        "num_sets_total": len(request.set_numbers),
+    }
+
+    logger.info(
+        "analyze_multi.complete",
+        num_sets=len(valid_results),
+        combined_roi=summary["combined_roi"],
+        recommendation=overall_recommendation,
+    )
+
+    return MultiAnalysisResponse(
+        results=valid_results,
+        summary=summary,
+        price_allocation=price_allocation,
     )
 
 
