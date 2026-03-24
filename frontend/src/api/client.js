@@ -6,6 +6,10 @@ async function request(path, options = {}) {
     ...options,
   });
   if (!res.ok) {
+    if (res.status === 401 && !path.startsWith("/auth/login")) {
+      window.location.href = "/login";
+      return;
+    }
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail || `API Error ${res.status}`);
   }
@@ -13,6 +17,11 @@ async function request(path, options = {}) {
 }
 
 export const api = {
+  // Auth
+  login: (password) => request("/auth/login", { method: "POST", body: JSON.stringify({ password }) }),
+  logout: () => request("/auth/logout", { method: "POST" }),
+  checkAuth: () => request("/auth/check"),
+
   // Health
   health: () => fetch("/health").then((r) => r.json()),
 
@@ -21,6 +30,7 @@ export const api = {
   lookupSet: (setNumber) => request(`/analysis/lookup/${setNumber}`),
   parseUrl: (url) => request("/analysis/parse-url", { method: "POST", body: JSON.stringify({ url }) }),
   sellerCheck: (sellerUrl) => request("/analysis/seller-check", { method: "POST", body: JSON.stringify({ seller_url: sellerUrl }) }),
+  analyzeMulti: (data) => request("/analysis/analyze-multi", { method: "POST", body: JSON.stringify(data) }),
   analysisHistory: () => request("/analysis/history"),
 
   // Scout
@@ -38,8 +48,14 @@ export const api = {
   updateInventory: (id, data) => request(`/inventory/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   sellInventory: (id, data) => request(`/inventory/${id}/sell`, { method: "POST", body: JSON.stringify(data) }),
   deleteInventory: (id) => request(`/inventory/${id}`, { method: "DELETE" }),
+  getSellLinks: (id) => request(`/inventory/${id}/sell-links`),
   portfolioSummary: () => request("/inventory/summary"),
   inventoryHistory: () => request("/inventory/history"),
+
+  // Settings
+  listSettings: (category) => request(`/settings/${category ? `?category=${category}` : ""}`),
+  updateSettings: (updates) => request("/settings/", { method: "PUT", body: JSON.stringify(updates) }),
+  testTelegram: () => request("/settings/test-telegram", { method: "POST" }),
 
   // Watchlist
   listWatchlist: () => request("/watchlist/"),
