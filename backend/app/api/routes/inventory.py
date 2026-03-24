@@ -1,6 +1,7 @@
 """Inventory API — portfolio tracking and sell-signal management."""
 
 from datetime import date, datetime, timezone
+from urllib.parse import urlencode
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -94,6 +95,14 @@ class PortfolioSummary(BaseModel):
     sell_signals_active: int
 
 
+class SellLinksResponse(BaseModel):
+    ebay_url: str
+    ebay_title: str
+    kleinanzeigen_text: str
+    suggested_price: float
+    suggested_title: str
+
+
 # ── Routes ────────────────────────────────────────────────
 
 @router.get("/platforms")
@@ -155,6 +164,45 @@ async def add_inventory_item(data: InventoryAdd, session: AsyncSession = Depends
     await session.refresh(item)
     logger.info("inventory.added", set_number=data.set_number, buy_price=data.buy_price)
     return _to_response(item)
+
+
+@router.get("/{item_id}/sell-links", response_model=SellLinksResponse)
+async def get_sell_links(item_id: int, session: AsyncSession = Depends(get_session)):
+    """Generate pre-filled sell links for eBay and Kleinanzeigen."""
+    item = await session.get(InventoryItem, item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    # Suggested price = current market price or 1.5x buy price
+    suggested_price = item.current_market_price or (item.buy_price * 1.5)
+
+    # eBay sell URL with pre-filled params
+    title = f"LEGO {item.set_number} {item.set_name} NEU OVP"
+    if len(title) > 80:
+        title = title[:77] + "..."
+
+    ebay_params = {
+        "keyword": f"LEGO {item.set_number}",
+        "LH_BIN": "1",  # Buy It Now
+    }
+    ebay_url = f"https://www.ebay.de/sell/create?{urlencode(ebay_params)}"
+
+    # Kleinanzeigen text for clipboard
+    kleinanzeigen_text = (
+        f"{title}\n\n"
+        f"LEGO Set {item.set_number} - {item.set_name}\n"
+        f"Zustand: Neu & Originalverpackt (OVP)\n"
+        f"Preis: {suggested_price:.0f}\u20ac\n\n"
+        f"Versand m\u00f6glich."
+    )
+
+    return SellLinksResponse(
+        ebay_url=ebay_url,
+        ebay_title=title,
+        kleinanzeigen_text=kleinanzeigen_text,
+        suggested_price=round(suggested_price, 2),
+        suggested_title=title,
+    )
 
 
 @router.patch("/{item_id}", response_model=InventoryResponse)
