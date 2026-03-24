@@ -1,7 +1,82 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import StatCard from "../components/StatCard";
+
+function SellDropdown({ item, onMarkSold }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [toast, setToast] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const fetchAndAct = async (action) => {
+    setLoading(true);
+    try {
+      const links = await api.getSellLinks(item.id);
+      if (action === "ebay") {
+        window.open(links.ebay_url, "_blank");
+      } else if (action === "kleinanzeigen") {
+        await navigator.clipboard.writeText(links.kleinanzeigen_text);
+        setToast(true);
+        setTimeout(() => setToast(false), 2000);
+        window.open("https://www.kleinanzeigen.de/p-anzeige-aufgeben.html", "_blank");
+      }
+    } catch (err) {
+      console.error("Sell links error:", err);
+    } finally {
+      setLoading(false);
+      setOpen(false);
+    }
+  };
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className={`text-xs px-3 py-1.5 rounded-lg font-bold transition-colors bg-lego-yellow text-black hover:bg-lego-yellow/90 ${
+          item.sell_signal_active ? "animate-pulse shadow-[0_0_8px_rgba(255,206,0,0.6)]" : ""
+        }`}
+      >
+        {loading ? "..." : "Verkaufen \u25BE"}
+      </button>
+      {toast && (
+        <div className="absolute left-0 -top-8 bg-go-star text-black text-xs font-bold px-2 py-1 rounded shadow-lg whitespace-nowrap z-50">
+          ✓ Text kopiert!
+        </div>
+      )}
+      {open && (
+        <div className="absolute left-0 top-full mt-1 bg-bg-primary border border-border rounded-lg shadow-xl z-50 min-w-[200px]">
+          <button
+            onClick={() => fetchAndAct("ebay")}
+            className="w-full text-left text-sm text-text-primary px-3 py-2 hover:bg-bg-hover rounded-t-lg transition-colors"
+          >
+            Auf eBay einstellen
+          </button>
+          <button
+            onClick={() => fetchAndAct("kleinanzeigen")}
+            className="w-full text-left text-sm text-text-primary px-3 py-2 hover:bg-bg-hover transition-colors"
+          >
+            Auf Kleinanzeigen einstellen
+          </button>
+          <button
+            onClick={() => { setOpen(false); onMarkSold(); }}
+            className="w-full text-left text-sm text-text-primary px-3 py-2 hover:bg-bg-hover rounded-b-lg transition-colors border-t border-border/50"
+          >
+            Als verkauft markieren
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function Inventar() {
   const queryClient = useQueryClient();
@@ -280,12 +355,10 @@ export default function Inventar() {
                 >
                   Bearbeiten
                 </button>
-                <button
-                  onClick={() => { setSellModal(item); setSellPrice(""); setSellPlatform(""); }}
-                  className="bg-go-star/10 text-go-star text-xs px-3 py-1.5 rounded-lg hover:bg-go-star/20 transition-colors"
-                >
-                  Verkauft
-                </button>
+                <SellDropdown
+                  item={item}
+                  onMarkSold={() => { setSellModal(item); setSellPrice(""); setSellPlatform(""); }}
+                />
                 <button
                   onClick={() => { if (confirm(`${item.set_name} entfernen?`)) deleteMutation.mutate(item.id); }}
                   className="bg-no-go/10 text-no-go text-xs px-3 py-1.5 rounded-lg hover:bg-no-go/20 transition-colors"
