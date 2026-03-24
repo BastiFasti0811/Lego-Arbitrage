@@ -6,6 +6,7 @@ from app.models.inventory import InventoryItem, InventoryStatus
 from app.models.offer import Offer, OfferCondition, OfferPlatform, OfferStatus
 from app.models.price import PriceRecord, PriceSource
 from app.models.set import EOLStatus, LegoSet, SetCategory, ThemeTier
+from app.models.settings import AppSetting
 
 __all__ = [
     "Base",
@@ -26,4 +27,5 @@ __all__ = [
     "WatchlistItem",
     "InventoryItem",
     "InventoryStatus",
+    "AppSetting",
 ]

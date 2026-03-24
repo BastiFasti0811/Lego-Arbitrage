@@ -10,7 +10,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from app.config import settings
-from app.api.routes import sets, analysis, scout, watchlist, feedback, inventory, auth
+from app.api.routes import sets, analysis, scout, watchlist, feedback, inventory, auth, settings as settings_routes
 from app.api.routes.auth import verify_cookie, COOKIE_NAME
 
 logger = structlog.get_logger()
@@ -68,6 +68,7 @@ app.include_router(scout.router, prefix="/api/scout", tags=["Scout"])
 app.include_router(watchlist.router, prefix="/api/watchlist", tags=["Watchlist"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["Feedback"])
 app.include_router(inventory.router, prefix="/api/inventory", tags=["Inventory"])
+app.include_router(settings_routes.router, prefix="/api/settings", tags=["Settings"])
 
 
 @app.get("/health")
