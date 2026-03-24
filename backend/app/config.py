@@ -90,6 +90,10 @@ class Settings(BaseSettings):
     smtp_password: str | None = None
     notification_email: str | None = None
 
+    # ── Dashboard Auth ─────────────────────────────────────
+    dashboard_password: str = "lego2026"
+    session_secret: str = "change-me-in-production"
+
     # ── Scheduling ───────────────────────────────────────
     scrape_interval_hours: int = 6  # How often to run full scrape
     analysis_interval_minutes: int = 30  # How often to analyze new offers

@@ -6,8 +6,12 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+
 from app.config import settings
-from app.api.routes import sets, analysis, scout, watchlist, feedback, inventory
+from app.api.routes import sets, analysis, scout, watchlist, feedback, inventory, auth
+from app.api.routes.auth import verify_cookie, COOKIE_NAME
 
 logger = structlog.get_logger()
 
@@ -36,7 +40,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Auth Middleware ────────────────────────────────────────
+PUBLIC_PATHS = {"/api/auth/login", "/health", "/", "/docs", "/openapi.json"}
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    path = request.url.path
+    # Allow public paths and non-API routes
+    if path in PUBLIC_PATHS or not path.startswith("/api/"):
+        return await call_next(request)
+    # Check cookie on all other /api/* routes
+    cookie = request.cookies.get(COOKIE_NAME)
+    if not verify_cookie(cookie):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Not authenticated"},
+        )
+    return await call_next(request)
+
+
 # ── Routes ───────────────────────────────────────────────
+app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 app.include_router(sets.router, prefix="/api/sets", tags=["Sets"])
 app.include_router(analysis.router, prefix="/api/analysis", tags=["Analysis"])
 app.include_router(scout.router, prefix="/api/scout", tags=["Scout"])
