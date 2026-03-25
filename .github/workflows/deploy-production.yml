@@ -75,4 +75,4 @@ jobs:
       - name: Deploy on Hetzner server
         run: |
           ssh "${{ vars.PROD_USER || 'deploy' }}@${{ vars.PROD_HOST || '178.104.97.121' }}" \
-            "cd '${{ vars.PROD_APP_DIR || '/srv/lego-arbitrage' }}' && bash scripts/deploy-prod.sh"
+            "cd '${{ vars.PROD_APP_DIR || '/srv/lego-arbitrage' }}' && git pull --ff-only && bash scripts/deploy-prod.sh"
