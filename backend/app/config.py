@@ -91,8 +91,8 @@ class Settings(BaseSettings):
     notification_email: str | None = None
 
     # ── Dashboard Auth ─────────────────────────────────────
-    dashboard_password: str = "lego2026"
-    session_secret: str = "change-me-in-production"
+    dashboard_password: str | None = None
+    session_secret: str | None = None
 
     # ── Scheduling ───────────────────────────────────────
     scrape_interval_hours: int = 6  # How often to run full scrape

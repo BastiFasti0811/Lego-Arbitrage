@@ -1,58 +1,52 @@
-# LEGO Arbitrage — Projekt-Wissensdatenbank
+# LEGO Arbitrage - Projekt-Wissensdatenbank
 
 ## Projekt-Status
-- **Stand**: Phase 1 — Grundgerüst implementiert (März 2026)
-- **Python-Dateien**: 40 Files
-- **Implementiert**: Models, Scrapers (7x), Engine (ROI/Risk/Decision), API, Docker, Telegram, Celery
-- **Masterplan**: LEGO-Arbitrage-Masterplan.html
-- **Owner**: Sebastian (sebastian.willkommen@conuti.de)
+- Stand: Arbeitsstand Maerz 2026
+- Implementiert: Backend API, Scraper, ROI-/Risk-Engine, Telegram, Celery, Dashboard
+- Masterplan: LEGO-Arbitrage-Masterplan.html
+- Owner: Sebastian (sebastian.willkommen@conuti.de)
 
-## Architektur-Entscheidungen
-- **Autonomie-Level**: Voll-autonomer AI-Agent mit Human-in-the-Loop für Käufe
-- **Hosting**: Hetzner Cloud (CX31, 4 vCPU, 8GB RAM, ~15€/Monat)
-- **Backend**: Python 3.12, FastAPI, Celery, PostgreSQL + TimescaleDB, Redis
-- **AI**: Claude API (Anthropic) + LangGraph + XGBoost für Preis-Prediction
-- **Frontend**: Next.js 14, TypeScript, Tailwind CSS
-- **Scraping**: Playwright (JS-heavy), httpx + BeautifulSoup (statische Seiten)
+## Architektur
+- Hosting: Hetzner Cloud auf `spm-prod-01` in `NBG1`
+- Deployment: GitHub als Source of Truth plus separater Produktionsserver
+- Backend: Python 3.12, FastAPI, SQLAlchemy, Celery, PostgreSQL, Redis
+- Frontend: Vite, React 19, React Router, TanStack Query
+- Reverse Proxy: Caddy in Produktion, lokales `nginx` nur fuer den Dev-Stack
+- Scraping: Playwright, httpx und BeautifulSoup
 
-## Datenquellen (7 Scraper implementiert)
-1. BrickEconomy — Globale Marktpreise, Growth%, EOL-Status
-2. BrickMerge — Deutsche Retailpreise, Shop-Angebote
-3. eBay.de Sold Items — Tatsächliche Verkaufspreise (Median, Outlier-Filter)
-4. Kleinanzeigen.de — Privatangebote, oft günstiger
-5. Idealo.de — Preisvergleich, Verfügbarkeit
-6. LEGO.com — EOL-Status Check
-7. Amazon.de — Marketplace-Preise, Third-Party Seller, Pricing Errors
+## Produktlogik
+- Einzelanalysen laufen ueber `/api/analysis/analyze`.
+- Scout-Scans und der Live-Feed nutzen `/api/scout/*`.
+- Watchlist, Inventory, History und Settings sind ueber das React-Dashboard erreichbar.
+- Telegram-Settings werden zur Laufzeit aus der Datenbank gelesen.
+- Der Live-Feed verwendet gecachte Angebotsdaten statt dauernd neue Live-Scrapes.
 
-## API-Endpunkte
-- POST /api/analysis/analyze — Einzelanalyse mit vollständiger ROI/Risk-Bewertung
-- POST /api/scout/scan — Proaktive Deal-Suche über mehrere Sets
-- GET /api/scout/quick/{set_number} — Schnell-Scan eines Sets
-- GET/POST /api/sets/ — Set-Datenbank CRUD
-- GET/POST/DELETE /api/watchlist/ — Watchlist Management
-- POST /api/feedback/ — Deal-Ergebnisse loggen (Self-Improvement Loop)
-- GET /api/feedback/performance — System-Performance-Metriken
+## Datenquellen
+1. BrickEconomy
+2. BrickMerge
+3. eBay.de Sold Items
+4. Kleinanzeigen.de
+5. Idealo.de
+6. LEGO.com
+7. Amazon.de
 
-## Automatisierung (Celery Beat)
-- Alle 6h: Watchlist-Sets scrapen (alle Plattformen)
-- Alle 30min: Neue Angebote analysieren + Telegram-Alert bei GO-Deals
-- Täglich 20:00: Zusammenfassung per Telegram
-- Wöchentlich Sonntag 03:00: ML-Model Retraining (Phase 3)
+## Automatisierung
+- Wiederkehrende Jobs laufen ueber Celery Worker und Celery Beat.
+- Watchlist-Sets werden regelmaessig gescraped und neu analysiert.
+- Telegram-Alerts und taegliche Zusammenfassungen sind vorbereitet.
 
-## Geschätzte Kosten
-- Infrastruktur: ~21€/Monat (Hetzner + Storage + Domain)
-- Proxies: ~15€/Monat (Bright Data Residential)
-- AI: ~30-80€/Monat (Claude API, variabel)
-- **Gesamt: ~60-110€/Monat**
+## Infrastruktur-Hinweise
+- Produktionsdaten liegen auf `/mnt/HC_Volume_105179687`.
+- Der produktionsnahe Stack ist in `docker-compose.prod.yml` beschrieben.
+- Die Caddy-Konfiguration liegt in `infra/Caddyfile`.
+- Das Deploy-Runbook liegt in `docs/deploy.md`.
 
 ## Sicherheitshinweise
-- Scraping-Legalität: AGB der Plattformen beachten, robots.txt respektieren
-- Keine automatischen Käufe ohne User-Bestätigung
-- API-Keys nur in Vault/Docker Secrets, nie im Code
-- Tägliche DB-Backups, 30-Tage Retention
+- Keine bekannten Default-Credentials fuer Dashboard oder Session-Secret verwenden.
+- Serverzugriff nur per SSH-Key und bevorzugt ueber den `deploy`-User.
+- Secrets bleiben in `.env`-Dateien ausserhalb von Git.
 
-## Offene Fragen
-- [ ] Bright Data vs. alternative Proxy-Anbieter evaluieren
-- [ ] Genauere Claude API Kosten-Schätzung nach ersten Tests
-- [ ] Kleinanzeigen Captcha-Handling Strategie finalisieren
-- [ ] DSGVO-Konformität prüfen (Preisdaten = keine personenbezogenen Daten?)
+## Offene Themen
+- Testsuite ausbauen, aktuell gibt es kaum automatisierte Backend-Tests.
+- Proxy-/Captcha-Strategie fuer schwierigere Quellen schaerfen.
+- Backup-Strategie fuer das Hetzner-Volume dokumentieren und testen.

@@ -54,11 +54,11 @@ export default function History() {
     .map(([month, profit]) => ({ month, profit: Math.round(profit) }));
 
   // Cumulative profit
-  let cumulative = 0;
-  const cumulativeData = monthlyData.map((d) => {
-    cumulative += d.profit;
-    return { month: d.month, total: Math.round(cumulative) };
-  });
+  const cumulativeData = monthlyData.reduce((acc, current) => {
+    const previousTotal = acc.length > 0 ? acc[acc.length - 1].total : 0;
+    acc.push({ month: current.month, total: Math.round(previousTotal + current.profit) });
+    return acc;
+  }, []);
 
   const profitColor = (val) => (val > 0 ? "text-go-star" : val < 0 ? "text-no-go" : "text-text-primary");
 

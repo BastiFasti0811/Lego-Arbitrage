@@ -36,6 +36,11 @@ export const api = {
   // Scout
   scoutQuick: (setNumber) => request(`/scout/quick/${setNumber}`),
   scoutScan: (data) => request("/scout/scan", { method: "POST", body: JSON.stringify(data) }),
+  feedList: (setNumbers) =>
+    request("/scout/scan", {
+      method: "POST",
+      body: JSON.stringify({ set_numbers: setNumbers, min_roi: 0, cached_only: true }),
+    }),
 
   // Sets
   listSets: (params) => request(`/sets/?${new URLSearchParams(params)}`),

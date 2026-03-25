@@ -1,17 +1,17 @@
-"""Inventory valuation and sell-signal detection — runs via Celery Beat."""
+"""Inventory valuation and sell-signal detection tasks."""
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime
 
 import structlog
 from sqlalchemy import select
 
+from app.engine.market_consensus import calculate_consensus
 from app.models.base import async_session
 from app.models.inventory import InventoryItem, InventoryStatus
-from app.models.set import SetCategory
+from app.models.set import LegoSet, SetCategory
 from app.scrapers import PRICE_SCRAPERS
 from app.scrapers.brickmerge import BrickMergeScraper
-from app.engine.market_consensus import calculate_consensus
 from app.tasks.celery_app import celery_app
 
 logger = structlog.get_logger()
@@ -44,14 +44,15 @@ def _run_async(coro):
 def _categorize_set(release_year: int | None = None) -> str:
     if not release_year:
         return SetCategory.SWEET_SPOT.value
-    age = 2026 - release_year
+
+    age = datetime.now().year - release_year
     if age <= 1:
         return SetCategory.FRESH.value
-    elif age <= 4:
+    if age <= 4:
         return SetCategory.SWEET_SPOT.value
-    elif age <= 7:
+    if age <= 7:
         return SetCategory.ESTABLISHED.value
-    elif age <= 11:
+    if age <= 11:
         return SetCategory.VINTAGE.value
     return SetCategory.LEGACY.value
 
@@ -59,13 +60,11 @@ def _categorize_set(release_year: int | None = None) -> str:
 def _detect_price_peak(history: list[dict] | None) -> bool:
     if not history or len(history) < 5:
         return False
-    prices = [h["price"] for h in history]
-    recent = prices[-5:]
+
+    recent = [entry["price"] for entry in history[-5:]]
     peak = max(recent)
-    peak_idx = recent.index(peak)
-    if peak_idx < len(recent) - 1 and recent[-1] < peak * 0.97:
-        return True
-    return False
+    peak_index = recent.index(peak)
+    return peak_index < len(recent) - 1 and recent[-1] < peak * 0.97
 
 
 @celery_app.task(name="app.tasks.update_inventory.update_inventory_valuations")
@@ -75,13 +74,14 @@ def update_inventory_valuations() -> dict:
 
 async def _update_valuations_async() -> dict:
     summary = {"updated": 0, "sell_signals": 0, "errors": 0}
-    now = datetime.utcnow()  # naive datetime — matches DB column type
+    now = datetime.utcnow()  # naive datetime to match current DB column setup
 
     async with async_session() as session:
+        set_result = await session.execute(select(LegoSet.set_number, LegoSet.release_year))
+        release_year_by_set = {set_number: release_year for set_number, release_year in set_result.all()}
+
         result = await session.execute(
-            select(InventoryItem).where(
-                InventoryItem.status == InventoryStatus.HOLDING.value
-            )
+            select(InventoryItem).where(InventoryItem.status == InventoryStatus.HOLDING.value)
         )
         items = result.scalars().all()
 
@@ -109,18 +109,19 @@ async def _update_valuations_async() -> dict:
                 item.current_market_price = round(consensus.consensus_price, 2)
                 item.market_price_updated_at = now
                 item.unrealized_profit = round(consensus.consensus_price - total_invested, 2)
-                item.unrealized_roi_percent = round(
-                    ((consensus.consensus_price - total_invested) / total_invested) * 100, 1
-                ) if total_invested > 0 else 0
+                item.unrealized_roi_percent = (
+                    round(((consensus.consensus_price - total_invested) / total_invested) * 100, 1)
+                    if total_invested > 0
+                    else 0
+                )
 
-                category = _categorize_set()
+                category = _categorize_set(release_year_by_set.get(item.set_number))
                 roi_target = ROI_TARGETS.get(category, 25.0)
                 optimal_months = OPTIMAL_HOLDING.get(category, 12.0)
                 holding_days = (now.date() - item.buy_date).days
                 holding_months = holding_days / 30.44
 
-                signals = []
-
+                signals: list[str] = []
                 if item.unrealized_roi_percent and item.unrealized_roi_percent >= roi_target:
                     signals.append(f"ROI {item.unrealized_roi_percent:.0f}% hat Zielwert {roi_target:.0f}% erreicht")
 
@@ -128,10 +129,10 @@ async def _update_valuations_async() -> dict:
                     signals.append(f"Optimale Haltedauer ({optimal_months:.0f} Monate) erreicht")
 
                 try:
-                    async with BrickMergeScraper() as bm:
-                        history = await bm.get_price_history(item.set_number)
+                    async with BrickMergeScraper() as brickmerge:
+                        history = await brickmerge.get_price_history(item.set_number)
                         if _detect_price_peak(history):
-                            signals.append("Marktpreis am Hochpunkt — Trend dreht")
+                            signals.append("Marktpreis am Hochpunkt - Trend dreht")
                 except Exception:
                     pass
 
@@ -144,10 +145,9 @@ async def _update_valuations_async() -> dict:
                     item.sell_signal_reason = None
 
                 summary["updated"] += 1
-
-            except Exception as e:
+            except Exception as exc:
                 summary["errors"] += 1
-                logger.error("inventory.update_failed", set_number=item.set_number, error=str(e))
+                logger.error("inventory.update_failed", set_number=item.set_number, error=str(exc))
 
         await session.commit()
 

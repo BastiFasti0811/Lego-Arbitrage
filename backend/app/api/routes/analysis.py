@@ -2,13 +2,13 @@
 
 import asyncio
 import re
-from datetime import datetime, timezone
 
 import structlog
+from bs4 import BeautifulSoup
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.engine.decision_engine import AnalysisResult, analyze_deal
+from app.engine.decision_engine import analyze_deal
 from app.scrapers import (
     AmazonScraper,
     BrickEconomyScraper,
@@ -17,7 +17,7 @@ from app.scrapers import (
     IdealoScraper,
     LegoComScraper,
 )
-from app.scrapers.base import BaseScraper, ScrapedPrice
+from app.scrapers.base import ScrapedPrice
 from app.scrapers.kleinanzeigen import _parse_ka_price
 
 logger = structlog.get_logger()
@@ -363,7 +363,6 @@ async def parse_listing_url(request: ParseUrlRequest):
             url=url,
         )
 
-    from bs4 import BeautifulSoup
     soup = BeautifulSoup(html, "lxml")
 
     title = ""
@@ -700,8 +699,7 @@ async def check_seller(request: SellerCheckRequest):
         raise HTTPException(status_code=500, detail=f"Seller-Check fehlgeschlagen: {str(e)}")
 
     # Calculate totals and bundle suggestion
-    total_value = sum(l.price for l in lego_listings if l.price)
-    sets_with_numbers = [l for l in lego_listings if l.set_number]
+    total_value = sum(listing.price for listing in lego_listings if listing.price)
     bundle_suggestion = None
 
     if len(lego_listings) >= 2:

@@ -4,14 +4,12 @@ Sends alerts when profitable deals are found.
 Supports inline buttons for quick actions.
 """
 
-import asyncio
-
 import structlog
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 
-from app.config import settings
 from app.engine.decision_engine import AnalysisResult, Recommendation
+from app.runtime_settings import as_bool, get_settings_map
 
 logger = structlog.get_logger()
 
@@ -86,17 +84,24 @@ async def send_deal_alert(analysis: AnalysisResult, offer_url: str | None = None
 
     Returns True if sent successfully.
     """
-    if not settings.telegram_bot_token or not settings.telegram_chat_id:
+    runtime_settings = await get_settings_map(
+        ["telegram_bot_token", "telegram_chat_id", "telegram_alert_on_go_only"]
+    )
+    bot_token = runtime_settings.get("telegram_bot_token")
+    chat_id = runtime_settings.get("telegram_chat_id")
+    alert_on_go_only = as_bool(runtime_settings.get("telegram_alert_on_go_only"), default=True)
+
+    if not bot_token or not chat_id:
         logger.warning("telegram.not_configured")
         return False
 
     # Filter: only send GO recommendations if configured
-    if settings.telegram_alert_on_go_only:
+    if alert_on_go_only:
         if analysis.recommendation not in (Recommendation.GO_STAR, Recommendation.GO):
             return False
 
     try:
-        bot = Bot(token=settings.telegram_bot_token)
+        bot = Bot(token=bot_token)
         message = _format_deal_message(analysis)
 
         # Inline keyboard with action buttons
@@ -110,7 +115,7 @@ async def send_deal_alert(analysis: AnalysisResult, offer_url: str | None = None
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await bot.send_message(
-            chat_id=settings.telegram_chat_id,
+            chat_id=chat_id,
             text=message,
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=reply_markup,
@@ -131,11 +136,15 @@ async def send_daily_summary(
     total_potential_profit: float = 0,
 ) -> bool:
     """Send daily summary via Telegram."""
-    if not settings.telegram_bot_token or not settings.telegram_chat_id:
+    runtime_settings = await get_settings_map(["telegram_bot_token", "telegram_chat_id"])
+    bot_token = runtime_settings.get("telegram_bot_token")
+    chat_id = runtime_settings.get("telegram_chat_id")
+
+    if not bot_token or not chat_id:
         return False
 
     try:
-        bot = Bot(token=settings.telegram_bot_token)
+        bot = Bot(token=bot_token)
 
         msg = (
             f"📋 *LEGO Arbitrage — Tagesbericht*\n"
@@ -154,7 +163,7 @@ async def send_daily_summary(
             )
 
         await bot.send_message(
-            chat_id=settings.telegram_chat_id,
+            chat_id=chat_id,
             text=msg,
             parse_mode=ParseMode.MARKDOWN,
         )

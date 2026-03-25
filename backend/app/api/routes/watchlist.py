@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import WatchlistItem, LegoSet, get_session
+from app.models import LegoSet, WatchlistItem, get_session
 
 router = APIRouter()
 
@@ -35,7 +35,7 @@ async def list_watchlist(session: AsyncSession = Depends(get_session)):
     result = await session.execute(
         select(WatchlistItem, LegoSet)
         .join(LegoSet, WatchlistItem.set_id == LegoSet.id)
-        .where(WatchlistItem.is_active == True)
+        .where(WatchlistItem.is_active)
     )
     items = []
     for wl, ls in result.all():
@@ -61,7 +61,10 @@ async def add_to_watchlist(data: WatchlistAdd, session: AsyncSession = Depends(g
     )
     lego_set = result.scalar_one_or_none()
     if not lego_set:
-        raise HTTPException(status_code=404, detail=f"Set {data.set_number} not found in database. Add it first via /api/sets/")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Set {data.set_number} not found in database. Add it first via /api/sets/",
+        )
 
     item = WatchlistItem(
         set_id=lego_set.id,

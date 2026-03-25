@@ -20,7 +20,7 @@ export default function LiveFeed() {
   // Fetch deals from scout
   const { data, isLoading, dataUpdatedAt } = useQuery({
     queryKey: ["feed", setNumbers],
-    queryFn: () => api.scoutScan({ set_numbers: setNumbers, min_roi: 0 }),
+    queryFn: () => api.feedList(setNumbers),
     enabled: setNumbers.length > 0,
     refetchInterval: 30_000,
   });

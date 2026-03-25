@@ -1,0 +1,23 @@
+{$CADDY_SITE_ADDRESS:http://178.104.97.121} {
+    encode gzip zstd
+
+    handle /api/* {
+        reverse_proxy api:8000
+    }
+
+    handle /docs* {
+        reverse_proxy api:8000
+    }
+
+    handle /openapi.json {
+        reverse_proxy api:8000
+    }
+
+    handle /health {
+        reverse_proxy api:8000
+    }
+
+    handle {
+        reverse_proxy frontend:80
+    }
+}

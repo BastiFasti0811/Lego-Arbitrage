@@ -1,12 +1,12 @@
 """Inventory API — portfolio tracking and sell-signal management."""
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from urllib.parse import urlencode
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import get_session
@@ -156,6 +156,7 @@ async def add_inventory_item(data: InventoryAdd, session: AsyncSession = Depends
         buy_platform=data.buy_platform,
         buy_url=data.buy_url,
         condition=data.condition,
+        quantity=data.quantity,
         notes=data.notes,
         status=InventoryStatus.HOLDING.value,
     )

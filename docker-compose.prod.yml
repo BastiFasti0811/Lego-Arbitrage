@@ -1,0 +1,122 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: lego-postgres-prod
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lego_arbitrage}
+      POSTGRES_USER: ${POSTGRES_USER:-lego}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ${DATA_ROOT}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-lego} -d ${POSTGRES_DB:-lego_arbitrage}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: lego-redis-prod
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - ${DATA_ROOT}/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: ../infra/Dockerfile.backend
+    container_name: lego-api-prod
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    env_file: ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-lego}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lego_arbitrage}
+      DATABASE_URL_SYNC: postgresql://${POSTGRES_USER:-lego}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lego_arbitrage}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: ../infra/Dockerfile.backend
+    container_name: lego-worker-prod
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
+    env_file: ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-lego}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lego_arbitrage}
+      DATABASE_URL_SYNC: postgresql://${POSTGRES_USER:-lego}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lego_arbitrage}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  beat:
+    build:
+      context: ./backend
+      dockerfile: ../infra/Dockerfile.backend
+    container_name: lego-beat-prod
+    command: celery -A app.tasks.celery_app beat --loglevel=info
+    env_file: ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-lego}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lego_arbitrage}
+      DATABASE_URL_SYNC: postgresql://${POSTGRES_USER:-lego}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lego_arbitrage}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.frontend
+    container_name: lego-frontend-prod
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: lego-caddy-prod
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      CADDY_SITE_ADDRESS: ${CADDY_SITE_ADDRESS}
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:
