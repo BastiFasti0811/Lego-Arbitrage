@@ -48,6 +48,11 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      default:
+      shared_caddy:
+        aliases:
+          - lego-api
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
       interval: 30s
@@ -95,28 +100,19 @@ services:
     build:
       context: .
       dockerfile: infra/Dockerfile.frontend
+      args:
+        VITE_APP_BASENAME: /lego
+        VITE_API_BASE: /lego/api
+        VITE_HEALTH_URL: /lego/health
     container_name: lego-frontend-prod
+    networks:
+      default:
+      shared_caddy:
+        aliases:
+          - lego-frontend
     restart: unless-stopped
 
-  caddy:
-    image: caddy:2-alpine
-    container_name: lego-caddy-prod
-    ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      CADDY_SITE_ADDRESS: ${CADDY_SITE_ADDRESS}
-    volumes:
-      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      api:
-        condition: service_healthy
-      frontend:
-        condition: service_started
-    restart: unless-stopped
-
-volumes:
-  caddy_data:
-  caddy_config:
+networks:
+  shared_caddy:
+    external: true
+    name: smartprepmeal_default

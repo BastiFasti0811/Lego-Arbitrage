@@ -46,9 +46,11 @@ function AuthGuard({ children }) {
 }
 
 export default function App() {
+  const basename = (import.meta.env.BASE_URL || "/").replace(/\/$/, "") || "/";
+
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
+      <BrowserRouter basename={basename}>
         <Suspense
           fallback={
             <div className="min-h-screen bg-bg-primary flex items-center justify-center">

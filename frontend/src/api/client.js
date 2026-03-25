@@ -1,4 +1,7 @@
-const BASE = "/api";
+const APP_BASENAME = (import.meta.env.VITE_APP_BASENAME || "").replace(/\/$/, "");
+const BASE = import.meta.env.VITE_API_BASE || (APP_BASENAME ? `${APP_BASENAME}/api` : "/api");
+const HEALTH_URL = import.meta.env.VITE_HEALTH_URL || (APP_BASENAME ? `${APP_BASENAME}/health` : "/health");
+const LOGIN_PATH = APP_BASENAME ? `${APP_BASENAME}/login` : "/login";
 
 async function request(path, options = {}) {
   const res = await fetch(`${BASE}${path}`, {
@@ -7,7 +10,7 @@ async function request(path, options = {}) {
   });
   if (!res.ok) {
     if (res.status === 401 && !path.startsWith("/auth/login")) {
-      window.location.href = "/login";
+      window.location.href = LOGIN_PATH;
       return;
     }
     const err = await res.json().catch(() => ({ detail: res.statusText }));
@@ -23,7 +26,7 @@ export const api = {
   checkAuth: () => request("/auth/check"),
 
   // Health
-  health: () => fetch("/health").then((r) => r.json()),
+  health: () => fetch(HEALTH_URL).then((r) => r.json()),
 
   // Analysis
   analyze: (data) => request("/analysis/analyze", { method: "POST", body: JSON.stringify(data) }),

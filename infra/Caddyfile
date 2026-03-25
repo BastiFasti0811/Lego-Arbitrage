@@ -1,23 +1,29 @@
-{$CADDY_SITE_ADDRESS:http://178.104.97.121} {
+:80 {
     encode gzip zstd
 
-    handle /api/* {
-        reverse_proxy api:8000
+    redir /lego /lego/
+
+    handle /lego/api/* {
+        uri strip_prefix /lego
+        reverse_proxy lego-api:8000
     }
 
-    handle /docs* {
-        reverse_proxy api:8000
+    handle /lego/docs* {
+        uri strip_prefix /lego
+        reverse_proxy lego-api:8000
     }
 
-    handle /openapi.json {
-        reverse_proxy api:8000
+    handle /lego/openapi.json {
+        uri strip_prefix /lego
+        reverse_proxy lego-api:8000
     }
 
-    handle /health {
-        reverse_proxy api:8000
+    handle /lego/health {
+        uri strip_prefix /lego
+        reverse_proxy lego-api:8000
     }
 
-    handle {
-        reverse_proxy frontend:80
+    handle_path /lego/* {
+        reverse_proxy lego-frontend:80
     }
 }

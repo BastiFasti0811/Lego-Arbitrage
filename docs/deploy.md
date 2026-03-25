@@ -9,8 +9,12 @@ user and keep the server as a runtime target instead of an editing machine.
 
 - GitHub remains the source of truth for code, history and rollback.
 - The Hetzner server runs the containers and persistent data only.
-- Production uses [docker-compose.prod.yml](../docker-compose.prod.yml) and
-  [infra/Caddyfile](../infra/Caddyfile).
+- Production uses [docker-compose.prod.yml](../docker-compose.prod.yml).
+- On `spm-prod-01`, the host already has a shared Caddy instance at
+  `/opt/SmartPrepMeal/Caddyfile`.
+- The LEGO routes from [infra/Caddyfile](../infra/Caddyfile) are meant to be
+  merged into that host-level Caddy config instead of starting a second
+  port-80/443 proxy container.
 - Local development can continue to use the existing `docker-compose.yml`
   with the local `nginx` proxy.
 
@@ -85,7 +89,7 @@ Recommended GitHub environment setup:
 ## Required Config Split
 
 - `.env.prod`: host-level Compose values such as `DATA_ROOT`,
-  `POSTGRES_PASSWORD` and `CADDY_SITE_ADDRESS`
+  `POSTGRES_PASSWORD`
 - `backend/.env`: application secrets and runtime settings such as dashboard
   auth, Telegram token defaults, AI keys and scraper config
 
@@ -107,12 +111,8 @@ bash scripts/deploy-prod.sh
 
 ```bash
 docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f --tail=200
-curl -sS http://127.0.0.1/health
+curl -sS http://127.0.0.1/lego/health
 ```
-
-- Without a domain, keep `CADDY_SITE_ADDRESS=http://178.104.97.121`.
-- After the DNS A record points to `178.104.97.121`, switch
-  `CADDY_SITE_ADDRESS` to the real domain so Caddy can terminate HTTPS.
 
 ## Rollback
 

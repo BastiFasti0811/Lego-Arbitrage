@@ -21,13 +21,9 @@ fi
 
 git pull --ff-only
 
-# Update the application services first, then recycle Caddy separately so
-# repeat deployments do not hit a transient port-80 bind conflict.
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --build --remove-orphans \
   postgres redis api worker beat frontend
-docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" rm -sf caddy >/dev/null 2>&1 || true
-docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --no-deps caddy
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
-curl -fsS http://127.0.0.1/health > /dev/null
+docker exec lego-api-prod curl -fsS http://127.0.0.1:8000/health > /dev/null
 
 echo "Production deploy finished successfully."

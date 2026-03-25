@@ -19,7 +19,7 @@
 
 - Local development stack: [docker-compose.yml](../docker-compose.yml)
 - Production stack: [docker-compose.prod.yml](../docker-compose.prod.yml)
-- Production reverse proxy config: [infra/Caddyfile](../infra/Caddyfile)
+- Shared-Caddy route snippet: [infra/Caddyfile](../infra/Caddyfile)
 - Production runbook: [docs/deploy.md](./deploy.md)
 - GitHub deployment workflow: [deploy-production.yml](../.github/workflows/deploy-production.yml)
 
@@ -66,5 +66,7 @@ To avoid Git Credential Manager picking the wrong identity, prefer remotes that 
 ## Current Alignment Status
 
 - The repository keeps the local `nginx`-based stack for development only.
-- Production is now documented and wired through `docker-compose.prod.yml` plus `infra/Caddyfile`.
-- This keeps local work lightweight while matching the real Hetzner/Caddy rollout path.
+- Production now runs the LEGO app stack through `docker-compose.prod.yml` and
+  plugs into the already existing host-level Caddy on `spm-prod-01`.
+- This keeps local work lightweight while matching the real Hetzner/Caddy
+  rollout path.
