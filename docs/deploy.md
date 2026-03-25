@@ -4,6 +4,8 @@
 
 Run production from GitHub on the Hetzner host `spm-prod-01` via the `deploy`
 user and keep the server as a runtime target instead of an editing machine.
+The current source-of-truth repo intentionally remains the private GitHub repo
+`BastiFasti0811/Lego-Arbitrage`.
 
 ## Recommended Topology
 
@@ -60,8 +62,8 @@ git remote set-url origin git@github.com:BastiFasti0811/Lego-Arbitrage.git
 ssh -T git@github.com
 ```
 
-- If the canonical repo later moves into the company account, only the remote URL
-  and deploy key target need to change.
+- If the canonical repo ever moves later, only the remote URL and deploy key
+  target need to change. No such move is planned right now.
 
 ## GitHub Actions Setup
 
@@ -126,6 +128,7 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
 
 - Private account: `BastiFasti0811`
 - Work account: `conuti-sebastian-willkommen`
+- Canonical repo today: `BastiFasti0811/Lego-Arbitrage`
 
 For local development, use remotes that clearly target the intended GitHub
 account so Git Credential Manager does not silently reuse the wrong identity.

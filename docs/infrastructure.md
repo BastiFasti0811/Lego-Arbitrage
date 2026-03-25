@@ -49,8 +49,10 @@ Yes, it makes sense to keep the source in GitHub and run production on a separat
 
 - GitHub should stay the source of truth for code history, review, rollback and backups.
 - The Hetzner host should stay the runtime target, not the place where code is manually edited long term.
-- For a business project, the canonical repo should ideally live in a company-owned GitHub account or org.
-- Until the company repo exists, the private repo under `BastiFasti0811` is acceptable, but it should be mirrored or transferred later.
+- The current canonical repo intentionally stays on the private GitHub account
+  `BastiFasti0811`.
+- A move into a company-owned GitHub account or org is optional and should only
+  happen if the team explicitly decides to change ownership later.
 - Use the `deploy` user for rollouts; keep `root` for emergency/admin work only.
 - A deploy key or machine credential is cleaner on the server than reusing a developer login.
 
@@ -60,6 +62,7 @@ This machine currently uses a private-account remote pattern and there are two G
 
 - Private: `BastiFasti0811`
 - Work: `conuti-sebastian-willkommen`
+- Canonical repo today: `BastiFasti0811/Lego-Arbitrage`
 
 To avoid Git Credential Manager picking the wrong identity, prefer remotes that clearly target the intended account and keep deploy credentials separated from local developer credentials.
 
