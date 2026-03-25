@@ -24,6 +24,17 @@ git pull --ff-only
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --build --remove-orphans \
   postgres redis api worker beat frontend
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
-docker exec lego-api-prod curl -fsS http://127.0.0.1:8000/health > /dev/null
 
-echo "Production deploy finished successfully."
+for attempt in {1..30}; do
+  if docker exec lego-api-prod curl -fsS http://127.0.0.1:8000/health > /dev/null; then
+    echo "API healthcheck passed."
+    echo "Production deploy finished successfully."
+    exit 0
+  fi
+
+  sleep 2
+done
+
+echo "API healthcheck did not pass within 60 seconds." >&2
+docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" logs --tail=100 api >&2
+exit 1
