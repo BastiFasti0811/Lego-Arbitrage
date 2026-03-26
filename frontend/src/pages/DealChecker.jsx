@@ -20,6 +20,31 @@ const ICON_EXTERNAL = "\u2197";
 const formatMoney = (value, digits = 2) => `${Number(value).toFixed(digits)}${EURO}`;
 const formatAnalyzedAt = (value) =>
   new Date(value).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" });
+const referenceLabelMap = {
+  LEGO_UVP: "LEGO UVP",
+  MARKT_KONSENS: "Markt-Konsens",
+  ANGEBOT_PREIS: "Angebotspreis",
+};
+
+function describeLearning(stats) {
+  if (!stats?.completed_deals) {
+    return "Sobald echte Verkäufe vorliegen, kalibriert sich die ROI-Logik mit deinen Ergebnissen.";
+  }
+
+  if (stats.avg_roi_deviation == null) {
+    return `${stats.completed_deals} Verkäufe erfasst. Für die Kalibrierung fehlen noch genug Vergleichswerte.`;
+  }
+
+  if (stats.avg_roi_deviation < -2) {
+    return `Bisher war das System im Schnitt ${Math.abs(stats.avg_roi_deviation).toFixed(1)} ROI-Punkte zu optimistisch.`;
+  }
+
+  if (stats.avg_roi_deviation > 2) {
+    return `Bisher war das System im Schnitt ${stats.avg_roi_deviation.toFixed(1)} ROI-Punkte zu konservativ.`;
+  }
+
+  return `Bisher liegen Prognose und Realität im Schnitt nur ${Math.abs(stats.avg_roi_deviation).toFixed(1)} ROI-Punkte auseinander.`;
+}
 
 const SHIPPING_PRESETS = [
   { label: "Kein Versand", value: 0 },
@@ -149,6 +174,12 @@ export default function DealChecker() {
     queryKey: ["analysis-history"],
     queryFn: () => api.analysisHistory(),
     staleTime: 10000,
+  });
+
+  const { data: feedbackPerformance } = useQuery({
+    queryKey: ["feedback-performance"],
+    queryFn: () => api.feedbackPerformance(),
+    staleTime: 30000,
   });
 
   // Add to inventory mutation
@@ -434,6 +465,9 @@ export default function DealChecker() {
   const result = selectedHistoryItem || analyze.data;
   const multiResult = analyzeMulti.data;
   const bg = result ? verdictBg[result.recommendation] || verdictBg.NO_GO : "";
+  const referenceLabel = result?.reference_label
+    ? (referenceLabelMap[result.reference_label] || result.reference_label)
+    : "Markt-Konsens";
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -504,6 +538,49 @@ export default function DealChecker() {
           ))}
         </div>
       )}
+
+      <div className="bg-bg-card border border-border rounded-xl p-4 mb-6">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-text-primary font-semibold">Lern-Feedback</h2>
+            <p className="text-text-muted text-sm mt-1">{describeLearning(feedbackPerformance)}</p>
+          </div>
+          <div className="text-right shrink-0">
+            <div className="text-text-primary font-[family-name:var(--font-mono)] text-lg font-bold">
+              {feedbackPerformance?.completed_deals || 0}
+            </div>
+            <div className="text-text-muted text-xs">verkaufte Sets</div>
+          </div>
+        </div>
+        {feedbackPerformance?.completed_deals > 0 && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4 text-sm">
+            <div className="bg-bg-hover rounded-lg px-3 py-2">
+              <div className="text-text-muted text-xs uppercase">Trefferquote</div>
+              <div className="text-text-primary font-[family-name:var(--font-mono)] font-semibold">
+                {feedbackPerformance.success_rate != null ? `${feedbackPerformance.success_rate.toFixed(0)}%` : "--"}
+              </div>
+            </div>
+            <div className="bg-bg-hover rounded-lg px-3 py-2">
+              <div className="text-text-muted text-xs uppercase">Ist ROI</div>
+              <div className="text-text-primary font-[family-name:var(--font-mono)] font-semibold">
+                {feedbackPerformance.avg_actual_roi != null ? `${feedbackPerformance.avg_actual_roi.toFixed(1)}%` : "--"}
+              </div>
+            </div>
+            <div className="bg-bg-hover rounded-lg px-3 py-2">
+              <div className="text-text-muted text-xs uppercase">Prognose ROI</div>
+              <div className="text-text-primary font-[family-name:var(--font-mono)] font-semibold">
+                {feedbackPerformance.avg_predicted_roi != null ? `${feedbackPerformance.avg_predicted_roi.toFixed(1)}%` : "--"}
+              </div>
+            </div>
+            <div className="bg-bg-hover rounded-lg px-3 py-2">
+              <div className="text-text-muted text-xs uppercase">Abweichung</div>
+              <div className="text-text-primary font-[family-name:var(--font-mono)] font-semibold">
+                {feedbackPerformance.avg_roi_deviation != null ? `${feedbackPerformance.avg_roi_deviation.toFixed(1)}pp` : "--"}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Smart Input Form */}
       <form onSubmit={handleAnalyze} className="bg-bg-card border border-border rounded-xl p-6 mb-6">
@@ -933,6 +1010,34 @@ export default function DealChecker() {
                 <span className="text-text-secondary font-medium">Markt-Konsens ({result.num_sources} Quellen)</span>
                 <span className="text-lego-yellow font-[family-name:var(--font-mono)] font-bold">{formatMoney(result.market_price)}</span>
               </div>
+            </div>
+          </div>
+
+          <div className="p-4 bg-bg-card border-t border-border">
+            <h3 className="text-text-secondary text-xs uppercase tracking-wider mb-3">Bewertungsbasis</h3>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span className="text-text-muted">ROI-Referenz</span>
+                <span className="text-text-primary font-medium">{referenceLabel}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-text-muted">Referenzpreis</span>
+                <span className="text-lego-yellow font-[family-name:var(--font-mono)] font-bold">
+                  {formatMoney(result.reference_price ?? result.market_price)}
+                </span>
+              </div>
+              {result.still_in_retail && (
+                <div className="flex justify-between">
+                  <span className="text-text-muted">Retail-Status</span>
+                  <span className="text-check font-medium">Noch regulär im Handel</span>
+                </div>
+              )}
+              {result.eol_status && (
+                <div className="flex justify-between">
+                  <span className="text-text-muted">EOL-Status</span>
+                  <span className="text-text-primary font-[family-name:var(--font-mono)]">{result.eol_status}</span>
+                </div>
+              )}
             </div>
           </div>
 

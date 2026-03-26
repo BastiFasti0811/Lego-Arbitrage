@@ -37,6 +37,8 @@ class AnalysisResult:
     # ── Market Data ──────────────────────────────────────
     uvp: float | None
     market_consensus: MarketConsensus
+    reference_price: float
+    reference_label: str
     offer_price: float
     discount_vs_uvp: float | None  # Percentage
 
@@ -110,6 +112,29 @@ def _categorize_set(release_year: int, current_year: int = 2026) -> str:
         return SetCategory.LEGACY.value
 
 
+def _select_reference_price(
+    consensus: MarketConsensus,
+    uvp: float | None,
+    offer_price: float,
+    still_in_retail: bool,
+) -> tuple[float, str]:
+    """Choose the anchor used for ROI calculations."""
+    consensus_price = consensus.consensus_price if consensus.consensus_price > 0 else None
+
+    if still_in_retail and uvp and uvp > 0:
+        if consensus_price and consensus_price > uvp:
+            return consensus_price, "MARKT_KONSENS"
+        return uvp, "LEGO_UVP"
+
+    if consensus_price:
+        return consensus_price, "MARKT_KONSENS"
+
+    if uvp and uvp > 0:
+        return uvp, "LEGO_UVP"
+
+    return offer_price, "ANGEBOT_PREIS"
+
+
 def analyze_deal(
     set_number: str,
     set_name: str,
@@ -134,6 +159,8 @@ def analyze_deal(
     set_age = current_year - release_year
     category = _categorize_set(release_year, current_year)
     holding_months = _get_holding_months(category)
+    if still_in_retail:
+        holding_months = max(holding_months, 12.0)
     min_roi = _get_min_roi(category)
     optimal_roi = _get_optimal_roi(category)
 
@@ -141,10 +168,15 @@ def analyze_deal(
     consensus = calculate_consensus(prices)
 
     # ── 2. ROI Calculation ───────────────────────────────
-    market_price = consensus.consensus_price if consensus.consensus_price > 0 else offer_price
+    reference_price, reference_label = _select_reference_price(
+        consensus=consensus,
+        uvp=uvp,
+        offer_price=offer_price,
+        still_in_retail=still_in_retail,
+    )
     roi = calculate_roi(
         purchase_price=offer_price,
-        market_price=market_price,
+        market_price=reference_price,
         purchase_shipping=purchase_shipping,
         holding_months=holding_months,
         uvp=uvp,
@@ -179,6 +211,10 @@ def analyze_deal(
         still_in_retail=still_in_retail,
         discount_vs_uvp=discount_vs_uvp,
     )
+    if still_in_retail and reference_label == "LEGO_UVP":
+        suggestions.insert(0, "Retail-Set: ROI wurde gegen LEGO UVP statt Markt-Konsens gerechnet")
+    elif reference_label == "LEGO_UVP":
+        suggestions.insert(0, "ROI nutzt LEGO UVP als Fallback, da kein stabiler Markt-Konsens vorliegt")
 
     # ── 6. Opportunity Score ─────────────────────────────
     liquidity_factor = 1.0
@@ -208,6 +244,8 @@ def analyze_deal(
         category=category,
         uvp=uvp,
         market_consensus=consensus,
+        reference_price=reference_price,
+        reference_label=reference_label,
         offer_price=offer_price,
         discount_vs_uvp=discount_vs_uvp,
         roi=roi,

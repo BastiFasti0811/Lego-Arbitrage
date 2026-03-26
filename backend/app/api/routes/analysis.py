@@ -134,6 +134,10 @@ class AnalysisResponse(BaseModel):
     offer_price: float
     discount_vs_uvp: float | None
     market_price: float
+    reference_price: float | None = None
+    reference_label: str | None = None
+    still_in_retail: bool = False
+    eol_status: str | None = None
     num_sources: int
     roi_percent: float
     annualized_roi: float
@@ -259,6 +263,10 @@ def _history_to_response(entry: AnalysisHistoryEntry) -> AnalysisResponse:
         offer_price=entry.offer_price,
         discount_vs_uvp=entry.discount_vs_uvp,
         market_price=entry.market_price,
+        reference_price=entry.market_price,
+        reference_label="MARKT_KONSENS",
+        still_in_retail=False,
+        eol_status=None,
         num_sources=entry.num_sources,
         roi_percent=entry.roi_percent,
         annualized_roi=entry.annualized_roi,
@@ -440,6 +448,10 @@ async def analyze_offer(
         offer_price=analysis.offer_price,
         discount_vs_uvp=analysis.discount_vs_uvp,
         market_price=analysis.market_consensus.consensus_price,
+        reference_price=analysis.reference_price,
+        reference_label=analysis.reference_label,
+        still_in_retail=still_in_retail,
+        eol_status=eol_status,
         num_sources=analysis.market_consensus.num_sources,
         roi_percent=analysis.roi.roi_percent,
         annualized_roi=analysis.roi.annualized_roi,

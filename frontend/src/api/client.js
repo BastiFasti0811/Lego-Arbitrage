@@ -99,6 +99,9 @@ export const api = {
   analyzeMulti: (data) => request("/analysis/analyze-multi", { method: "POST", body: JSON.stringify(data) }),
   analysisHistory: () => request("/analysis/history"),
 
+  // Feedback
+  feedbackPerformance: () => request("/feedback/performance"),
+
   // Scout
   scoutQuick: (setNumber) => request(`/scout/quick/${setNumber}`),
   scoutScan: (data) => request("/scout/scan", { method: "POST", body: JSON.stringify(data) }),

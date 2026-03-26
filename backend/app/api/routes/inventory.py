@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import get_session
+from app.models import AnalysisHistoryEntry, DealFeedback, LegoSet, get_session
 from app.models.inventory import InventoryItem, InventoryStatus
 from app.models.inventory_photo import InventoryPhoto
 
@@ -377,6 +377,28 @@ async def mark_as_sold(
     item.realized_roi_percent = round((realized_profit / total_invested) * 100, 1) if total_invested > 0 else 0
     item.sell_signal_active = False
 
+    analysis_match = await _find_matching_analysis(item, session)
+    feedback_set = await _ensure_feedback_set(item, analysis_match, session)
+    if feedback_set:
+        feedback = DealFeedback(
+            set_id=feedback_set.id,
+            purchase_price=item.buy_price,
+            purchase_shipping=item.buy_shipping or 0.0,
+            purchase_date=item.buy_date,
+            purchase_platform=item.buy_platform or "UNKNOWN",
+            sale_price=item.sell_price,
+            sale_fees=round(selling_costs, 2),
+            sale_shipping=0.0,
+            sale_packaging=0.0,
+            sale_date=item.sell_date,
+            sale_platform=item.sell_platform,
+            predicted_roi=analysis_match.roi_percent if analysis_match else None,
+            predicted_risk_score=analysis_match.risk_score if analysis_match else None,
+            notes=_build_feedback_notes(item, analysis_match),
+        )
+        feedback.calculate_outcomes()
+        session.add(feedback)
+
     await session.commit()
     await session.refresh(item)
     logger.info("inventory.sold", set_number=item.set_number, profit=item.realized_profit)
@@ -427,6 +449,84 @@ async def inventory_history(session: AsyncSession = Depends(get_session)):
         .order_by(InventoryItem.sell_date.desc())
     )
     return [_to_response(item) for item in result.scalars().all()]
+
+
+async def _find_matching_analysis(
+    item: InventoryItem,
+    session: AsyncSession,
+) -> AnalysisHistoryEntry | None:
+    result = await session.execute(
+        select(AnalysisHistoryEntry)
+        .where(AnalysisHistoryEntry.set_number == item.set_number)
+        .order_by(AnalysisHistoryEntry.analyzed_at.desc(), AnalysisHistoryEntry.id.desc())
+        .limit(25)
+    )
+    candidates = list(result.scalars().all())
+    if not candidates:
+        return None
+
+    def score(entry: AnalysisHistoryEntry) -> float:
+        total = 0.0
+        if item.buy_url and entry.source_url == item.buy_url:
+            total += 100.0
+
+        total += max(0.0, 25.0 - abs((entry.offer_price or 0.0) - item.buy_price))
+
+        if item.buy_date and entry.analyzed_at:
+            day_delta = abs((entry.analyzed_at.date() - item.buy_date).days)
+            total += max(0.0, 15.0 - min(day_delta, 15))
+
+        return total
+
+    best = max(candidates, key=score)
+    return best if score(best) > 0 else None
+
+
+async def _ensure_feedback_set(
+    item: InventoryItem,
+    analysis_match: AnalysisHistoryEntry | None,
+    session: AsyncSession,
+) -> LegoSet | None:
+    result = await session.execute(
+        select(LegoSet).where(LegoSet.set_number == item.set_number)
+    )
+    lego_set = result.scalar_one_or_none()
+    if lego_set:
+        return lego_set
+
+    if not analysis_match:
+        return None
+
+    lego_set = LegoSet(
+        set_number=item.set_number,
+        set_name=analysis_match.set_name or item.set_name,
+        theme=analysis_match.theme or item.theme or "Unknown",
+        release_year=analysis_match.release_year or date.today().year,
+        uvp_eur=analysis_match.uvp,
+        category=analysis_match.category,
+        current_market_price=analysis_match.market_price,
+        eol_status="UNKNOWN",
+        image_url=None,
+    )
+    session.add(lego_set)
+    await session.flush()
+    return lego_set
+
+
+def _build_feedback_notes(
+    item: InventoryItem,
+    analysis_match: AnalysisHistoryEntry | None,
+) -> str | None:
+    notes: list[str] = []
+    if item.notes:
+        notes.append(item.notes)
+    if analysis_match:
+        notes.append(
+            f"Auto-Feedback aus Check #{analysis_match.id}: {analysis_match.recommendation}"
+        )
+        if analysis_match.source_url:
+            notes.append(f"Quelle: {analysis_match.source_url}")
+    return " | ".join(notes) if notes else None
 
 
 async def _get_item(item_id: int, session: AsyncSession) -> InventoryItem:
