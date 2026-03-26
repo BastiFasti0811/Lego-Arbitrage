@@ -122,8 +122,6 @@ def _select_reference_price(
     consensus_price = consensus.consensus_price if consensus.consensus_price > 0 else None
 
     if still_in_retail and uvp and uvp > 0:
-        if consensus_price and consensus_price > uvp:
-            return consensus_price, "MARKT_KONSENS"
         return uvp, "LEGO_UVP"
 
     if consensus_price:
