@@ -8,11 +8,11 @@ import structlog
 from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.engine.decision_engine import analyze_deal
-from app.models import AnalysisHistoryEntry, async_session, get_session
+from app.models import AnalysisHistoryEntry, DealFeedback, async_session, get_session
 from app.scrapers import (
     AmazonScraper,
     BrickEconomyScraper,
@@ -138,6 +138,8 @@ class AnalysisResponse(BaseModel):
     reference_label: str | None = None
     still_in_retail: bool = False
     eol_status: str | None = None
+    calibration_roi_delta: float | None = None
+    calibrated_roi_percent: float | None = None
     num_sources: int
     roi_percent: float
     annualized_roi: float
@@ -267,6 +269,8 @@ def _history_to_response(entry: AnalysisHistoryEntry) -> AnalysisResponse:
         reference_label="MARKT_KONSENS",
         still_in_retail=False,
         eol_status=None,
+        calibration_roi_delta=None,
+        calibrated_roi_percent=entry.roi_percent,
         num_sources=entry.num_sources,
         roi_percent=entry.roi_percent,
         annualized_roi=entry.annualized_roi,
@@ -323,6 +327,24 @@ async def _store_history(session: AsyncSession, response: AnalysisResponse) -> A
     await session.commit()
     await session.refresh(entry)
     return _history_to_response(entry)
+
+
+async def _get_feedback_calibration(session: AsyncSession) -> tuple[float | None, int]:
+    completed = await session.scalar(
+        select(func.count(DealFeedback.id)).where(DealFeedback.roi_deviation.isnot(None))
+    )
+    completed_count = completed or 0
+    if completed_count < 3:
+        return None, completed_count
+
+    avg_deviation = await session.scalar(
+        select(func.avg(DealFeedback.roi_deviation)).where(DealFeedback.roi_deviation.isnot(None))
+    )
+    if avg_deviation is None:
+        return None, completed_count
+
+    clamped = max(-15.0, min(15.0, float(avg_deviation)))
+    return round(clamped, 1), completed_count
 
 
 @router.post("/analyze", response_model=AnalysisResponse)
@@ -435,6 +457,17 @@ async def analyze_offer(
         risk=analysis.risk.total,
     )
 
+    calibration_roi_delta, calibration_sample_size = await _get_feedback_calibration(session)
+    calibrated_roi_percent = analysis.roi.roi_percent
+    suggestions = list(analysis.suggestions)
+    if calibration_roi_delta is not None:
+        calibrated_roi_percent = round(analysis.roi.roi_percent + calibration_roi_delta, 1)
+        direction = "unter" if calibration_roi_delta < 0 else "über"
+        suggestions.insert(
+            0,
+            f"Lern-Korrektur: echte Verkäufe lagen zuletzt im Schnitt {abs(calibration_roi_delta):.1f}pp {direction} der Prognose ({calibration_sample_size} Verkäufe)",
+        )
+
     response = AnalysisResponse(
         set_number=analysis.set_number,
         set_name=analysis.set_name,
@@ -462,12 +495,14 @@ async def analyze_offer(
         risk_rating=analysis.risk.rating,
         recommendation=analysis.recommendation,
         reason=analysis.reason,
-        suggestions=analysis.suggestions,
+        suggestions=suggestions,
         opportunity_score=analysis.opportunity_score,
         confidence=analysis.confidence,
         warnings=analysis.market_consensus.warnings,
         source_prices=analysis.market_consensus.source_prices,
         analyzed_at=analysis.analyzed_at.isoformat(),
+        calibration_roi_delta=calibration_roi_delta,
+        calibrated_roi_percent=calibrated_roi_percent,
     )
 
     return await _store_history(session, response)

@@ -1053,6 +1053,23 @@ export default function DealChecker() {
                 <span className="text-text-muted">Gesamtkosten (Kauf)</span>
                 <span className="text-text-primary font-[family-name:var(--font-mono)]">{formatMoney(result.total_purchase_cost)}</span>
               </div>
+              {result.calibration_roi_delta != null && (
+                <div className="flex justify-between">
+                  <span className="text-text-muted">Lern-Korrektur</span>
+                  <span className={`font-[family-name:var(--font-mono)] ${result.calibration_roi_delta >= 0 ? "text-go" : "text-no-go"}`}>
+                    {result.calibration_roi_delta > 0 ? "+" : ""}
+                    {result.calibration_roi_delta.toFixed(1)}pp
+                  </span>
+                </div>
+              )}
+              {result.calibrated_roi_percent != null && result.calibration_roi_delta != null && (
+                <div className="flex justify-between">
+                  <span className="text-text-muted">Kalibrierter ROI</span>
+                  <span className="text-lego-yellow font-[family-name:var(--font-mono)] font-bold">
+                    {result.calibrated_roi_percent.toFixed(1)}%
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span className="text-text-muted">{"Verkaufskosten (eBay Geb\u00fchren)"}</span>
                 <span className="text-no-go font-[family-name:var(--font-mono)]">-{formatMoney(result.total_selling_costs)}</span>
