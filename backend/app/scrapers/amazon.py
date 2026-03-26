@@ -22,6 +22,35 @@ def _parse_amazon_price(text: str) -> float | None:
     return None
 
 
+def _extract_amazon_uvp(soup: BeautifulSoup, page_text: str) -> float | None:
+    """Try to extract a list price / UVP from an Amazon product page."""
+    selectors = [
+        "#basisPrice .a-offscreen",
+        ".a-price.a-text-price .a-offscreen",
+        "#listPrice",
+        "#priceblock_listprice",
+    ]
+
+    candidates: list[float] = []
+    for selector in selectors:
+        for node in soup.select(selector):
+            price = _parse_amazon_price(node.get_text(" ", strip=True))
+            if price:
+                candidates.append(price)
+
+    regex_patterns = [
+        r"(?:UVP|Unverb\.?\s*Preisempf\.?|Listenpreis|Statt:)\s*([\d.]+,\d{2})",
+        r"([\d.]+,\d{2})\s*€\s*(?:UVP|Unverb\.?\s*Preisempf\.?|Listenpreis)",
+    ]
+    for pattern in regex_patterns:
+        for match in re.findall(pattern, page_text, re.I):
+            price = _parse_amazon_price(match)
+            if price:
+                candidates.append(price)
+
+    return max(candidates) if candidates else None
+
+
 class AmazonScraper(BaseScraper):
     """Scrapes Amazon.de for LEGO prices.
 
@@ -53,10 +82,27 @@ class AmazonScraper(BaseScraper):
 
             title_el = result.select_one("h2 a span, .a-text-normal")
             title = title_el.get_text(strip=True) if title_el else None
+            uvp = None
+
+            link_el = result.select_one("h2 a, a.a-link-normal[href*='/dp/']")
+            href = link_el.get("href", "") if link_el else ""
+            detail_url = href if href.startswith("http") else f"{AMAZON_BASE}{href}" if href else None
+
+            if detail_url:
+                try:
+                    detail_html = await self._fetch(detail_url)
+                    detail_soup = BeautifulSoup(detail_html, "lxml")
+                    detail_title_el = detail_soup.select_one("#productTitle, #title")
+                    if detail_title_el:
+                        title = detail_title_el.get_text(strip=True)
+                    uvp = _extract_amazon_uvp(detail_soup, detail_soup.get_text(" ", strip=True))
+                except Exception as exc:
+                    logger.warning("amazon.detail_info_failed", set_number=set_number, error=str(exc))
 
             return ScrapedSetInfo(
                 set_number=set_number,
                 set_name=title,
+                uvp_eur=uvp,
             )
         except Exception as e:
             logger.error("amazon.set_info_failed", set_number=set_number, error=str(e))

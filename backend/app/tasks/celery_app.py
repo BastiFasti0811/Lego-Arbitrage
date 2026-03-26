@@ -50,6 +50,12 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(minute=0, hour=20),
         "options": {"queue": "notifications"},
     },
+    # Refresh UVP/EOL metadata once per day from LEGO.com + BrickMerge
+    "refresh-known-set-metadata": {
+        "task": "app.tasks.scrape_daily.refresh_known_set_metadata",
+        "schedule": crontab(minute=15, hour=4),
+        "options": {"queue": "scraping"},
+    },
     # Weekly model retraining (Sunday 03:00)
     "weekly-retrain": {
         "task": "app.tasks.analyze_new.retrain_model",

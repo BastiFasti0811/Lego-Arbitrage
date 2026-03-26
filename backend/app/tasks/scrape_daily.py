@@ -9,7 +9,7 @@ from sqlalchemy import select
 from app.engine.market_consensus import calculate_consensus
 from app.models import LegoSet, Offer, PriceRecord, WatchlistItem
 from app.models.base import async_session
-from app.scrapers import OFFER_SCRAPERS, PRICE_SCRAPERS
+from app.scrapers import METADATA_SCRAPERS, OFFER_SCRAPERS, PRICE_SCRAPERS
 from app.tasks.celery_app import celery_app
 
 logger = structlog.get_logger()
@@ -22,6 +22,51 @@ def _run_async(coro):
         return loop.run_until_complete(coro)
     finally:
         loop.close()
+
+
+def _apply_set_info(lego_set: LegoSet, info, *, overwrite_uvp: bool = False) -> bool:
+    """Merge scraped metadata into a set record."""
+    changed = False
+
+    if info.set_name and (
+        not lego_set.set_name
+        or lego_set.set_name == lego_set.set_number
+        or lego_set.set_name == f"LEGO {lego_set.set_number}"
+    ):
+        lego_set.set_name = info.set_name
+        changed = True
+
+    if info.theme and (not lego_set.theme or lego_set.theme == "Unknown"):
+        lego_set.theme = info.theme
+        changed = True
+
+    if info.release_year and (not lego_set.release_year or lego_set.release_year == 2020):
+        lego_set.release_year = info.release_year
+        changed = True
+
+    if info.uvp_eur and (overwrite_uvp or not lego_set.uvp_eur):
+        lego_set.uvp_eur = info.uvp_eur
+        changed = True
+
+    if info.eol_status and info.eol_status != "UNKNOWN" and lego_set.eol_status != info.eol_status:
+        lego_set.eol_status = info.eol_status
+        changed = True
+
+    if info.growth_percent is not None and lego_set.growth_percent != info.growth_percent:
+        lego_set.growth_percent = info.growth_percent
+        changed = True
+
+    if info.image_url and not lego_set.image_url:
+        lego_set.image_url = info.image_url
+        changed = True
+
+    if lego_set.release_year:
+        category = lego_set.compute_category().value
+        if lego_set.category != category:
+            lego_set.category = category
+            changed = True
+
+    return changed
 
 
 @celery_app.task(name="app.tasks.scrape_daily.scrape_set_prices")
@@ -69,26 +114,19 @@ async def _scrape_set_prices_async(set_number: str) -> dict:
                             )
                         )
                         results["prices"] += 1
-
-                    info = await scraper.get_set_info(set_number)
-                    if info:
-                        if info.set_name and (not lego_set.set_name or lego_set.set_name == lego_set.set_number):
-                            lego_set.set_name = info.set_name
-                        if info.theme and not lego_set.theme:
-                            lego_set.theme = info.theme
-                        if info.release_year and not lego_set.release_year:
-                            lego_set.release_year = info.release_year
-                        if info.uvp_eur and not lego_set.uvp_eur:
-                            lego_set.uvp_eur = info.uvp_eur
-                        if info.eol_status and info.eol_status != "UNKNOWN":
-                            lego_set.eol_status = info.eol_status
-                        if info.growth_percent is not None:
-                            lego_set.growth_percent = info.growth_percent
-                        if info.image_url and not lego_set.image_url:
-                            lego_set.image_url = info.image_url
             except Exception as exc:
                 results["errors"].append(f"{scraper_cls.__name__}: {exc}")
                 logger.error("scrape.price_failed", scraper=scraper_cls.__name__, error=str(exc))
+
+        for scraper_cls in METADATA_SCRAPERS:
+            try:
+                async with scraper_cls() as scraper:
+                    info = await scraper.get_set_info(set_number)
+                    if info:
+                        _apply_set_info(lego_set, info, overwrite_uvp=True)
+            except Exception as exc:
+                results["errors"].append(f"{scraper_cls.__name__} metadata: {exc}")
+                logger.error("scrape.metadata_failed", scraper=scraper_cls.__name__, error=str(exc))
 
         for scraper_cls in OFFER_SCRAPERS:
             try:
@@ -191,4 +229,47 @@ async def _scrape_all_watched_async() -> dict:
             logger.error("scrape.set_failed", set_number=set_number, error=str(exc))
 
     logger.info("scrape.all_complete", **summary)
+    return summary
+
+
+@celery_app.task(name="app.tasks.scrape_daily.refresh_known_set_metadata")
+def refresh_known_set_metadata() -> dict:
+    """Refresh UVP/EOL metadata for all known sets once per day."""
+    return _run_async(_refresh_known_set_metadata_async())
+
+
+async def _refresh_known_set_metadata_async() -> dict:
+    summary = {"total_sets": 0, "updated": 0, "errors": 0}
+
+    async with async_session() as session:
+        result = await session.execute(select(LegoSet).order_by(LegoSet.updated_at.desc()))
+        sets = result.scalars().all()
+        summary["total_sets"] = len(sets)
+
+        for lego_set in sets:
+            try:
+                changed = False
+                for scraper_cls in METADATA_SCRAPERS:
+                    try:
+                        async with scraper_cls() as scraper:
+                            info = await scraper.get_set_info(lego_set.set_number)
+                            if info:
+                                changed = _apply_set_info(lego_set, info, overwrite_uvp=True) or changed
+                    except Exception as exc:
+                        logger.error(
+                            "scrape.metadata_refresh_failed",
+                            set_number=lego_set.set_number,
+                            scraper=scraper_cls.__name__,
+                            error=str(exc),
+                        )
+
+                if changed:
+                    summary["updated"] += 1
+            except Exception as exc:
+                summary["errors"] += 1
+                logger.error("scrape.metadata_set_failed", set_number=lego_set.set_number, error=str(exc))
+
+        await session.commit()
+
+    logger.info("scrape.metadata_refresh_complete", **summary)
     return summary

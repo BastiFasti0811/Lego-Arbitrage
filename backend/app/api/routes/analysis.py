@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.engine.decision_engine import analyze_deal
-from app.models import AnalysisHistoryEntry, DealFeedback, async_session, get_session
+from app.models import AnalysisHistoryEntry, DealFeedback, LegoSet, async_session, get_session
 from app.scrapers import (
     AmazonScraper,
     BrickEconomyScraper,
@@ -20,6 +20,7 @@ from app.scrapers import (
     EbaySoldScraper,
     IdealoScraper,
     LegoComScraper,
+    METADATA_SCRAPERS,
 )
 from app.scrapers.base import ScrapedPrice
 from app.scrapers.kleinanzeigen import _parse_ka_price
@@ -354,6 +355,116 @@ async def _get_feedback_calibration(session: AsyncSession) -> tuple[float | None
     return round(clamped, 1), completed_count
 
 
+def _merge_set_info(
+    *,
+    info,
+    set_number: str,
+    set_name: str,
+    theme: str,
+    release_year: int,
+    uvp: float | None,
+    eol_status: str,
+) -> tuple[str, str, int, float | None, str]:
+    if info.set_name and set_name == f"LEGO {set_number}":
+        set_name = info.set_name
+    if info.theme and theme == "Unknown":
+        theme = info.theme
+    if info.release_year and release_year == 2020:
+        release_year = info.release_year
+    if info.uvp_eur and not uvp:
+        uvp = info.uvp_eur
+    if info.eol_status and eol_status == "UNKNOWN":
+        eol_status = info.eol_status
+    return set_name, theme, release_year, uvp, eol_status
+
+
+def _needs_metadata_retry(theme: str, release_year: int, uvp: float | None, eol_status: str) -> bool:
+    return theme == "Unknown" or release_year == 2020 or not uvp or eol_status == "UNKNOWN"
+
+
+async def _retry_authoritative_metadata(
+    set_number: str,
+    set_name: str,
+    theme: str,
+    release_year: int,
+    uvp: float | None,
+    eol_status: str,
+) -> tuple[str, str, int, float | None, str]:
+    for scraper_cls in METADATA_SCRAPERS:
+        if not _needs_metadata_retry(theme, release_year, uvp, eol_status):
+            break
+        try:
+            async with scraper_cls() as scraper:
+                info = await scraper.get_set_info(set_number)
+            if info:
+                set_name, theme, release_year, uvp, eol_status = _merge_set_info(
+                    info=info,
+                    set_number=set_number,
+                    set_name=set_name,
+                    theme=theme,
+                    release_year=release_year,
+                    uvp=uvp,
+                    eol_status=eol_status,
+                )
+        except Exception as exc:
+            logger.warning(
+                "analysis.metadata_retry_failed",
+                scraper=scraper_cls.__name__,
+                set_number=set_number,
+                error=str(exc),
+            )
+    return set_name, theme, release_year, uvp, eol_status
+
+
+async def _upsert_set_from_analysis(
+    session: AsyncSession,
+    *,
+    set_number: str,
+    set_name: str,
+    theme: str,
+    release_year: int,
+    uvp: float | None,
+    eol_status: str,
+    market_price: float,
+) -> None:
+    result = await session.execute(select(LegoSet).where(LegoSet.set_number == set_number))
+    lego_set = result.scalar_one_or_none()
+
+    if lego_set is None:
+        lego_set = LegoSet(
+            set_number=set_number,
+            set_name=set_name,
+            theme=theme,
+            release_year=release_year,
+            uvp_eur=uvp,
+            eol_status=eol_status,
+            current_market_price=market_price if market_price > 0 else None,
+        )
+        if lego_set.release_year:
+            lego_set.category = lego_set.compute_category().value
+        session.add(lego_set)
+        await session.flush()
+        return
+
+    if set_name and (
+        not lego_set.set_name or lego_set.set_name == lego_set.set_number or lego_set.set_name == f"LEGO {set_number}"
+    ):
+        lego_set.set_name = set_name
+    if theme and (not lego_set.theme or lego_set.theme == "Unknown"):
+        lego_set.theme = theme
+    if release_year and (not lego_set.release_year or lego_set.release_year == 2020):
+        lego_set.release_year = release_year
+    if uvp and not lego_set.uvp_eur:
+        lego_set.uvp_eur = uvp
+    if eol_status and eol_status != "UNKNOWN":
+        lego_set.eol_status = eol_status
+    if market_price > 0:
+        lego_set.current_market_price = market_price
+        lego_set.market_price_updated_at = datetime.utcnow()
+    if lego_set.release_year:
+        lego_set.category = lego_set.compute_category().value
+
+
 @router.post("/analyze", response_model=AnalysisResponse)
 async def analyze_offer(
     request: AnalyzeRequest,
@@ -380,10 +491,10 @@ async def analyze_offer(
             async with scraper_cls() as scraper:
                 info = await scraper.get_set_info(set_number)
                 price = await scraper.get_price(set_number)
-                return info, price
+                return scraper_cls.__name__, info, price
         except Exception as e:
             logger.warning("analysis.scraper_failed", scraper=scraper_cls.__name__, error=str(e))
-            return None, None
+            return scraper_cls.__name__, None, None
 
     # Run all scrapers concurrently
     scrapers = [
@@ -403,19 +514,17 @@ async def analyze_offer(
     for result in results:
         if isinstance(result, Exception):
             continue
-        info, price = result
+        _scraper_name, info, price = result
         if info:
-            # Merge set info (first non-None wins)
-            if info.set_name and set_name == f"LEGO {request.set_number}":
-                set_name = info.set_name
-            if info.theme and theme == "Unknown":
-                theme = info.theme
-            if info.release_year and release_year == 2020:
-                release_year = info.release_year
-            if info.uvp_eur and not uvp:
-                uvp = info.uvp_eur
-            if info.eol_status and eol_status == "UNKNOWN":
-                eol_status = info.eol_status
+            set_name, theme, release_year, uvp, eol_status = _merge_set_info(
+                info=info,
+                set_number=request.set_number,
+                set_name=set_name,
+                theme=theme,
+                release_year=release_year,
+                uvp=uvp,
+                eol_status=eol_status,
+            )
         if price:
             prices.append(price)
 
@@ -430,6 +539,16 @@ async def analyze_offer(
         uvp = request.uvp
     if request.eol_status:
         eol_status = request.eol_status
+
+    if _needs_metadata_retry(theme, release_year, uvp, eol_status):
+        set_name, theme, release_year, uvp, eol_status = await _retry_authoritative_metadata(
+            request.set_number,
+            set_name,
+            theme,
+            release_year,
+            uvp,
+            eol_status,
+        )
 
     # ── Step 2: Run analysis engine ──────────────────────
     detected_platform = _detect_source_platform(request.source_url, request.source_platform)
@@ -515,6 +634,17 @@ async def analyze_offer(
         analyzed_at=analysis.analyzed_at.isoformat(),
         calibration_roi_delta=calibration_roi_delta,
         calibrated_roi_percent=calibrated_roi_percent,
+    )
+
+    await _upsert_set_from_analysis(
+        session,
+        set_number=analysis.set_number,
+        set_name=analysis.set_name,
+        theme=analysis.theme,
+        release_year=analysis.release_year,
+        uvp=analysis.uvp,
+        eol_status=eol_status,
+        market_price=analysis.market_consensus.consensus_price,
     )
 
     return await _store_history(session, response)

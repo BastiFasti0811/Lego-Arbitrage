@@ -36,6 +36,13 @@ OFFER_SCRAPERS: list[type[BaseScraper]] = [
     BrickMergeScraper,
 ]
 
+# Scrapers that provide authoritative set metadata like UVP/EOL/theme.
+METADATA_SCRAPERS: list[type[BaseScraper]] = [
+    LegoComScraper,
+    BrickMergeScraper,
+    BrickEconomyScraper,
+]
+
 __all__ = [
     "BaseScraper",
     "ScrapedPrice",
@@ -51,4 +58,5 @@ __all__ = [
     "ALL_SCRAPERS",
     "PRICE_SCRAPERS",
     "OFFER_SCRAPERS",
+    "METADATA_SCRAPERS",
 ]
