@@ -326,7 +326,14 @@ async def _store_history(session: AsyncSession, response: AnalysisResponse) -> A
     session.add(entry)
     await session.commit()
     await session.refresh(entry)
-    return _history_to_response(entry)
+    stored = _history_to_response(entry)
+    stored.reference_price = response.reference_price
+    stored.reference_label = response.reference_label
+    stored.still_in_retail = response.still_in_retail
+    stored.eol_status = response.eol_status
+    stored.calibration_roi_delta = response.calibration_roi_delta
+    stored.calibrated_roi_percent = response.calibrated_roi_percent
+    return stored
 
 
 async def _get_feedback_calibration(session: AsyncSession) -> tuple[float | None, int]:
