@@ -425,7 +425,12 @@ async def analyze_offer(
         eol_status = request.eol_status
 
     # ── Step 2: Run analysis engine ──────────────────────
+    detected_platform = _detect_source_platform(request.source_url, request.source_platform)
     still_in_retail = eol_status in ("AVAILABLE", "RETIRING_SOON")
+    if not still_in_retail and detected_platform in {"AMAZON", "LEGO"}:
+        still_in_retail = True
+        if eol_status == "UNKNOWN":
+            eol_status = "AVAILABLE"
 
     # Estimate monthly sales from eBay data
     monthly_sales = None
@@ -472,7 +477,7 @@ async def analyze_offer(
         set_number=analysis.set_number,
         set_name=analysis.set_name,
         source_url=request.source_url,
-        source_platform=_detect_source_platform(request.source_url, request.source_platform),
+        source_platform=detected_platform,
         release_year=analysis.release_year,
         theme=analysis.theme,
         set_age=analysis.set_age,
