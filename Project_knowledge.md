@@ -50,3 +50,6 @@
 - Testsuite ausbauen, aktuell gibt es kaum automatisierte Backend-Tests.
 - Proxy-/Captcha-Strategie fuer schwierigere Quellen schaerfen.
 - Backup-Strategie fuer das Hetzner-Volume dokumentieren und testen.
+- Naechstes Produkt-Feature: Foto-Unterstuetzung fuer das Inventar, damit Eintraege mit mehreren Bildern dokumentiert werden koennen.
+- Naechstes Produkt-Feature: Deal-Checker um EAN-/Barcode-Scan erweitern, weil das voraussichtlich der einfachste erste Bild-/Scan-Pfad fuer eine schnelle Set-Erkennung ist.
+- Spaeter moeglich: echte Bildanalyse/OCR fuer Kartonfotos, falls EAN nicht sichtbar oder nicht ausreichend ist.

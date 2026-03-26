@@ -33,7 +33,7 @@ export default function AppLayout() {
             <span className="text-lego-yellow font-bold text-xl font-[family-name:var(--font-mono)]">
               LEGO
             </span>
-            <span className="text-text-secondary text-sm">Arbitrage System</span>
+            <span className="text-text-secondary text-sm">Deal Desk</span>
           </div>
           <TabNav />
           <div className="flex items-center gap-2">
@@ -48,7 +48,7 @@ export default function AppLayout() {
         <div className="flex items-center justify-between px-4 py-2">
           <div className="flex items-center gap-2">
             <span className="text-lego-yellow font-bold text-lg">LEGO</span>
-            <span className="text-text-secondary text-xs">Arbitrage</span>
+            <span className="text-text-secondary text-xs">Deal Desk</span>
           </div>
           <SettingsGearIcon />
         </div>

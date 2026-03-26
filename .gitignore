@@ -45,6 +45,7 @@ models/*.joblib
 # Logs
 *.log
 logs/
+backend/data/
 
 # Test coverage
 htmlcov/

@@ -12,6 +12,7 @@ from starlette.responses import JSONResponse
 from app.config import settings
 from app.api.routes import sets, analysis, scout, watchlist, feedback, inventory, auth, settings as settings_routes
 from app.api.routes.auth import verify_cookie, COOKIE_NAME
+from app.models import Base, engine
 
 logger = structlog.get_logger()
 
@@ -20,6 +21,8 @@ logger = structlog.get_logger()
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
     logger.info("app.starting", version=settings.app_version)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     yield
     logger.info("app.shutdown")
 

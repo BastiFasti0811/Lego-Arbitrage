@@ -1,10 +1,10 @@
-"""Inventory model — tracks purchased LEGO sets for portfolio management."""
+"""Inventory model - tracks purchased LEGO sets for portfolio management."""
 
 from datetime import date, datetime
 from enum import Enum
 
-from sqlalchemy import Date, Float, Index, Integer, String, Text, Boolean
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Boolean, Date, Float, Index, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
 
@@ -52,6 +52,15 @@ class InventoryItem(Base):
     sell_platform: Mapped[str | None] = mapped_column(String(100))
     realized_profit: Mapped[float | None] = mapped_column(Float)
     realized_roi_percent: Mapped[float | None] = mapped_column(Float)
+    photos: Mapped[list["InventoryPhoto"]] = relationship(
+        back_populates="item",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+        order_by="InventoryPhoto.sort_order",
+    )
 
     def __repr__(self) -> str:
         return f"<InventoryItem {self.set_number} '{self.set_name}' {self.status}>"
+
+
+from app.models.inventory_photo import InventoryPhoto  # noqa: E402

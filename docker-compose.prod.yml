@@ -43,6 +43,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-lego}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lego_arbitrage}
       DATABASE_URL_SYNC: postgresql://${POSTGRES_USER:-lego}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lego_arbitrage}
       REDIS_URL: redis://redis:6379/0
+      MEDIA_ROOT: /data
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,6 +59,8 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+    volumes:
+      - ${DATA_ROOT}/media:/data
     restart: unless-stopped
 
   worker:
@@ -71,12 +74,15 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-lego}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lego_arbitrage}
       DATABASE_URL_SYNC: postgresql://${POSTGRES_USER:-lego}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lego_arbitrage}
       REDIS_URL: redis://redis:6379/0
+      MEDIA_ROOT: /data
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped
+    volumes:
+      - ${DATA_ROOT}/media:/data
 
   beat:
     build:
@@ -89,12 +95,15 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-lego}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lego_arbitrage}
       DATABASE_URL_SYNC: postgresql://${POSTGRES_USER:-lego}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lego_arbitrage}
       REDIS_URL: redis://redis:6379/0
+      MEDIA_ROOT: /data
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped
+    volumes:
+      - ${DATA_ROOT}/media:/data
 
   frontend:
     build:

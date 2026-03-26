@@ -33,6 +33,7 @@ The current source-of-truth repo intentionally remains the private GitHub repo
 ```bash
 mkdir -p /mnt/HC_Volume_105179687/lego-arbitrage/postgres
 mkdir -p /mnt/HC_Volume_105179687/lego-arbitrage/redis
+mkdir -p /mnt/HC_Volume_105179687/lego-arbitrage/media
 ```
 
 ## GitHub Deploy Key On The Server
@@ -94,6 +95,8 @@ Recommended GitHub environment setup:
   `POSTGRES_PASSWORD`
 - `backend/.env`: application secrets and runtime settings such as dashboard
   auth, Telegram token defaults, AI keys and scraper config
+- Inventory-Fotos liegen unter `MEDIA_ROOT`, in Produktion per Compose auf
+  `${DATA_ROOT}/media` gemountet
 
 ## Deploy
 

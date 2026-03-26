@@ -2,13 +2,17 @@
 
 import asyncio
 import re
+from datetime import datetime
 
 import structlog
 from bs4 import BeautifulSoup
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.engine.decision_engine import analyze_deal
+from app.models import AnalysisHistoryEntry, async_session, get_session
 from app.scrapers import (
     AmazonScraper,
     BrickEconomyScraper,
@@ -40,6 +44,12 @@ class ParseUrlRequest(BaseModel):
     """Request to parse a Kleinanzeigen or other listing URL."""
 
     url: str
+
+
+class CodeLookupRequest(BaseModel):
+    """Resolve a scanned code or barcode to a LEGO set."""
+
+    code: str
 
 
 class ParseUrlResponse(BaseModel):
@@ -93,6 +103,7 @@ class AnalyzeRequest(BaseModel):
     box_damage: bool = False
     purchase_shipping: float | None = None
     source_url: str | None = None  # Original listing URL
+    source_platform: str | None = None
     # Optional overrides (if user already knows these)
     set_name: str | None = None
     theme: str | None = None
@@ -101,9 +112,18 @@ class AnalyzeRequest(BaseModel):
     eol_status: str | None = None
 
 
+class CodeLookupResponse(SetLookupResponse):
+    """Set lookup result for a scanned code."""
+
+    code: str
+    matched_set_number: str | None = None
+    message: str | None = None
+
+
 class AnalysisResponse(BaseModel):
     """Full analysis result."""
 
+    history_id: int | None = None
     set_number: str
     set_name: str
     release_year: int
@@ -130,10 +150,178 @@ class AnalysisResponse(BaseModel):
     warnings: list[str]
     source_prices: dict[str, float]
     analyzed_at: str
+    source_url: str | None = None
+    source_platform: str | None = None
+
+
+def _detect_source_platform(source_url: str | None, source_platform: str | None) -> str | None:
+    if source_platform:
+        return source_platform
+    if not source_url:
+        return None
+
+    lowered = source_url.lower()
+    if "kleinanzeigen" in lowered:
+        return "KLEINANZEIGEN"
+    if "ebay" in lowered:
+        return "EBAY"
+    if "amazon" in lowered:
+        return "AMAZON"
+    return "UNKNOWN"
+
+
+def _set_info_to_lookup_response(code: str, matched_set_number: str, info) -> CodeLookupResponse:
+    return CodeLookupResponse(
+        code=code,
+        matched_set_number=matched_set_number,
+        set_number=matched_set_number,
+        set_name=info.set_name,
+        theme=info.theme,
+        release_year=info.release_year,
+        uvp=info.uvp_eur,
+        eol_status=info.eol_status,
+        found=bool(info and info.set_name),
+        message=f"Code {code} wurde als Set {matched_set_number} erkannt",
+    )
+
+
+def _extract_set_candidates_from_code(code: str) -> list[str]:
+    normalized = re.sub(r"\D", "", code)
+    candidates = re.findall(r"\b(\d{4,6})\b", code)
+    if 4 <= len(normalized) <= 6:
+        candidates.insert(0, normalized)
+    elif len(normalized) > 6:
+        candidates.extend(re.findall(r"(\d{4,6})", normalized))
+
+    deduplicated: list[str] = []
+    for candidate in candidates:
+        if candidate not in deduplicated:
+            deduplicated.append(candidate)
+    return deduplicated
+
+
+def _extract_set_number_from_lookup_html(html: str) -> str | None:
+    soup = BeautifulSoup(html, "lxml")
+    texts = []
+    title_el = soup.select_one("title")
+    h1_el = soup.select_one("h1")
+    if title_el:
+        texts.append(title_el.get_text(" ", strip=True))
+    if h1_el:
+        texts.append(h1_el.get_text(" ", strip=True))
+
+    for text in texts:
+        matches = re.findall(r"\b(\d{4,6})\b", text)
+        if matches:
+            return matches[0]
+    return None
+
+
+async def _lookup_set_info(set_number: str):
+    from app.scrapers.brickmerge import BrickMergeScraper
+
+    async with BrickMergeScraper() as scraper:
+        return await scraper.get_set_info(set_number)
+
+
+async def _resolve_set_number_from_code(code: str) -> str | None:
+    from app.scrapers.brickmerge import BrickMergeScraper
+
+    candidates = _extract_set_candidates_from_code(code)
+    for candidate in candidates:
+        info = await _lookup_set_info(candidate)
+        if info and info.set_name:
+            return candidate
+
+    normalized = re.sub(r"\D", "", code)
+    if not normalized:
+        return None
+
+    try:
+        async with BrickMergeScraper() as scraper:
+            html = await scraper._fetch_detail_page(normalized)
+        return _extract_set_number_from_lookup_html(html)
+    except Exception as exc:
+        logger.warning("lookup_code.lookup_failed", code=code, error=str(exc))
+        return None
+
+
+def _history_to_response(entry: AnalysisHistoryEntry) -> AnalysisResponse:
+    return AnalysisResponse(
+        history_id=entry.id,
+        set_number=entry.set_number,
+        set_name=entry.set_name,
+        release_year=entry.release_year,
+        theme=entry.theme,
+        set_age=entry.set_age,
+        category=entry.category,
+        uvp=entry.uvp,
+        offer_price=entry.offer_price,
+        discount_vs_uvp=entry.discount_vs_uvp,
+        market_price=entry.market_price,
+        num_sources=entry.num_sources,
+        roi_percent=entry.roi_percent,
+        annualized_roi=entry.annualized_roi,
+        net_profit=entry.net_profit,
+        total_purchase_cost=entry.total_purchase_cost,
+        total_selling_costs=entry.total_selling_costs,
+        risk_score=entry.risk_score,
+        risk_rating=entry.risk_rating,
+        recommendation=entry.recommendation,
+        reason=entry.reason,
+        suggestions=entry.suggestions or [],
+        opportunity_score=entry.opportunity_score,
+        confidence=entry.confidence,
+        warnings=entry.warnings or [],
+        source_prices=entry.source_prices or {},
+        analyzed_at=entry.analyzed_at.isoformat(),
+        source_url=entry.source_url,
+        source_platform=entry.source_platform,
+    )
+
+
+async def _store_history(session: AsyncSession, response: AnalysisResponse) -> AnalysisResponse:
+    entry = AnalysisHistoryEntry(
+        set_number=response.set_number,
+        set_name=response.set_name,
+        release_year=response.release_year,
+        theme=response.theme,
+        set_age=response.set_age,
+        category=response.category,
+        uvp=response.uvp,
+        offer_price=response.offer_price,
+        discount_vs_uvp=response.discount_vs_uvp,
+        market_price=response.market_price,
+        num_sources=response.num_sources,
+        roi_percent=response.roi_percent,
+        annualized_roi=response.annualized_roi,
+        net_profit=response.net_profit,
+        total_purchase_cost=response.total_purchase_cost,
+        total_selling_costs=response.total_selling_costs,
+        risk_score=response.risk_score,
+        risk_rating=response.risk_rating,
+        recommendation=response.recommendation,
+        reason=response.reason,
+        suggestions=response.suggestions,
+        opportunity_score=response.opportunity_score,
+        confidence=response.confidence,
+        warnings=response.warnings,
+        source_prices=response.source_prices,
+        analyzed_at=datetime.fromisoformat(response.analyzed_at),
+        source_url=response.source_url,
+        source_platform=response.source_platform,
+    )
+    session.add(entry)
+    await session.commit()
+    await session.refresh(entry)
+    return _history_to_response(entry)
 
 
 @router.post("/analyze", response_model=AnalysisResponse)
-async def analyze_offer(request: AnalyzeRequest):
+async def analyze_offer(
+    request: AnalyzeRequest,
+    session: AsyncSession = Depends(get_session),
+):
     """Run full analysis on a potential LEGO deal.
 
     Scrapes all data sources, calculates ROI, risk, and gives
@@ -242,6 +430,8 @@ async def analyze_offer(request: AnalyzeRequest):
     response = AnalysisResponse(
         set_number=analysis.set_number,
         set_name=analysis.set_name,
+        source_url=request.source_url,
+        source_platform=_detect_source_platform(request.source_url, request.source_platform),
         release_year=analysis.release_year,
         theme=analysis.theme,
         set_age=analysis.set_age,
@@ -268,22 +458,19 @@ async def analyze_offer(request: AnalyzeRequest):
         analyzed_at=analysis.analyzed_at.isoformat(),
     )
 
-    # Store in analysis history
-    _analysis_history.append(response.model_dump())
-    if len(_analysis_history) > 100:
-        _analysis_history.pop(0)
-
-    return response
+    return await _store_history(session, response)
 
 
-# ── In-memory analysis history (persisted per server restart) ──
-_analysis_history: list[dict] = []
-
-
-@router.get("/history")
-async def get_analysis_history():
+# Persistent analysis history
+@router.get("/history", response_model=list[AnalysisResponse])
+async def get_analysis_history(session: AsyncSession = Depends(get_session)):
     """Get recent analysis history (newest first)."""
-    return list(reversed(_analysis_history))
+    result = await session.execute(
+        select(AnalysisHistoryEntry)
+        .order_by(AnalysisHistoryEntry.analyzed_at.desc(), AnalysisHistoryEntry.id.desc())
+        .limit(200)
+    )
+    return [_history_to_response(entry) for entry in result.scalars().all()]
 
 
 @router.get("/lookup/{set_number}", response_model=SetLookupResponse)
@@ -312,6 +499,37 @@ async def lookup_set(set_number: str):
         logger.warning("lookup.failed", set_number=set_number, error=str(e))
 
     return SetLookupResponse(set_number=set_number, found=False)
+
+
+@router.post("/lookup-code", response_model=CodeLookupResponse)
+async def lookup_code(request: CodeLookupRequest):
+    """Resolve a scanned code to a LEGO set if possible."""
+    code = request.code.strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="Code darf nicht leer sein")
+
+    logger.info("lookup_code.start", code=code)
+    matched_set_number = await _resolve_set_number_from_code(code)
+    if not matched_set_number:
+        return CodeLookupResponse(
+            code=code,
+            set_number="",
+            matched_set_number=None,
+            found=False,
+            message="Kein LEGO-Set zum gescannten Code gefunden. Bitte Set-Nummer manuell prüfen.",
+        )
+
+    info = await _lookup_set_info(matched_set_number)
+    if info and info.set_name:
+        return _set_info_to_lookup_response(code, matched_set_number, info)
+
+    return CodeLookupResponse(
+        code=code,
+        set_number=matched_set_number,
+        matched_set_number=matched_set_number,
+        found=False,
+        message="Code erkannt, aber Set-Daten konnten noch nicht geladen werden.",
+    )
 
 
 @router.post("/parse-url", response_model=ParseUrlResponse)
@@ -468,6 +686,8 @@ class AnalyzeMultiRequest(BaseModel):
     condition: str = "NEW_SEALED"
     box_damage: bool = False
     purchase_shipping: float | None = None
+    source_url: str | None = None
+    source_platform: str | None = None
 
 
 class MultiAnalysisResponse(BaseModel):
@@ -542,9 +762,12 @@ async def analyze_multi(request: AnalyzeMultiRequest):
             offer_price=allocated_price,
             condition=request.condition,
             box_damage=request.box_damage,
-            purchase_shipping=None,  # shipping applies to the bundle, not per-set
+            purchase_shipping=None,
+            source_url=request.source_url,
+            source_platform=request.source_platform,
         )
-        return await analyze_offer(req)
+        async with async_session() as item_session:
+            return await analyze_offer(req, item_session)
 
     analysis_results = await asyncio.gather(
         *[analyze_single(sn, price_allocation[sn]) for sn in request.set_numbers],

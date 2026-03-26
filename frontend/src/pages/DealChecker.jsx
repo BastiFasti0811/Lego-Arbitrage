@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAppStore } from "../stores/appStore";
@@ -10,6 +10,16 @@ const verdictBg = {
   CHECK: "from-check/20 to-check/5 border-check/30",
   NO_GO: "from-no-go/20 to-no-go/5 border-no-go/30",
 };
+
+const EURO = "\u20ac";
+const ICON_UP = "\u25b4";
+const ICON_DOWN = "\u25be";
+const ICON_RIGHT = "\u25b8";
+const ICON_CLOSE = "\u2715";
+const ICON_EXTERNAL = "\u2197";
+const formatMoney = (value, digits = 2) => `${Number(value).toFixed(digits)}${EURO}`;
+const formatAnalyzedAt = (value) =>
+  new Date(value).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" });
 
 const SHIPPING_PRESETS = [
   { label: "Kein Versand", value: 0 },
@@ -26,6 +36,10 @@ const isUrl = (str) => /^https?:\/\//.test(str.trim());
 export default function DealChecker() {
   const queryClient = useQueryClient();
   const { setLastAnalysis } = useAppStore();
+  const barcodeInputRef = useRef(null);
+  const liveVideoRef = useRef(null);
+  const liveScannerStreamRef = useRef(null);
+  const liveScannerTimeoutRef = useRef(null);
 
   // Smart input — accepts URL or set number
   const [smartInput, setSmartInput] = useState("");
@@ -38,6 +52,11 @@ export default function DealChecker() {
   const [sourceUrl, setSourceUrl] = useState("");
   const [sourcePlatform, setSourcePlatform] = useState("");
   const [showHistory, setShowHistory] = useState(false);
+  const [selectedHistoryItem, setSelectedHistoryItem] = useState(null);
+  const [isScanningBarcode, setIsScanningBarcode] = useState(false);
+  const [barcodeRawValue, setBarcodeRawValue] = useState("");
+  const [showLiveScanner, setShowLiveScanner] = useState(false);
+  const [cameraError, setCameraError] = useState("");
 
   // Seller check
   const [sellerUrl, setSellerUrl] = useState("");
@@ -106,6 +125,7 @@ export default function DealChecker() {
   const analyze = useMutation({
     mutationFn: (data) => api.analyze(data),
     onSuccess: (data) => {
+      setSelectedHistoryItem(null);
       setLastAnalysis(data);
       queryClient.invalidateQueries({ queryKey: ["analysis-history"] });
     },
@@ -141,7 +161,136 @@ export default function DealChecker() {
     },
   });
 
+  function stopLiveScanner({ closeModal = true } = {}) {
+    if (liveScannerTimeoutRef.current) {
+      window.clearTimeout(liveScannerTimeoutRef.current);
+      liveScannerTimeoutRef.current = null;
+    }
+
+    if (liveScannerStreamRef.current) {
+      liveScannerStreamRef.current.getTracks().forEach((track) => track.stop());
+      liveScannerStreamRef.current = null;
+    }
+
+    if (liveVideoRef.current) {
+      liveVideoRef.current.srcObject = null;
+    }
+
+    if (closeModal) {
+      setShowLiveScanner(false);
+    }
+
+    setIsScanningBarcode(false);
+  }
+
+  useEffect(() => () => {
+    if (liveScannerTimeoutRef.current) {
+      window.clearTimeout(liveScannerTimeoutRef.current);
+      liveScannerTimeoutRef.current = null;
+    }
+    if (liveScannerStreamRef.current) {
+      liveScannerStreamRef.current.getTracks().forEach((track) => track.stop());
+      liveScannerStreamRef.current = null;
+    }
+  }, []);
+
+  const handleDetectedCode = async (rawValue) => {
+    const normalizedValue = rawValue.trim();
+    setBarcodeRawValue(normalizedValue);
+    const lookup = await api.lookupCode(normalizedValue);
+
+    if (lookup.matched_set_number) {
+      setIsKonvolut(false);
+      setKonvolutSets([]);
+      setKonvolutPrice("");
+      setSetNumber(lookup.matched_set_number);
+    }
+
+    if (lookup.found && lookup.set_number) {
+      setParseMessage(lookup.message || `Code ${normalizedValue} erkannt, Set ${lookup.set_number} geladen`);
+    } else if (lookup.matched_set_number) {
+      setParseMessage(lookup.message || `Code ${normalizedValue} erkannt, bitte Preis ergänzen`);
+    } else {
+      const fallbackMatch = normalizedValue.match(/\b(\d{4,6})\b/);
+      if (fallbackMatch) {
+        setSetNumber(fallbackMatch[1]);
+      }
+      setParseMessage(lookup.message || "Code erkannt, aber kein Set automatisch zugeordnet");
+    }
+  };
+
+  const scheduleLiveScan = (detector) => {
+    liveScannerTimeoutRef.current = window.setTimeout(async () => {
+      const video = liveVideoRef.current;
+      if (!video || !liveScannerStreamRef.current) {
+        return;
+      }
+
+      try {
+        if (video.readyState >= 2) {
+          const results = await detector.detect(video);
+          const rawValue = results.find((result) => result?.rawValue)?.rawValue?.trim();
+          if (rawValue) {
+            stopLiveScanner();
+            await handleDetectedCode(rawValue);
+            return;
+          }
+        }
+      } catch {
+        // Ignore transient detection errors and keep scanning.
+      }
+
+      scheduleLiveScan(detector);
+    }, 350);
+  };
+
+  const startLiveScanner = async () => {
+    stopLiveScanner({ closeModal: false });
+    setSelectedHistoryItem(null);
+    setBarcodeRawValue("");
+    setParseMessage("");
+    setCameraError("");
+    setShowLiveScanner(true);
+
+    try {
+      if (!window.BarcodeDetector) {
+        throw new Error("Live-Scan wird in diesem Browser leider nicht unterstützt.");
+      }
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("Die Kamera ist in diesem Browser nicht verfügbar.");
+      }
+      if (!window.isSecureContext && !["localhost", "127.0.0.1"].includes(window.location.hostname)) {
+        throw new Error("Live-Kamera-Scan braucht HTTPS oder localhost.");
+      }
+
+      setIsScanningBarcode(true);
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" } },
+        audio: false,
+      });
+      liveScannerStreamRef.current = stream;
+
+      const video = liveVideoRef.current;
+      if (!video) {
+        throw new Error("Die Kamera-Vorschau konnte nicht initialisiert werden.");
+      }
+
+      video.srcObject = stream;
+      await video.play();
+
+      const detector = new window.BarcodeDetector({
+        formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39"],
+      });
+      scheduleLiveScan(detector);
+    } catch (error) {
+      stopLiveScanner({ closeModal: false });
+      setCameraError(error.message || "Kamera konnte nicht gestartet werden.");
+    }
+  };
+
   const handleSmartInput = (value) => {
+    setSelectedHistoryItem(null);
+    setBarcodeRawValue("");
     setSmartInput(value);
     // Auto-detect URL on paste
     if (isUrl(value)) {
@@ -155,9 +304,46 @@ export default function DealChecker() {
     }
   };
 
+  const handleBarcodeScan = async (file) => {
+    if (!file) return;
+    setSelectedHistoryItem(null);
+    setIsScanningBarcode(true);
+    setBarcodeRawValue("");
+    setParseMessage("");
+
+    try {
+      if (!window.BarcodeDetector) {
+        throw new Error("Barcode-Scan wird in diesem Browser leider nicht unterstützt.");
+      }
+
+      const detector = new window.BarcodeDetector({
+        formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39"],
+      });
+      const bitmap = await createImageBitmap(file);
+      const results = await detector.detect(bitmap);
+      if (typeof bitmap.close === "function") {
+        bitmap.close();
+      }
+
+      if (!results.length || !results[0]?.rawValue) {
+        throw new Error("Kein Barcode oder EAN auf dem Bild gefunden.");
+      }
+
+      await handleDetectedCode(results[0].rawValue);
+    } catch (error) {
+      setParseMessage(error.message || "Barcode-Scan fehlgeschlagen");
+    } finally {
+      setIsScanningBarcode(false);
+      if (barcodeInputRef.current) {
+        barcodeInputRef.current.value = "";
+      }
+    }
+  };
+
   const handleAnalyze = (e) => {
     e.preventDefault();
     if (!setNumber || !offerPrice) return;
+    setSelectedHistoryItem(null);
     analyze.mutate({
       set_number: setNumber.trim(),
       offer_price: parseFloat(offerPrice),
@@ -165,6 +351,7 @@ export default function DealChecker() {
       box_damage: boxDamage,
       purchase_shipping: shipping ? parseFloat(shipping) : null,
       source_url: sourceUrl || null,
+      source_platform: sourcePlatform || null,
     });
   };
 
@@ -174,6 +361,8 @@ export default function DealChecker() {
       set_numbers: konvolutSets,
       total_price: parseFloat(konvolutPrice),
       condition,
+      source_url: sourceUrl || null,
+      source_platform: sourcePlatform || null,
     });
   };
 
@@ -182,7 +371,7 @@ export default function DealChecker() {
   };
 
   const handleBuy = () => {
-    const result = analyze.data;
+    const result = selectedHistoryItem || analyze.data;
     if (!result) return;
     addToInventory.mutate({
       set_number: result.set_number,
@@ -192,6 +381,7 @@ export default function DealChecker() {
       buy_shipping: shipping ? parseFloat(shipping) : 0,
       buy_date: buyDate,
       buy_platform: buyPlatform || sourcePlatform || null,
+      buy_url: sourceUrl || result.source_url || null,
       condition,
     });
   };
@@ -211,6 +401,7 @@ export default function DealChecker() {
           buy_shipping: 0,
           buy_date: konvolutBuyDate,
           buy_platform: konvolutBuyPlatform || sourcePlatform || null,
+          buy_url: sourceUrl || item.source_url || null,
           condition,
         });
       }
@@ -225,29 +416,36 @@ export default function DealChecker() {
   };
 
   const loadFromHistory = (item) => {
+    setSelectedHistoryItem(item);
+    setLastAnalysis(item);
+    setBarcodeRawValue("");
     setIsKonvolut(false);
     setKonvolutSets([]);
     setKonvolutPrice("");
     setSetNumber(item.set_number);
     setOfferPrice(String(item.offer_price));
+    setSourceUrl(item.source_url || "");
+    setSourcePlatform(item.source_platform || "");
+    setSmartInput(item.source_url || "");
+    setParseMessage("Check aus der Historie geladen");
     setShowHistory(false);
   };
 
-  const result = analyze.data;
+  const result = selectedHistoryItem || analyze.data;
   const multiResult = analyzeMulti.data;
   const bg = result ? verdictBg[result.recommendation] || verdictBg.NO_GO : "";
 
   return (
     <div className="max-w-2xl mx-auto">
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-text-primary">Deal Checker</h1>
+        <h1 className="text-2xl font-bold text-text-primary">Deal-Check</h1>
         {history.length > 0 && (
           <button
             onClick={() => setShowHistory(!showHistory)}
             className="text-text-muted text-sm hover:text-lego-yellow transition-colors flex items-center gap-1"
           >
-            <span className="font-[family-name:var(--font-mono)]">{history.length}</span> History
-            <span>{showHistory ? "\u25B4" : "\u25BE"}</span>
+            <span className="font-[family-name:var(--font-mono)]">{history.length}</span> Check-Historie
+            <span>{showHistory ? ICON_UP : ICON_DOWN}</span>
           </button>
         )}
       </div>
@@ -255,26 +453,54 @@ export default function DealChecker() {
       {/* History Panel */}
       {showHistory && history.length > 0 && (
         <div className="bg-bg-card border border-border rounded-xl mb-6 max-h-64 overflow-y-auto">
-          {history.map((item, i) => (
-            <button
-              key={i}
-              onClick={() => loadFromHistory(item)}
-              className="w-full flex items-center justify-between px-4 py-3 hover:bg-bg-hover transition-colors border-b border-border/50 last:border-0 text-left"
+          {history.map((item) => (
+            <div
+              key={item.history_id ?? `${item.set_number}-${item.analyzed_at}`}
+              className="flex items-center gap-2 px-4 py-3 hover:bg-bg-hover transition-colors border-b border-border/50 last:border-0"
             >
-              <div className="flex items-center gap-3">
-                <VerdictBadge verdict={item.recommendation} size="sm" />
-                <div>
-                  <span className="text-lego-yellow font-[family-name:var(--font-mono)] text-sm">{item.set_number}</span>
-                  <span className="text-text-muted text-sm ml-2">{item.set_name}</span>
+              <button
+                type="button"
+                onClick={() => loadFromHistory(item)}
+                className="flex-1 flex items-center justify-between text-left"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <VerdictBadge verdict={item.recommendation} size="sm" />
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-lego-yellow font-[family-name:var(--font-mono)] text-sm">
+                        {item.set_number}
+                      </span>
+                      <span className="text-text-muted text-sm truncate">{item.set_name}</span>
+                    </div>
+                    <div className="flex flex-wrap gap-x-3 gap-y-1 text-text-muted text-xs mt-1">
+                      <span>{item.source_platform || "MANUELL"}</span>
+                      <span>{formatAnalyzedAt(item.analyzed_at)}</span>
+                    </div>
+                  </div>
                 </div>
-              </div>
-              <div className="text-right">
-                <div className={`font-[family-name:var(--font-mono)] text-sm font-bold ${item.roi_percent >= 20 ? "text-go-star" : item.roi_percent >= 0 ? "text-check" : "text-no-go"}`}>
-                  {item.roi_percent.toFixed(1)}%
+                <div className="text-right shrink-0 ml-3">
+                  <div
+                    className={`font-[family-name:var(--font-mono)] text-sm font-bold ${
+                      item.roi_percent >= 20 ? "text-go-star" : item.roi_percent >= 0 ? "text-check" : "text-no-go"
+                    }`}
+                  >
+                    {item.roi_percent.toFixed(1)}%
+                  </div>
+                  <div className="text-text-muted text-xs">{formatMoney(item.offer_price)}</div>
                 </div>
-                <div className="text-text-muted text-xs">{item.offer_price}\u20AC</div>
-              </div>
-            </button>
+              </button>
+              {item.source_url && (
+                <a
+                  href={item.source_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Originalangebot öffnen"
+                  className="shrink-0 text-text-muted hover:text-lego-yellow transition-colors px-2 py-1"
+                >
+                  {ICON_EXTERNAL}
+                </a>
+              )}
+            </div>
           ))}
         </div>
       )}
@@ -284,7 +510,7 @@ export default function DealChecker() {
         {/* URL/Link Input */}
         <div className="mb-4">
           <label className="block text-text-muted text-xs mb-1">
-            Link einf\u00FCgen (Kleinanzeigen, eBay, Amazon) oder direkt Set-Nummer eingeben
+            {"Link einf\u00fcgen (Kleinanzeigen, eBay, Amazon) oder direkt Set-Nummer eingeben"}
           </label>
           <div className="relative">
             <input
@@ -304,7 +530,7 @@ export default function DealChecker() {
             />
             {parseUrl.isPending && (
               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-lego-yellow text-xs animate-pulse">
-                Parsing...
+                Lade...
               </span>
             )}
             {sourceUrl && !parseUrl.isPending && (
@@ -313,6 +539,40 @@ export default function DealChecker() {
               </span>
             )}
           </div>
+          <div className="flex flex-wrap items-center gap-3 mt-3">
+            <button
+              type="button"
+              onClick={startLiveScanner}
+              disabled={isScanningBarcode}
+              className="bg-lego-yellow/15 text-lego-yellow text-xs font-medium px-3 py-2 rounded-lg hover:bg-lego-yellow/25 transition-colors disabled:opacity-50"
+            >
+              {showLiveScanner && isScanningBarcode ? "Kamera läuft..." : "Live-Kamera-Scan"}
+            </button>
+            <button
+              type="button"
+              onClick={() => barcodeInputRef.current?.click()}
+              disabled={isScanningBarcode}
+              className="bg-lego-blue/10 text-lego-blue text-xs font-medium px-3 py-2 rounded-lg hover:bg-lego-blue/20 transition-colors disabled:opacity-50"
+            >
+              {showLiveScanner && isScanningBarcode ? "Kamera aktiv..." : isScanningBarcode ? "Scanne Bild..." : "Barcode/EAN aus Bild lesen"}
+            </button>
+            <input
+              ref={barcodeInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={(e) => handleBarcodeScan(e.target.files?.[0])}
+            />
+            <span className="text-text-muted text-xs">
+              Alternativ zum Link-Einfügen. Funktioniert am besten mit gut sichtbarem EAN/Barcode.
+            </span>
+          </div>
+          {barcodeRawValue && (
+            <p className="text-text-muted text-xs mt-2">
+              Gelesener Code: <span className="font-[family-name:var(--font-mono)] text-text-secondary">{barcodeRawValue}</span>
+            </p>
+          )}
         </div>
 
         {/* Konvolut Banner & Controls */}
@@ -339,7 +599,7 @@ export default function DealChecker() {
                     className="text-text-muted hover:text-no-go transition-colors text-xs leading-none"
                     aria-label={`Set ${s} entfernen`}
                   >
-                    \u2715
+                    {ICON_CLOSE}
                   </button>
                 </span>
               ))}
@@ -357,7 +617,7 @@ export default function DealChecker() {
                   placeholder="0.00"
                   className="w-full bg-bg-primary border border-border rounded-lg px-4 py-3 text-text-primary font-[family-name:var(--font-mono)] text-lg placeholder:text-text-muted focus:border-lego-yellow focus:outline-none transition-colors pr-8"
                 />
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted">\u20AC</span>
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted">{EURO}</span>
               </div>
             </div>
 
@@ -391,7 +651,10 @@ export default function DealChecker() {
                 <input
                   type="text"
                   value={setNumber}
-                  onChange={(e) => setSetNumber(e.target.value)}
+                  onChange={(e) => {
+                    setSelectedHistoryItem(null);
+                    setSetNumber(e.target.value);
+                  }}
                   placeholder="z.B. 75192"
                   className="w-full bg-bg-primary border border-border rounded-lg px-4 py-3 text-text-primary font-[family-name:var(--font-mono)] text-lg placeholder:text-text-muted focus:border-lego-yellow focus:outline-none transition-colors"
                 />
@@ -403,11 +666,14 @@ export default function DealChecker() {
                     type="number"
                     step="0.01"
                     value={offerPrice}
-                    onChange={(e) => setOfferPrice(e.target.value)}
+                    onChange={(e) => {
+                      setSelectedHistoryItem(null);
+                      setOfferPrice(e.target.value);
+                    }}
                     placeholder="0.00"
                     className="w-full bg-bg-primary border border-border rounded-lg px-4 py-3 text-text-primary font-[family-name:var(--font-mono)] text-lg placeholder:text-text-muted focus:border-lego-yellow focus:outline-none transition-colors pr-8"
                   />
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted">\u20AC</span>
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted">{EURO}</span>
                 </div>
               </div>
             </div>
@@ -418,7 +684,7 @@ export default function DealChecker() {
               onClick={() => setShowOptions(!showOptions)}
               className="text-text-muted text-xs hover:text-text-secondary transition-colors mb-3"
             >
-              {showOptions ? "\u25BE" : "\u25B8"} Optionen
+              {showOptions ? ICON_DOWN : ICON_RIGHT} Optionen
             </button>
 
             {showOptions && (
@@ -428,26 +694,32 @@ export default function DealChecker() {
                     <label className="block text-text-muted text-xs mb-1">Zustand</label>
                     <select
                       value={condition}
-                      onChange={(e) => setCondition(e.target.value)}
+                      onChange={(e) => {
+                        setSelectedHistoryItem(null);
+                        setCondition(e.target.value);
+                      }}
                       className="w-full bg-bg-card border border-border rounded-lg px-2 py-1.5 text-text-primary text-sm"
                     >
                       <option value="NEW_SEALED">Neu &amp; Versiegelt</option>
-                      <option value="NEW_OPEN">Neu &amp; Ge\u00F6ffnet</option>
+                      <option value="NEW_OPEN">{"Neu & Ge\u00f6ffnet"}</option>
                       <option value="USED_COMPLETE">Gebraucht (komplett)</option>
-                      <option value="USED_INCOMPLETE">Gebraucht (unvollst\u00E4ndig)</option>
+                      <option value="USED_INCOMPLETE">{"Gebraucht (unvollst\u00e4ndig)"}</option>
                     </select>
                   </div>
                   <div>
                     <label className="block text-text-muted text-xs mb-1">Versand</label>
                     <select
                       value={shipping}
-                      onChange={(e) => setShipping(e.target.value)}
+                      onChange={(e) => {
+                        setSelectedHistoryItem(null);
+                        setShipping(e.target.value);
+                      }}
                       className="w-full bg-bg-card border border-border rounded-lg px-2 py-1.5 text-text-primary text-sm"
                     >
-                      <option value="">Ausw\u00E4hlen...</option>
+                      <option value="">{"Ausw\u00e4hlen..."}</option>
                       {SHIPPING_PRESETS.map((p) => (
                         <option key={p.label} value={p.value}>
-                          {p.label} ({p.value.toFixed(2)}\u20AC)
+                          {p.label} ({formatMoney(p.value)})
                         </option>
                       ))}
                       <option value="custom">Eigener Betrag</option>
@@ -458,20 +730,26 @@ export default function DealChecker() {
                       <input
                         type="checkbox"
                         checked={boxDamage}
-                        onChange={(e) => setBoxDamage(e.target.checked)}
+                        onChange={(e) => {
+                          setSelectedHistoryItem(null);
+                          setBoxDamage(e.target.checked);
+                        }}
                         className="accent-lego-yellow"
                       />
-                      <span className="text-text-secondary text-sm">Box besch\u00E4digt</span>
+                      <span className="text-text-secondary text-sm">{"Box besch\u00e4digt"}</span>
                     </label>
                   </div>
                 </div>
                 {shipping === "custom" && (
                   <div className="w-1/3">
-                    <label className="block text-text-muted text-xs mb-1">Versandkosten (\u20AC)</label>
+                    <label className="block text-text-muted text-xs mb-1">Versandkosten ({EURO})</label>
                     <input
                       type="number"
                       step="0.01"
-                      onChange={(e) => setShipping(e.target.value)}
+                      onChange={(e) => {
+                        setSelectedHistoryItem(null);
+                        setShipping(e.target.value);
+                      }}
                       placeholder="0.00"
                       className="w-full bg-bg-card border border-border rounded-lg px-2 py-1.5 text-text-primary text-sm font-[family-name:var(--font-mono)]"
                     />
@@ -516,26 +794,26 @@ export default function DealChecker() {
               <div className="bg-bg-card p-4 text-center">
                 <div className="text-text-muted text-xs uppercase">Gesamtwert</div>
                 <div className="font-[family-name:var(--font-mono)] text-xl font-bold text-lego-yellow">
-                  {multiResult.summary?.total_market_value?.toFixed(0) ?? "--"}\u20AC
+                  {multiResult.summary?.total_market_value != null ? formatMoney(multiResult.summary.total_market_value, 0) : "--"}
                 </div>
               </div>
               <div className="bg-bg-card p-4 text-center">
                 <div className="text-text-muted text-xs uppercase">Gesamt-ROI</div>
-                <div className={`font-[family-name:var(--font-mono)] text-xl font-bold ${(multiResult.summary?.total_roi ?? 0) >= 20 ? "text-go-star" : (multiResult.summary?.total_roi ?? 0) >= 0 ? "text-check" : "text-no-go"}`}>
-                  {multiResult.summary?.total_roi?.toFixed(1) ?? "--"}%
+                <div className={`font-[family-name:var(--font-mono)] text-xl font-bold ${(multiResult.summary?.combined_roi ?? 0) >= 20 ? "text-go-star" : (multiResult.summary?.combined_roi ?? 0) >= 0 ? "text-check" : "text-no-go"}`}>
+                  {multiResult.summary?.combined_roi?.toFixed(1) ?? "--"}%
                 </div>
               </div>
               <div className="bg-bg-card p-4 text-center">
                 <div className="text-text-muted text-xs uppercase">Kaufpreis</div>
                 <div className="font-[family-name:var(--font-mono)] text-xl font-bold text-text-primary">
-                  {multiResult.summary?.total_price?.toFixed(0) ?? konvolutPrice}\u20AC
+                  {multiResult.summary?.total_investment != null ? formatMoney(multiResult.summary.total_investment, 0) : `${konvolutPrice}${EURO}`}
                 </div>
               </div>
               <div className="bg-bg-card p-4 text-center">
                 <div className="text-text-muted text-xs uppercase">Empfehlung</div>
                 <div className="mt-1">
-                  {multiResult.summary?.overall_recommendation ? (
-                    <VerdictBadge verdict={multiResult.summary.overall_recommendation} size="md" />
+                  {multiResult.summary?.recommendation ? (
+                    <VerdictBadge verdict={multiResult.summary.recommendation} size="md" />
                   ) : (
                     <span className="text-text-muted">--</span>
                   )}
@@ -551,7 +829,7 @@ export default function DealChecker() {
                   {Object.entries(multiResult.price_allocation).map(([setNum, price]) => (
                     <div key={setNum} className="flex justify-between">
                       <span className="text-lego-yellow font-[family-name:var(--font-mono)]">{setNum}</span>
-                      <span className="text-text-primary font-[family-name:var(--font-mono)]">{price.toFixed(2)}\u20AC</span>
+                      <span className="text-text-primary font-[family-name:var(--font-mono)]">{formatMoney(price)}</span>
                     </div>
                   ))}
                 </div>
@@ -579,12 +857,12 @@ export default function DealChecker() {
                       {allocatedPrice != null && (
                         <div className="flex justify-between">
                           <span className="text-text-muted">Anteil</span>
-                          <span className="text-text-primary font-[family-name:var(--font-mono)]">{allocatedPrice.toFixed(2)}\u20AC</span>
+                          <span className="text-text-primary font-[family-name:var(--font-mono)]">{formatMoney(allocatedPrice)}</span>
                         </div>
                       )}
                       <div className="flex justify-between">
                         <span className="text-text-muted">Marktwert</span>
-                        <span className="text-lego-yellow font-[family-name:var(--font-mono)]">{item.market_price?.toFixed(2) ?? "--"}\u20AC</span>
+                        <span className="text-lego-yellow font-[family-name:var(--font-mono)]">{item.market_price != null ? formatMoney(item.market_price) : "--"}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-text-muted">ROI</span>
@@ -595,7 +873,7 @@ export default function DealChecker() {
                       <div className="flex justify-between">
                         <span className="text-text-muted">Gewinn</span>
                         <span className={`font-[family-name:var(--font-mono)] font-bold ${item.net_profit > 0 ? "text-go" : "text-no-go"}`}>
-                          {item.net_profit > 0 ? "+" : ""}{item.net_profit?.toFixed(2) ?? "--"}\u20AC
+                          {item.net_profit != null ? `${item.net_profit > 0 ? "+" : ""}${formatMoney(item.net_profit)}` : "--"}
                         </span>
                       </div>
                     </div>
@@ -631,8 +909,8 @@ export default function DealChecker() {
           <div className="grid grid-cols-3 gap-px bg-border">
             {[
               { label: "ROI", value: `${result.roi_percent.toFixed(1)}%`, color: result.roi_percent >= 20 ? "text-go-star" : result.roi_percent >= 0 ? "text-check" : "text-no-go" },
-              { label: "Net Profit", value: `${result.net_profit.toFixed(0)}\u20AC`, color: result.net_profit > 0 ? "text-go" : "text-no-go" },
-              { label: "Risk", value: `${result.risk_score}/10`, color: result.risk_score <= 5 ? "text-go" : result.risk_score <= 7 ? "text-check" : "text-no-go" },
+              { label: "Gewinn", value: `${result.net_profit > 0 ? "+" : ""}${formatMoney(result.net_profit, 0)}`, color: result.net_profit > 0 ? "text-go" : "text-no-go" },
+              { label: "Risiko", value: `${result.risk_score}/10`, color: result.risk_score <= 5 ? "text-go" : result.risk_score <= 7 ? "text-check" : "text-no-go" },
             ].map((m) => (
               <div key={m.label} className="bg-bg-card p-4 text-center">
                 <div className="text-text-muted text-xs uppercase">{m.label}</div>
@@ -648,12 +926,12 @@ export default function DealChecker() {
               {Object.entries(result.source_prices).map(([source, price]) => (
                 <div key={source} className="flex justify-between text-sm">
                   <span className="text-text-muted">{source}</span>
-                  <span className="text-text-primary font-[family-name:var(--font-mono)]">{price.toFixed(2)}\u20AC</span>
+                  <span className="text-text-primary font-[family-name:var(--font-mono)]">{formatMoney(price)}</span>
                 </div>
               ))}
               <div className="flex justify-between text-sm pt-2 border-t border-border/50">
                 <span className="text-text-secondary font-medium">Markt-Konsens ({result.num_sources} Quellen)</span>
-                <span className="text-lego-yellow font-[family-name:var(--font-mono)] font-bold">{result.market_price.toFixed(2)}\u20AC</span>
+                <span className="text-lego-yellow font-[family-name:var(--font-mono)] font-bold">{formatMoney(result.market_price)}</span>
               </div>
             </div>
           </div>
@@ -664,20 +942,20 @@ export default function DealChecker() {
             <div className="space-y-1.5 text-sm">
               <div className="flex justify-between">
                 <span className="text-text-muted">Kaufpreis</span>
-                <span className="text-text-primary font-[family-name:var(--font-mono)]">{result.offer_price.toFixed(2)}\u20AC</span>
+                <span className="text-text-primary font-[family-name:var(--font-mono)]">{formatMoney(result.offer_price)}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-text-muted">Gesamtkosten (Kauf)</span>
-                <span className="text-text-primary font-[family-name:var(--font-mono)]">{result.total_purchase_cost.toFixed(2)}\u20AC</span>
+                <span className="text-text-primary font-[family-name:var(--font-mono)]">{formatMoney(result.total_purchase_cost)}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-text-muted">Verkaufskosten (eBay Geb\u00FChren)</span>
-                <span className="text-no-go font-[family-name:var(--font-mono)]">-{result.total_selling_costs.toFixed(2)}\u20AC</span>
+                <span className="text-text-muted">{"Verkaufskosten (eBay Geb\u00fchren)"}</span>
+                <span className="text-no-go font-[family-name:var(--font-mono)]">-{formatMoney(result.total_selling_costs)}</span>
               </div>
               <div className="flex justify-between pt-2 border-t border-border/50 font-medium">
                 <span className="text-text-secondary">Netto-Gewinn</span>
                 <span className={`font-[family-name:var(--font-mono)] font-bold ${result.net_profit > 0 ? "text-go-star" : "text-no-go"}`}>
-                  {result.net_profit > 0 ? "+" : ""}{result.net_profit.toFixed(2)}\u20AC
+                  {result.net_profit > 0 ? "+" : ""}{formatMoney(result.net_profit)}
                 </span>
               </div>
             </div>
@@ -716,7 +994,7 @@ export default function DealChecker() {
               onClick={() => setShowBuyModal(true)}
               className="w-full bg-go-star text-black font-bold py-3 rounded-lg hover:bg-go-star/90 transition-colors"
             >
-              Gekauft -- ins Inventar aufnehmen
+              Gekauft - ins Inventar aufnehmen
             </button>
           </div>
         </div>
@@ -731,7 +1009,9 @@ export default function DealChecker() {
               onClick={() => setShowSellerCheck(!showSellerCheck)}
               className="text-text-muted text-xs hover:text-lego-yellow transition-colors"
             >
-              {showSellerCheck ? "\u25BE Schlie\u00DFen" : "\u25B8 Weitere Angebote des Verk\u00E4ufers pr\u00FCfen"}
+              {showSellerCheck
+                ? `${ICON_DOWN} Schließen`
+                : `${ICON_RIGHT} Weitere Angebote des Verkäufers prüfen`}
             </button>
           </div>
 
@@ -742,7 +1022,7 @@ export default function DealChecker() {
                   type="text"
                   value={sellerUrl}
                   onChange={(e) => setSellerUrl(e.target.value)}
-                  placeholder='Seller-Profil-URL einf\u00FCgen (z.B. "Alle Anzeigen" Link)'
+                  placeholder='Seller-Profil-URL einfügen (z.B. "Alle Anzeigen" Link)'
                   className="flex-1 bg-bg-primary border border-border rounded-lg px-4 py-2 text-text-primary text-sm placeholder:text-text-muted focus:border-lego-yellow focus:outline-none"
                 />
                 <button
@@ -750,7 +1030,7 @@ export default function DealChecker() {
                   disabled={!sellerUrl || sellerCheck.isPending}
                   className="bg-lego-blue text-white font-bold px-6 py-2 rounded-lg hover:bg-lego-blue/90 transition-colors disabled:opacity-50 text-sm whitespace-nowrap"
                 >
-                  {sellerCheck.isPending ? "Pr\u00FCfe..." : "Pr\u00FCfen"}
+                  {sellerCheck.isPending ? "Prüfe..." : "Prüfen"}
                 </button>
               </div>
 
@@ -777,9 +1057,11 @@ export default function DealChecker() {
                         className="flex items-center justify-between p-3 bg-bg-primary rounded-lg hover:bg-bg-hover transition-colors cursor-pointer"
                         onClick={() => {
                           if (listing.set_number) {
+                            setSelectedHistoryItem(null);
                             setSetNumber(listing.set_number);
                             if (listing.price) setOfferPrice(String(listing.price));
                             setSourceUrl(listing.url);
+                            setSourcePlatform("KLEINANZEIGEN");
                             window.scrollTo({ top: 0, behavior: "smooth" });
                           }
                         }}
@@ -797,7 +1079,7 @@ export default function DealChecker() {
                             <span className="text-check text-xs">VB</span>
                           )}
                           <span className="text-text-primary font-[family-name:var(--font-mono)] text-sm font-bold">
-                            {listing.price ? `${listing.price}\u20AC` : "\u2014"}
+                            {listing.price ? `${listing.price}${EURO}` : "\u2014"}
                           </span>
                         </div>
                       </div>
@@ -808,7 +1090,7 @@ export default function DealChecker() {
                     <div className="flex justify-between mt-3 pt-3 border-t border-border/50">
                       <span className="text-text-muted text-sm">Gesamtwert LEGO</span>
                       <span className="text-lego-yellow font-[family-name:var(--font-mono)] font-bold">
-                        {sellerCheck.data.total_value.toFixed(0)}\u20AC
+                        {formatMoney(sellerCheck.data.total_value, 0)}
                       </span>
                     </div>
                   )}
@@ -816,6 +1098,58 @@ export default function DealChecker() {
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {showLiveScanner && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="bg-bg-card border border-border rounded-xl p-6 w-full max-w-lg mx-4">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-text-primary text-lg font-bold">Live-Kamera-Scan</h2>
+                <p className="text-text-muted text-xs mt-1">
+                  Halte den Barcode ruhig ins Bild. Der Check startet automatisch.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => stopLiveScanner()}
+                className="text-text-muted hover:text-text-primary transition-colors px-2 py-1"
+              >
+                {ICON_CLOSE}
+              </button>
+            </div>
+
+            <div className="rounded-xl overflow-hidden border border-border bg-black aspect-video flex items-center justify-center">
+              {cameraError ? (
+                <div className="px-6 text-center">
+                  <p className="text-no-go text-sm">{cameraError}</p>
+                  <button
+                    type="button"
+                    onClick={startLiveScanner}
+                    className="mt-4 bg-lego-yellow text-black font-bold px-4 py-2 rounded-lg hover:bg-lego-yellow/90 transition-colors"
+                  >
+                    Erneut versuchen
+                  </button>
+                </div>
+              ) : (
+                <video
+                  ref={liveVideoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="w-full h-full object-cover"
+                />
+              )}
+            </div>
+
+            {!cameraError && (
+              <div className="flex items-center justify-between mt-4 text-xs text-text-muted">
+                <span>Bevorzugt Rückkamera und sichtbarer EAN/Barcode.</span>
+                <span>{isScanningBarcode ? "Suche..." : "Bereit"}</span>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -829,7 +1163,7 @@ export default function DealChecker() {
                 <span className="text-lego-yellow font-[family-name:var(--font-mono)]">{result.set_number}</span> -- {result.set_name}
               </div>
               <div className="text-text-primary font-[family-name:var(--font-mono)]">
-                Kaufpreis: {result.offer_price}\u20AC + {shipping || "0"}\u20AC Versand
+                Kaufpreis: {formatMoney(result.offer_price)} + {shipping ? formatMoney(shipping) : formatMoney(0)} Versand
               </div>
               <div>
                 <label className="block text-text-muted text-xs mb-1">Kaufdatum</label>
@@ -884,14 +1218,16 @@ export default function DealChecker() {
                   <div key={r.set_number} className="flex justify-between py-1">
                     <span className="text-lego-yellow font-[family-name:var(--font-mono)]">{r.set_number}</span>
                     <span className="text-text-primary font-[family-name:var(--font-mono)]">
-                      {(multiResult.price_allocation?.[r.set_number] ?? r.offer_price).toFixed(2)}\u20AC
+                      {formatMoney(multiResult.price_allocation?.[r.set_number] ?? r.offer_price)}
                     </span>
                   </div>
                 ))}
               </div>
               <div className="flex justify-between pt-2 border-t border-border/50 font-medium text-sm">
                 <span className="text-text-secondary">Gesamt</span>
-                <span className="text-lego-yellow font-[family-name:var(--font-mono)] font-bold">{konvolutPrice}\u20AC</span>
+                <span className="text-lego-yellow font-[family-name:var(--font-mono)] font-bold">
+                  {konvolutPrice ? formatMoney(konvolutPrice) : formatMoney(0)}
+                </span>
               </div>
               <div>
                 <label className="block text-text-muted text-xs mb-1">Kaufdatum</label>

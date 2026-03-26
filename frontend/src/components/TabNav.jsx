@@ -4,7 +4,7 @@ const tabs = [
   { to: "/", label: "Feed", icon: "\u{1F4E1}" },
   { to: "/checker", label: "Check", icon: "\u{1F50D}" },
   { to: "/inventar", label: "Inventar", icon: "\u{1F4E6}" },
-  { to: "/history", label: "History", icon: "\u{1F4CA}" },
+  { to: "/history", label: "Verkäufe", icon: "\u{1F4CA}" },
 ];
 
 export default function TabNav({ mobile = false }) {

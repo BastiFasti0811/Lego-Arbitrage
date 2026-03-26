@@ -1,5 +1,7 @@
 """Application configuration using Pydantic Settings."""
 
+from pathlib import Path
+
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
@@ -93,6 +95,13 @@ class Settings(BaseSettings):
     # ── Dashboard Auth ─────────────────────────────────────
     dashboard_password: str | None = None
     session_secret: str | None = None
+
+    # ── Media / Uploads ─────────────────────────────────
+    media_root: Path = Path("data")
+    inventory_photo_max_count: int = 8
+    inventory_photo_max_bytes: int = 8 * 1024 * 1024
+    inventory_photo_max_dimension: int = 1600
+    inventory_photo_jpeg_quality: int = 82
 
     # ── Scheduling ───────────────────────────────────────
     scrape_interval_hours: int = 6  # How often to run full scrape

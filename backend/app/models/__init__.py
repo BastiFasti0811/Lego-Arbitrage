@@ -1,8 +1,10 @@
 """Database models."""
 
 from app.models.base import Base, async_session, engine, get_session
+from app.models.analysis_history import AnalysisHistoryEntry
 from app.models.feedback import DealFeedback, WatchlistItem
 from app.models.inventory import InventoryItem, InventoryStatus
+from app.models.inventory_photo import InventoryPhoto
 from app.models.offer import Offer, OfferCondition, OfferPlatform, OfferStatus
 from app.models.price import PriceRecord, PriceSource
 from app.models.set import EOLStatus, LegoSet, SetCategory, ThemeTier
@@ -13,6 +15,7 @@ __all__ = [
     "async_session",
     "engine",
     "get_session",
+    "AnalysisHistoryEntry",
     "LegoSet",
     "SetCategory",
     "EOLStatus",
@@ -27,5 +30,6 @@ __all__ = [
     "WatchlistItem",
     "InventoryItem",
     "InventoryStatus",
+    "InventoryPhoto",
     "AppSetting",
 ]
