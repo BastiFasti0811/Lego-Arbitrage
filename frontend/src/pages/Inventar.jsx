@@ -570,8 +570,8 @@ export default function Inventar() {
       )}
 
       {sellModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-bg-card border border-border rounded-xl p-6 w-full max-w-md mx-4">
+        <div className="fixed inset-0 z-50 flex items-start justify-center md:items-center bg-black/60 backdrop-blur-sm overflow-y-auto p-4">
+          <div className="bg-bg-card border border-border rounded-xl p-6 w-full max-w-md my-6">
             <h2 className="text-text-primary text-lg font-bold mb-4">Verkauft markieren</h2>
             <div className="text-text-muted text-sm mb-4">
               <span className="text-lego-yellow font-[family-name:var(--font-mono)]">{sellModal.set_number}</span> - {sellModal.set_name}
@@ -601,8 +601,8 @@ export default function Inventar() {
       )}
 
       {editModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-bg-card border border-border rounded-xl p-6 w-full max-w-2xl mx-4">
+        <div className="fixed inset-0 z-50 flex items-start justify-center md:items-center bg-black/60 backdrop-blur-sm overflow-y-auto p-4">
+          <div className="bg-bg-card border border-border rounded-xl p-6 w-full max-w-2xl my-6">
             <h2 className="text-text-primary text-lg font-bold mb-2">Set bearbeiten</h2>
             <p className="text-lego-yellow font-[family-name:var(--font-mono)] text-sm mb-4">{editModal.set_number}</p>
             <form onSubmit={handleEdit} className="space-y-4">
@@ -658,8 +658,8 @@ export default function Inventar() {
       )}
 
       {addModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-bg-card border border-border rounded-xl p-6 w-full max-w-2xl mx-4">
+        <div className="fixed inset-0 z-50 flex items-start justify-center md:items-center bg-black/60 backdrop-blur-sm overflow-y-auto p-4">
+          <div className="bg-bg-card border border-border rounded-xl p-6 w-full max-w-2xl my-6">
             <h2 className="text-text-primary text-lg font-bold mb-4">Set manuell hinzufügen</h2>
             <form onSubmit={handleAdd} className="space-y-4">
               <div className="grid md:grid-cols-2 gap-4">
