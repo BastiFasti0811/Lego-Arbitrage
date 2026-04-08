@@ -17,11 +17,7 @@ logger = structlog.get_logger()
 
 def _run_async(coro):
     """Run async code inside sync Celery tasks."""
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+    return asyncio.run(coro)
 
 
 def _apply_set_info(lego_set: LegoSet, info, *, overwrite_uvp: bool = False) -> bool:

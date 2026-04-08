@@ -197,6 +197,7 @@ async def add_inventory_item(data: InventoryAdd, session: AsyncSession = Depends
         status=InventoryStatus.HOLDING.value,
     )
     session.add(item)
+    await _hydrate_market_snapshot(item, session)
     await session.commit()
     await session.refresh(item)
     logger.info("inventory.added", set_number=data.set_number, buy_price=data.buy_price)
@@ -350,6 +351,8 @@ async def update_inventory_item(
     item = await _get_item(item_id, session)
     for key, value in data.model_dump(exclude_unset=True).items():
         setattr(item, key, value)
+    if not await _hydrate_market_snapshot(item, session):
+        _recalculate_unrealized_metrics(item)
     await session.commit()
     await session.refresh(item)
     return _to_response(item)
@@ -480,6 +483,53 @@ async def _find_matching_analysis(
 
     best = max(candidates, key=score)
     return best if score(best) > 0 else None
+
+
+async def _hydrate_market_snapshot(item: InventoryItem, session: AsyncSession) -> bool:
+    market_price: float | None = None
+    updated_at: datetime | None = None
+
+    set_result = await session.execute(
+        select(LegoSet.current_market_price, LegoSet.market_price_updated_at).where(
+            LegoSet.set_number == item.set_number
+        )
+    )
+    set_snapshot = set_result.one_or_none()
+    if set_snapshot and set_snapshot[0] and set_snapshot[0] > 0:
+        market_price, updated_at = set_snapshot
+    else:
+        history_result = await session.execute(
+            select(AnalysisHistoryEntry.market_price, AnalysisHistoryEntry.analyzed_at)
+            .where(AnalysisHistoryEntry.set_number == item.set_number)
+            .order_by(AnalysisHistoryEntry.analyzed_at.desc(), AnalysisHistoryEntry.id.desc())
+            .limit(1)
+        )
+        history_snapshot = history_result.one_or_none()
+        if history_snapshot and history_snapshot[0] and history_snapshot[0] > 0:
+            market_price, updated_at = history_snapshot
+
+    if market_price is None:
+        return False
+
+    item.current_market_price = round(market_price, 2)
+    item.market_price_updated_at = updated_at
+    _recalculate_unrealized_metrics(item)
+    return True
+
+
+def _recalculate_unrealized_metrics(item: InventoryItem) -> None:
+    if item.current_market_price is None:
+        item.unrealized_profit = None
+        item.unrealized_roi_percent = None
+        return
+
+    total_invested = item.buy_price + (item.buy_shipping or 0)
+    item.unrealized_profit = round(item.current_market_price - total_invested, 2)
+    item.unrealized_roi_percent = (
+        round(((item.current_market_price - total_invested) / total_invested) * 100, 1)
+        if total_invested > 0
+        else 0
+    )
 
 
 async def _ensure_feedback_set(
