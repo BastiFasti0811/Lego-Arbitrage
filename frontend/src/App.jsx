@@ -5,6 +5,7 @@ import { api } from "./api/client";
 import AppLayout from "./layouts/AppLayout";
 
 const LiveFeed = lazy(() => import("./pages/LiveFeed"));
+const AuctionWatch = lazy(() => import("./pages/AuctionWatch"));
 const DealChecker = lazy(() => import("./pages/DealChecker"));
 const Inventar = lazy(() => import("./pages/Inventar"));
 const History = lazy(() => import("./pages/History"));
@@ -68,6 +69,7 @@ export default function App() {
               }
             >
               <Route index element={<LiveFeed />} />
+              <Route path="auctions" element={<AuctionWatch />} />
               <Route path="checker" element={<DealChecker />} />
               <Route path="inventar" element={<Inventar />} />
               <Route path="history" element={<History />} />

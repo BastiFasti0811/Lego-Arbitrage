@@ -14,7 +14,7 @@ const emptyAddForm = () => ({
   set_name: "",
   theme: "",
   buy_price: "",
-  buy_shipping: "0",
+  buy_shipping: "",
   buy_date: new Date().toISOString().split("T")[0],
   buy_platform: "",
   buy_url: "",
@@ -216,6 +216,43 @@ function PhotoPicker({
       </p>
     </div>
   );
+}
+
+function FormSection({ title, description, children }) {
+  return (
+    <section className="space-y-3 rounded-2xl border border-border/80 bg-bg-primary/40 px-4 py-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+      <div className="space-y-1">
+        <h3 className="text-sm font-semibold tracking-tight text-text-primary">{title}</h3>
+        {description && <p className="text-xs leading-5 text-text-muted">{description}</p>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function FieldLabel({ children, required = false }) {
+  return (
+    <label className="block pl-1 text-[11px] font-medium uppercase tracking-[0.14em] text-text-muted/80">
+      {children}{required ? " *" : ""}
+    </label>
+  );
+}
+
+function FieldGroup({ label, required = false, children }) {
+  return (
+    <div className="space-y-1.5">
+      <FieldLabel required={required}>{label}</FieldLabel>
+      {children}
+    </div>
+  );
+}
+
+function inputClassName(extra = "") {
+  return `w-full rounded-xl border border-border bg-bg-primary px-3 py-2.5 text-sm text-text-primary transition-colors placeholder:text-text-muted/70 focus:border-lego-yellow/70 focus:outline-none focus:ring-2 focus:ring-lego-yellow/20 ${extra}`.trim();
+}
+
+function textareaClassName(extra = "") {
+  return `w-full rounded-xl border border-border bg-bg-primary px-3 py-2.5 text-sm text-text-primary transition-colors placeholder:text-text-muted/70 focus:border-lego-yellow/70 focus:outline-none focus:ring-2 focus:ring-lego-yellow/20 resize-none ${extra}`.trim();
 }
 
 function InventoryPhotoStrip({ item }) {
@@ -602,24 +639,43 @@ export default function Inventar() {
 
       {editModal && (
         <div className="fixed inset-0 z-50 flex items-start justify-center md:items-center bg-black/60 backdrop-blur-sm overflow-y-auto p-4">
-          <div className="bg-bg-card border border-border rounded-xl p-6 w-full max-w-2xl my-6">
-            <h2 className="text-text-primary text-lg font-bold mb-2">Set bearbeiten</h2>
-            <p className="text-lego-yellow font-[family-name:var(--font-mono)] text-sm mb-4">{editModal.set_number}</p>
-            <form onSubmit={handleEdit} className="space-y-4">
+          <div className="w-full max-w-3xl my-6 overflow-hidden rounded-[28px] border border-border/80 bg-bg-card shadow-[0_24px_80px_rgba(0,0,0,0.45)]">
+            <div className="border-b border-border/70 bg-[linear-gradient(135deg,rgba(255,206,0,0.14),rgba(255,206,0,0.03)_38%,transparent_70%)] px-6 py-5">
+              <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-muted/80">Inventar</p>
+              <h2 className="mt-1 text-xl font-bold tracking-tight text-text-primary">Set bearbeiten</h2>
+              <p className="mt-1 font-[family-name:var(--font-mono)] text-sm text-lego-yellow">{editModal.set_number}</p>
+            </div>
+            <form onSubmit={handleEdit} className="space-y-5 p-6">
               <div className="grid md:grid-cols-2 gap-4">
-                <div className="space-y-3">
-                  <input type="text" value={editForm.set_name} onChange={(e) => setEditForm({ ...editForm, set_name: e.target.value })} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-                  <input type="text" value={editForm.theme} onChange={(e) => setEditForm({ ...editForm, theme: e.target.value })} placeholder="Theme" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
+                <div className="space-y-4">
+                  <FieldGroup label="Set-Name" required>
+                    <input type="text" value={editForm.set_name} onChange={(e) => setEditForm({ ...editForm, set_name: e.target.value })} required className={inputClassName()} />
+                  </FieldGroup>
+                  <FieldGroup label="Theme">
+                    <input type="text" value={editForm.theme} onChange={(e) => setEditForm({ ...editForm, theme: e.target.value })} placeholder="z. B. Technic oder Star Wars" className={inputClassName()} />
+                  </FieldGroup>
                   <div className="grid grid-cols-2 gap-3">
-                    <input type="number" step="0.01" value={editForm.buy_price} onChange={(e) => setEditForm({ ...editForm, buy_price: e.target.value })} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
-                    <input type="number" step="0.01" value={editForm.buy_shipping} onChange={(e) => setEditForm({ ...editForm, buy_shipping: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
+                    <div className="space-y-1">
+                      <label className="block pl-1 text-[11px] font-medium uppercase tracking-[0.14em] text-text-muted/80">Kaufpreis</label>
+                      <input type="number" step="0.01" value={editForm.buy_price} onChange={(e) => setEditForm({ ...editForm, buy_price: e.target.value })} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="block pl-1 text-[11px] font-medium uppercase tracking-[0.14em] text-text-muted/80">Versand</label>
+                      <input type="number" step="0.01" value={editForm.buy_shipping} onChange={(e) => setEditForm({ ...editForm, buy_shipping: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
+                    </div>
                   </div>
                   <div className="grid grid-cols-2 gap-3">
-                    <input type="date" value={editForm.buy_date} onChange={(e) => setEditForm({ ...editForm, buy_date: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-                    <input type="text" list="platforms-list" value={editForm.buy_platform} onChange={(e) => setEditForm({ ...editForm, buy_platform: e.target.value })} placeholder="Plattform" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
+                    <FieldGroup label="Kaufdatum">
+                      <input type="date" value={editForm.buy_date} onChange={(e) => setEditForm({ ...editForm, buy_date: e.target.value })} className={inputClassName()} />
+                    </FieldGroup>
+                    <FieldGroup label="Plattform">
+                      <input type="text" list="platforms-list" value={editForm.buy_platform} onChange={(e) => setEditForm({ ...editForm, buy_platform: e.target.value })} placeholder="z. B. Amazon.de" className={inputClassName()} />
+                    </FieldGroup>
                   </div>
                   <datalist id="platforms-list">{platforms.map((platform) => <option key={platform} value={platform} />)}</datalist>
-                  <input type="url" value={editForm.buy_url} onChange={(e) => setEditForm({ ...editForm, buy_url: e.target.value })} placeholder="Original-Link" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
+                  <FieldGroup label="Original-Link">
+                    <input type="url" value={editForm.buy_url} onChange={(e) => setEditForm({ ...editForm, buy_url: e.target.value })} placeholder="Produktseite oder Bestelllink" className={inputClassName()} />
+                  </FieldGroup>
                   <div className="grid grid-cols-2 gap-3">
                     <select value={editForm.condition} onChange={(e) => setEditForm({ ...editForm, condition: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm">
                       <option value="NEW_SEALED">Neu & Versiegelt</option>
@@ -645,9 +701,9 @@ export default function Inventar() {
                   isUpdatingPrimary={makePrimaryPhotoMutation.isPending}
                 />
               </div>
-              <div className="flex gap-3 mt-4">
-                <button type="button" onClick={closeEditModal} className="flex-1 bg-bg-hover text-text-secondary py-2 rounded-lg">Abbrechen</button>
-                <button type="submit" disabled={editMutation.isPending} className="flex-1 bg-lego-yellow text-black font-bold py-2 rounded-lg disabled:opacity-50">
+              <div className="mt-2 flex gap-3 border-t border-border/70 pt-5">
+                <button type="button" onClick={closeEditModal} className="flex-1 rounded-xl border border-border bg-bg-hover px-4 py-3 text-sm font-medium text-text-secondary transition-colors hover:bg-bg-primary hover:text-text-primary">Abbrechen</button>
+                <button type="submit" disabled={editMutation.isPending} className="flex-1 rounded-xl bg-lego-yellow px-4 py-3 text-sm font-bold text-black transition-all hover:brightness-105 disabled:opacity-50">
                   {editMutation.isPending ? "Speichern..." : "Speichern"}
                 </button>
               </div>
@@ -659,27 +715,49 @@ export default function Inventar() {
 
       {addModal && (
         <div className="fixed inset-0 z-50 flex items-start justify-center md:items-center bg-black/60 backdrop-blur-sm overflow-y-auto p-4">
-          <div className="bg-bg-card border border-border rounded-xl p-6 w-full max-w-2xl my-6">
-            <h2 className="text-text-primary text-lg font-bold mb-4">Set manuell hinzufügen</h2>
-            <form onSubmit={handleAdd} className="space-y-4">
+          <div className="w-full max-w-3xl my-6 overflow-hidden rounded-[28px] border border-border/80 bg-bg-card shadow-[0_24px_80px_rgba(0,0,0,0.45)]">
+            <div className="border-b border-border/70 bg-[linear-gradient(135deg,rgba(59,130,246,0.16),rgba(59,130,246,0.05)_36%,transparent_72%)] px-6 py-5">
+              <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-muted/80">Inventar</p>
+              <h2 className="mt-1 text-xl font-bold tracking-tight text-text-primary">Set manuell hinzufügen</h2>
+              <p className="mt-1 text-sm text-text-muted">Ein klar gegliedertes Formular für schnellen, sauberen Inventar-Input.</p>
+            </div>
+            <form onSubmit={handleAdd} className="space-y-5 p-6">
               <div className="grid md:grid-cols-2 gap-4">
-                <div className="space-y-3">
-                  <div className="relative">
-                    <input type="text" placeholder="Set-Nummer *" value={addForm.set_number} onChange={(e) => handleSetNumberChange(e.target.value)} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
-                    {lookupLoading && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-lego-yellow text-xs animate-pulse">Suche...</span>}
-                  </div>
-                  <input type="text" placeholder="Set-Name *" value={addForm.set_name} onChange={(e) => setAddForm({ ...addForm, set_name: e.target.value })} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-                  <input type="text" placeholder="Theme" value={addForm.theme} onChange={(e) => setAddForm({ ...addForm, theme: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
+                <div className="space-y-4">
+                  <FieldGroup label="Set-Nummer" required>
+                    <div className="relative">
+                      <input type="text" placeholder="z. B. 42100" value={addForm.set_number} onChange={(e) => handleSetNumberChange(e.target.value)} required className={inputClassName("pr-16 font-[family-name:var(--font-mono)]")} />
+                      {lookupLoading && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-lego-yellow text-xs animate-pulse">Suche...</span>}
+                    </div>
+                  </FieldGroup>
+                  <FieldGroup label="Set-Name" required>
+                    <input type="text" placeholder="Offizieller oder eigener Name" value={addForm.set_name} onChange={(e) => setAddForm({ ...addForm, set_name: e.target.value })} required className={inputClassName()} />
+                  </FieldGroup>
+                  <FieldGroup label="Theme">
+                    <input type="text" placeholder="z. B. Technic oder Icons" value={addForm.theme} onChange={(e) => setAddForm({ ...addForm, theme: e.target.value })} className={inputClassName()} />
+                  </FieldGroup>
                   <div className="grid grid-cols-2 gap-3">
-                    <input type="number" step="0.01" placeholder={`Kaufpreis (${EURO})`} value={addForm.buy_price} onChange={(e) => setAddForm({ ...addForm, buy_price: e.target.value })} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
-                    <input type="number" step="0.01" placeholder={`Versand (${EURO})`} value={addForm.buy_shipping} onChange={(e) => setAddForm({ ...addForm, buy_shipping: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
+                    <div className="space-y-1">
+                      <label className="block pl-1 text-[11px] font-medium uppercase tracking-[0.14em] text-text-muted/80">Kaufpreis</label>
+                      <input type="number" step="0.01" placeholder={`Kaufpreis (${EURO})`} value={addForm.buy_price} onChange={(e) => setAddForm({ ...addForm, buy_price: e.target.value })} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="block pl-1 text-[11px] font-medium uppercase tracking-[0.14em] text-text-muted/80">Versand</label>
+                      <input type="number" step="0.01" placeholder={`Versand (${EURO})`} value={addForm.buy_shipping} onChange={(e) => setAddForm({ ...addForm, buy_shipping: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
+                    </div>
                   </div>
                   <div className="grid grid-cols-2 gap-3">
-                    <input type="date" value={addForm.buy_date} onChange={(e) => setAddForm({ ...addForm, buy_date: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-                    <input type="text" list="platforms-add-list" placeholder="Plattform" value={addForm.buy_platform} onChange={(e) => setAddForm({ ...addForm, buy_platform: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
+                    <FieldGroup label="Kaufdatum">
+                      <input type="date" value={addForm.buy_date} onChange={(e) => setAddForm({ ...addForm, buy_date: e.target.value })} className={inputClassName()} />
+                    </FieldGroup>
+                    <FieldGroup label="Plattform">
+                      <input type="text" list="platforms-add-list" placeholder="z. B. Amazon.de" value={addForm.buy_platform} onChange={(e) => setAddForm({ ...addForm, buy_platform: e.target.value })} className={inputClassName()} />
+                    </FieldGroup>
                   </div>
                   <datalist id="platforms-add-list">{platforms.map((platform) => <option key={platform} value={platform} />)}</datalist>
-                  <input type="url" placeholder="Original-Link" value={addForm.buy_url} onChange={(e) => setAddForm({ ...addForm, buy_url: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
+                  <FieldGroup label="Original-Link">
+                    <input type="url" placeholder="Produktseite oder Bestelllink" value={addForm.buy_url} onChange={(e) => setAddForm({ ...addForm, buy_url: e.target.value })} className={inputClassName()} />
+                  </FieldGroup>
                   <div className="grid grid-cols-2 gap-3">
                     <select value={addForm.condition} onChange={(e) => setAddForm({ ...addForm, condition: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm">
                       <option value="NEW_SEALED">Neu & Versiegelt</option>
@@ -689,7 +767,9 @@ export default function Inventar() {
                     </select>
                     <input type="number" min="1" placeholder="Anzahl" value={addForm.quantity} onChange={(e) => setAddForm({ ...addForm, quantity: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
                   </div>
-                  <textarea value={addForm.notes} onChange={(e) => setAddForm({ ...addForm, notes: e.target.value })} placeholder="Eigene Notizen..." rows={3} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm resize-none" />
+                  <FieldGroup label="Eigene Notizen">
+                    <textarea value={addForm.notes} onChange={(e) => setAddForm({ ...addForm, notes: e.target.value })} placeholder="z. B. Gutschein, Lagerort oder Besonderheiten" rows={4} className={textareaClassName()} />
+                  </FieldGroup>
                 </div>
                 <PhotoPicker
                   itemId={0}
@@ -704,9 +784,9 @@ export default function Inventar() {
                   onExternalImageUrlChange={(value) => setAddForm({ ...addForm, image_url: value })}
                 />
               </div>
-              <div className="flex gap-3 mt-4">
-                <button type="button" onClick={closeAddModal} className="flex-1 bg-bg-hover text-text-secondary py-2 rounded-lg">Abbrechen</button>
-                <button type="submit" disabled={addMutation.isPending} className="flex-1 bg-lego-yellow text-black font-bold py-2 rounded-lg disabled:opacity-50">
+              <div className="mt-2 flex gap-3 border-t border-border/70 pt-5">
+                <button type="button" onClick={closeAddModal} className="flex-1 rounded-xl border border-border bg-bg-hover px-4 py-3 text-sm font-medium text-text-secondary transition-colors hover:bg-bg-primary hover:text-text-primary">Abbrechen</button>
+                <button type="submit" disabled={addMutation.isPending} className="flex-1 rounded-xl bg-lego-yellow px-4 py-3 text-sm font-bold text-black transition-all hover:brightness-105 disabled:opacity-50">
                   {addMutation.isPending ? "Hinzufügen..." : "Hinzufügen"}
                 </button>
               </div>
@@ -718,3 +798,8 @@ export default function Inventar() {
     </div>
   );
 }
+
+
+
+
+

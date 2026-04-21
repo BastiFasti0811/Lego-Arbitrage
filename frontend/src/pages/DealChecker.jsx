@@ -95,6 +95,12 @@ export default function DealChecker() {
   // URL parse status message
   const [parseMessage, setParseMessage] = useState("");
 
+  // Auction bid guard
+  const [auctionCurrentBid, setAuctionCurrentBid] = useState("");
+  const [auctionShipping, setAuctionShipping] = useState("");
+  const [auctionTargetRoi, setAuctionTargetRoi] = useState("");
+  const [auctionPlatform, setAuctionPlatform] = useState("CATAWIKI");
+
   // Konvolut state
   const [isKonvolut, setIsKonvolut] = useState(false);
   const [konvolutSets, setKonvolutSets] = useState([]);
@@ -139,6 +145,15 @@ export default function DealChecker() {
       if (data.condition) setCondition(data.condition);
       if (data.url) setSourceUrl(data.url);
       if (data.platform) setSourcePlatform(data.platform);
+      if (data.platform === "CATAWIKI") {
+        setAuctionPlatform("CATAWIKI");
+        if (data.shipping != null) {
+          setAuctionShipping(String(data.shipping));
+        }
+        if (data.price != null) {
+          setAuctionCurrentBid(String(data.price));
+        }
+      }
       setSmartInput("");
     },
     onError: () => {
@@ -162,6 +177,15 @@ export default function DealChecker() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["analysis-history"] });
     },
+  });
+
+  const auctionMaxBid = useMutation({
+    mutationFn: (data) => api.auctionMaxBid(data),
+  });
+
+  const addAuctionWatch = useMutation({
+    mutationFn: (data) => api.addAuctionWatch(data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["auction-watch"] }),
   });
 
   // Seller check mutation
@@ -397,6 +421,31 @@ export default function DealChecker() {
     });
   };
 
+  const handleAuctionMaxBid = () => {
+    if (!setNumber || !auctionCurrentBid) return;
+    auctionMaxBid.mutate({
+      set_number: setNumber.trim(),
+      current_bid: parseFloat(auctionCurrentBid),
+      purchase_shipping: auctionShipping ? parseFloat(auctionShipping) : null,
+      desired_roi_percent: auctionTargetRoi ? parseFloat(auctionTargetRoi) : null,
+      source_platform: auctionPlatform || sourcePlatform || "CATAWIKI",
+      source_url: sourceUrl || null,
+    });
+  };
+
+  const handleAddAuctionWatch = () => {
+    if (!auctionResult || !setNumber || !sourceUrl) return;
+    addAuctionWatch.mutate({
+      set_number: setNumber.trim(),
+      source_url: sourceUrl,
+      source_platform: auctionPlatform || sourcePlatform || "CATAWIKI",
+      lot_title: result?.set_name ? `LEGO ${setNumber} - ${result.set_name}` : null,
+      current_bid: parseFloat(auctionCurrentBid),
+      purchase_shipping: auctionShipping ? parseFloat(auctionShipping) : 0,
+      desired_roi_percent: auctionTargetRoi ? parseFloat(auctionTargetRoi) : auctionResult.target_roi_percent,
+    });
+  };
+
   const removeKonvolutSet = (setNum) => {
     setKonvolutSets((prev) => prev.filter((s) => s !== setNum));
   };
@@ -457,6 +506,10 @@ export default function DealChecker() {
     setOfferPrice(String(item.offer_price));
     setSourceUrl(item.source_url || "");
     setSourcePlatform(item.source_platform || "");
+    if (item.source_platform === "CATAWIKI") {
+      setAuctionPlatform("CATAWIKI");
+      setAuctionCurrentBid(String(item.offer_price));
+    }
     setSmartInput(item.source_url || "");
     setParseMessage("Check aus der Historie geladen");
     setShowHistory(false);
@@ -464,6 +517,7 @@ export default function DealChecker() {
 
   const result = selectedHistoryItem || analyze.data;
   const multiResult = analyzeMulti.data;
+  const auctionResult = auctionMaxBid.data;
   const bg = result ? verdictBg[result.recommendation] || verdictBg.NO_GO : "";
   const referenceLabel = result?.reference_label
     ? (referenceLabelMap[result.reference_label] || result.reference_label)
@@ -587,7 +641,7 @@ export default function DealChecker() {
         {/* URL/Link Input */}
         <div className="mb-4">
           <label className="block text-text-muted text-xs mb-1">
-            {"Link einf\u00fcgen (Kleinanzeigen, eBay, Amazon) oder direkt Set-Nummer eingeben"}
+            {"Link einf\u00fcgen (Kleinanzeigen, eBay, Amazon, Catawiki) oder direkt Set-Nummer eingeben"}
           </label>
           <div className="relative">
             <input
@@ -601,7 +655,7 @@ export default function DealChecker() {
                   handleSmartInput(pasted);
                 }
               }}
-              placeholder="https://www.kleinanzeigen.de/s-anzeige/... oder 75192"
+              placeholder="https://www.catawiki.com/... oder 75192"
               autoFocus
               className="w-full bg-bg-primary border border-border rounded-lg px-4 py-3 text-text-primary text-sm placeholder:text-text-muted focus:border-lego-yellow focus:outline-none transition-colors"
             />
@@ -857,6 +911,217 @@ export default function DealChecker() {
           <p className="text-no-go text-sm mt-3">Fehler: {analyze.error.message}</p>
         )}
       </form>
+
+      <div className="bg-bg-card border border-border rounded-xl p-6 mb-6">
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div>
+            <h2 className="text-text-primary font-semibold">Auktions-Maximalgebot</h2>
+            <p className="text-text-muted text-sm mt-1">
+              Rechnet Hammerpreis, Catawiki-Gebühr und Versand gegen deinen Ziel-ROI.
+            </p>
+          </div>
+          <div className="text-right shrink-0">
+            <div className="text-text-muted text-xs uppercase">Quelle</div>
+            <select
+              value={auctionPlatform}
+              onChange={(e) => setAuctionPlatform(e.target.value)}
+              className="mt-1 bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm"
+            >
+              <option value="CATAWIKI">Catawiki</option>
+              <option value="AUCTION">Andere Auktion</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="grid md:grid-cols-3 gap-3">
+          <div>
+            <label className="block text-text-muted text-xs mb-1">Aktuelles Gebot ({EURO})</label>
+            <input
+              type="number"
+              step="0.01"
+              value={auctionCurrentBid}
+              onChange={(e) => setAuctionCurrentBid(e.target.value)}
+              placeholder="123.00"
+              className="w-full bg-bg-primary border border-border rounded-lg px-3 py-3 text-text-primary font-[family-name:var(--font-mono)]"
+            />
+          </div>
+          <div>
+            <label className="block text-text-muted text-xs mb-1">Versand zu dir ({EURO})</label>
+            <input
+              type="number"
+              step="0.01"
+              value={auctionShipping}
+              onChange={(e) => setAuctionShipping(e.target.value)}
+              placeholder="13.00"
+              className="w-full bg-bg-primary border border-border rounded-lg px-3 py-3 text-text-primary font-[family-name:var(--font-mono)]"
+            />
+          </div>
+          <div>
+            <label className="block text-text-muted text-xs mb-1">Ziel-ROI % (optional)</label>
+            <input
+              type="number"
+              step="0.1"
+              value={auctionTargetRoi}
+              onChange={(e) => setAuctionTargetRoi(e.target.value)}
+              placeholder="auto"
+              className="w-full bg-bg-primary border border-border rounded-lg px-3 py-3 text-text-primary font-[family-name:var(--font-mono)]"
+            />
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={handleAuctionMaxBid}
+          disabled={auctionMaxBid.isPending || !setNumber || !auctionCurrentBid}
+          className="w-full mt-4 bg-lego-blue text-white font-bold py-3 rounded-lg hover:bg-lego-blue/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {auctionMaxBid.isPending ? "Berechne Maximalgebot..." : "Maximalgebot berechnen"}
+        </button>
+
+        {!setNumber && (
+          <p className="text-text-muted text-xs mt-3">
+            Erst ein Set oder einen Link laden, dann kann das Maximalgebot berechnet werden.
+          </p>
+        )}
+        {auctionMaxBid.isError && (
+          <p className="text-no-go text-sm mt-3">Fehler: {auctionMaxBid.error.message}</p>
+        )}
+
+        {auctionResult && (
+          <div className="mt-4 border border-border rounded-xl overflow-hidden">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-px bg-border">
+              <div className="bg-bg-primary p-4">
+                <div className="text-text-muted text-xs uppercase">Maximalgebot</div>
+                <div className="text-go-star text-2xl font-bold font-[family-name:var(--font-mono)]">
+                  {formatMoney(auctionResult.recommended_max_bid, 0)}
+                </div>
+              </div>
+              <div className="bg-bg-primary p-4">
+                <div className="text-text-muted text-xs uppercase">Break-even</div>
+                <div className="text-text-primary text-xl font-bold font-[family-name:var(--font-mono)]">
+                  {formatMoney(auctionResult.break_even_bid, 0)}
+                </div>
+              </div>
+              <div className="bg-bg-primary p-4">
+                <div className="text-text-muted text-xs uppercase">Gebots-Luft</div>
+                <div
+                  className={`text-xl font-bold font-[family-name:var(--font-mono)] ${
+                    auctionResult.current_bid_gap >= 0 ? "text-go" : "text-no-go"
+                  }`}
+                >
+                  {formatMoney(auctionResult.current_bid_gap, 0)}
+                </div>
+              </div>
+              <div className="bg-bg-primary p-4">
+                <div className="text-text-muted text-xs uppercase">Ziel-ROI</div>
+                <div className="text-text-primary text-xl font-bold font-[family-name:var(--font-mono)]">
+                  {auctionResult.target_roi_percent.toFixed(1)}%
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-bg-card p-4">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+                <span className="text-text-primary font-medium">{auctionResult.current_bid_recommendation}</span>
+                <span className="text-text-muted">
+                  Aktuell: <span className="font-[family-name:var(--font-mono)] text-text-primary">{formatMoney(auctionResult.current_bid, 0)}</span>
+                </span>
+                <span className="text-text-muted">
+                  Markt: <span className="font-[family-name:var(--font-mono)] text-text-primary">{formatMoney(auctionResult.reference_price, 0)}</span>
+                </span>
+                <span className="text-text-muted">
+                  All-in bei Max: <span className="font-[family-name:var(--font-mono)] text-text-primary">{formatMoney(auctionResult.total_purchase_cost_at_recommended_bid, 0)}</span>
+                </span>
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-3 mt-4">
+                <div className="bg-bg-hover rounded-lg p-3">
+                  <div className="text-text-muted text-xs uppercase">Bei Maximalgebot</div>
+                  <div className="flex items-center justify-between mt-2 text-sm">
+                    <span className="text-text-muted">Käuferschutz</span>
+                    <span className="font-[family-name:var(--font-mono)] text-text-primary">
+                      {formatMoney(auctionResult.buyer_fee_at_recommended_bid)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between mt-2 text-sm">
+                    <span className="text-text-muted">Erwarteter Gewinn</span>
+                    <span className="font-[family-name:var(--font-mono)] text-go">
+                      {formatMoney(auctionResult.expected_profit_at_recommended_bid)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between mt-2 text-sm">
+                    <span className="text-text-muted">Erwarteter ROI</span>
+                    <span className="font-[family-name:var(--font-mono)] text-go">
+                      {auctionResult.expected_roi_at_recommended_bid.toFixed(1)}%
+                    </span>
+                  </div>
+                </div>
+                <div className="bg-bg-hover rounded-lg p-3">
+                  <div className="text-text-muted text-xs uppercase">Beim aktuellen Gebot</div>
+                  <div className="flex items-center justify-between mt-2 text-sm">
+                    <span className="text-text-muted">Käuferschutz</span>
+                    <span className="font-[family-name:var(--font-mono)] text-text-primary">
+                      {formatMoney(auctionResult.buyer_fee_at_current_bid)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between mt-2 text-sm">
+                    <span className="text-text-muted">Erwarteter Gewinn</span>
+                    <span
+                      className={`font-[family-name:var(--font-mono)] ${
+                        auctionResult.expected_profit_at_current_bid >= 0 ? "text-go" : "text-no-go"
+                      }`}
+                    >
+                      {formatMoney(auctionResult.expected_profit_at_current_bid)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between mt-2 text-sm">
+                    <span className="text-text-muted">Erwarteter ROI</span>
+                    <span
+                      className={`font-[family-name:var(--font-mono)] ${
+                        auctionResult.expected_roi_at_current_bid >= 0 ? "text-go" : "text-no-go"
+                      }`}
+                    >
+                      {auctionResult.expected_roi_at_current_bid.toFixed(1)}%
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {auctionResult.warnings?.length > 0 && (
+                <div className="mt-4 space-y-2">
+                  {auctionResult.warnings.slice(0, 3).map((warning) => (
+                    <p key={warning} className="text-check text-sm">
+                      {warning}
+                    </p>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center gap-3 mt-4">
+                <button
+                  type="button"
+                  onClick={handleAddAuctionWatch}
+                  disabled={addAuctionWatch.isPending || !sourceUrl}
+                  className="bg-lego-yellow text-black text-sm font-bold px-4 py-2 rounded-lg hover:bg-lego-yellow/90 transition-colors disabled:opacity-50"
+                >
+                  {addAuctionWatch.isPending ? "Speichere..." : "Zur Auktions-Watchlist"}
+                </button>
+                {!sourceUrl && (
+                  <span className="text-text-muted text-xs">
+                    Für die Watchlist brauchen wir die Lot-URL.
+                  </span>
+                )}
+                {addAuctionWatch.isSuccess && (
+                  <span className="text-go text-sm">Lot zur Watchlist hinzugefügt.</span>
+                )}
+                {addAuctionWatch.isError && (
+                  <span className="text-no-go text-sm">Fehler: {addAuctionWatch.error.message}</span>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Konvolut Multi-Set Results */}
       {isKonvolut && multiResult && multiResult.results && (
