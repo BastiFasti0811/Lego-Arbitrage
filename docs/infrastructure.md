@@ -21,6 +21,7 @@
 - Production stack: [docker-compose.prod.yml](../docker-compose.prod.yml)
 - Shared-Caddy route snippet: [infra/Caddyfile](../infra/Caddyfile)
 - Production runbook: [docs/deploy.md](./deploy.md)
+- Reusable starter blueprint: [docs/templates/github-hetzner-deploy-blueprint.md](./templates/github-hetzner-deploy-blueprint.md)
 - GitHub deployment workflow: [deploy-production.yml](../.github/workflows/deploy-production.yml)
 
 ## Operational Checks

@@ -7,6 +7,11 @@ user and keep the server as a runtime target instead of an editing machine.
 The current source-of-truth repo intentionally remains the private GitHub repo
 `BastiFasti0811/Lego-Arbitrage`.
 
+## Reusable Blueprint
+
+If you want to carry this setup into new repositories, use the generic blueprint
+and starter files in [docs/templates/github-hetzner-deploy-blueprint.md](./templates/github-hetzner-deploy-blueprint.md).
+
 ## Recommended Topology
 
 - GitHub remains the source of truth for code, history and rollback.

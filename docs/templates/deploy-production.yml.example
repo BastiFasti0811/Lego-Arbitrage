@@ -1,0 +1,57 @@
+name: Deploy Production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Add project-specific verification
+        run: |
+          echo "Replace this step with lint, tests and build commands."
+
+      - name: Validate production compose file
+        run: docker compose --env-file .env.prod.example -f docker-compose.prod.yml config > /dev/null
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: verify
+    environment:
+      name: production
+      url: ${{ vars.PROD_URL || 'https://example.com' }}
+
+    steps:
+      - name: Write production SSH key
+        env:
+          PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/prod_key
+          chmod 600 ~/.ssh/prod_key
+
+      - name: Pin production host key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.PROD_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy on Hetzner server
+        run: |
+          ssh -i ~/.ssh/prod_key -o IdentitiesOnly=yes "${{ vars.PROD_USER || 'deploy' }}@${{ vars.PROD_HOST || '203.0.113.10' }}" \
+            "cd '${{ vars.PROD_APP_DIR || '/srv/my-app' }}' && bash scripts/deploy-prod.sh"

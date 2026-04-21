@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+ENV_FILE="${ENV_FILE:-.env.prod}"
+COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
+COMPOSE_SERVICES="${COMPOSE_SERVICES:-app}"
+REQUIRED_FILES="${REQUIRED_FILES:-.env.prod}"
+HEALTHCHECK_COMMAND="${HEALTHCHECK_COMMAND:-curl -fsS http://127.0.0.1:8000/health}"
+
+cd "${REPO_DIR}"
+
+for file in ${REQUIRED_FILES}; do
+  if [[ ! -f "${file}" ]]; then
+    echo "Missing ${file} in ${REPO_DIR}" >&2
+    exit 1
+  fi
+done
+
+git pull --ff-only
+
+docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --build --remove-orphans ${COMPOSE_SERVICES}
+docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
+
+for attempt in {1..30}; do
+  if bash -lc "${HEALTHCHECK_COMMAND}" > /dev/null 2>&1; then
+    echo "Healthcheck passed."
+    echo "Production deploy finished successfully."
+    exit 0
+  fi
+
+  sleep 2
+done
+
+echo "Healthcheck did not pass within 60 seconds." >&2
+docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" logs --tail=100 >&2
+exit 1
