@@ -55,3 +55,5 @@ htmlcov/
 # Playwright
 playwright-report/
 test-results/
+.playwright-cli/
+output/
