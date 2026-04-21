@@ -12,6 +12,7 @@ celery_app = Celery(
     include=[
         "app.tasks.scrape_daily",
         "app.tasks.analyze_new",
+        "app.tasks.auction_watch",
         "app.tasks.update_inventory",
     ],
 )
@@ -55,6 +56,12 @@ celery_app.conf.beat_schedule = {
         "task": "app.tasks.scrape_daily.refresh_known_set_metadata",
         "schedule": crontab(minute=15, hour=4),
         "options": {"queue": "scraping"},
+    },
+    # Re-evaluate watched auction lots every morning
+    "refresh-auction-watchlist": {
+        "task": "app.tasks.auction_watch.refresh_auction_watchlist",
+        "schedule": crontab(minute=20, hour=8),
+        "options": {"queue": "analysis"},
     },
     # Weekly model retraining (Sunday 03:00)
     "weekly-retrain": {

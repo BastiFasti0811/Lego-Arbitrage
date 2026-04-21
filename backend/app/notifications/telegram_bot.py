@@ -172,3 +172,37 @@ async def send_daily_summary(
     except Exception as e:
         logger.error("telegram.summary_failed", error=str(e))
         return False
+
+
+async def send_auction_watch_alert(item, lego_set) -> bool:
+    """Send a Telegram update for a watched auction still below max bid."""
+    runtime_settings = await get_settings_map(["telegram_bot_token", "telegram_chat_id"])
+    bot_token = runtime_settings.get("telegram_bot_token")
+    chat_id = runtime_settings.get("telegram_chat_id")
+
+    if not bot_token or not chat_id:
+        return False
+
+    gap = item.current_bid_gap or 0.0
+    msg = (
+        f"🔨 *Auktions-Watch*\n"
+        f"*LEGO {lego_set.set_number}* — {lego_set.set_name}\n"
+        f"Plattform: {item.source_platform}\n"
+        f"Aktuelles Gebot: *{item.current_bid:.0f}€*\n"
+        f"Dein Maximalgebot: *{(item.max_bid or 0):.0f}€*\n"
+        f"Luft: *{gap:+.0f}€*\n"
+        f"ROI bei aktuellem Gebot: {(item.expected_roi_at_current_bid or 0):.1f}%\n"
+        f"Gewinn bei aktuellem Gebot: {(item.expected_profit_at_current_bid or 0):+.0f}€\n"
+    )
+    if item.current_bid_recommendation:
+        msg += f"\n{item.current_bid_recommendation}\n"
+    if item.source_url:
+        msg += f"\n{item.source_url}"
+
+    try:
+        bot = Bot(token=bot_token)
+        await bot.send_message(chat_id=chat_id, text=msg, parse_mode=ParseMode.MARKDOWN)
+        return True
+    except Exception as e:
+        logger.error("telegram.auction_watch_failed", error=str(e), item_id=getattr(item, "id", None))
+        return False

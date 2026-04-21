@@ -15,6 +15,7 @@ class OfferPlatform(str, Enum):
     EBAY = "EBAY"
     KLEINANZEIGEN = "KLEINANZEIGEN"
     AMAZON = "AMAZON"
+    CATAWIKI = "CATAWIKI"
     BRICKMERGE = "BRICKMERGE"  # Shop links via BrickMerge
     OTHER = "OTHER"
 

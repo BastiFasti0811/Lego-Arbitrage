@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     ebay_provision_fixed: float = 0.35  # €
     ebay_payment_rate: float = 0.019  # 1.9%
     ebay_payment_fixed: float = 0.35  # €
+    catawiki_buyer_fee_rate: float = 0.09  # 9% buyer protection on hammer price
+    catawiki_buyer_fee_fixed: float = 3.0  # € fixed buyer protection fee
 
     # ── Shipping Cost Matrix (€) ─────────────────────────
     shipping_small: float = 6.50  # <30cm

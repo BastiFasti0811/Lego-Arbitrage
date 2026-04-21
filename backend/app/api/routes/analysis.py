@@ -11,8 +11,15 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
+from app.engine.auction_calculator import (
+    AuctionFeeProfile,
+    calculate_auction_purchase_total,
+    calculate_max_auction_bid,
+)
 from app.engine.decision_engine import analyze_deal
 from app.models import AnalysisHistoryEntry, DealFeedback, LegoSet, async_session, get_session
+from app.services.auction_watch import evaluate_auction
 from app.scrapers import (
     AmazonScraper,
     BrickEconomyScraper,
@@ -113,6 +120,64 @@ class AnalyzeRequest(BaseModel):
     eol_status: str | None = None
 
 
+class AuctionMaxBidRequest(BaseModel):
+    """Calculate the highest auction hammer price worth paying."""
+
+    set_number: str
+    current_bid: float
+    purchase_shipping: float | None = None
+    source_platform: str = "CATAWIKI"
+    source_url: str | None = None
+    desired_roi_percent: float | None = None
+    buyer_fee_rate: float | None = None
+    buyer_fee_fixed: float | None = None
+    fee_applies_to_shipping: bool = False
+    set_name: str | None = None
+    theme: str | None = None
+    release_year: int | None = None
+    uvp: float | None = None
+    eol_status: str | None = None
+
+
+class AuctionMaxBidResponse(BaseModel):
+    """Bid ceiling and all-in cost view for auction marketplaces."""
+
+    set_number: str
+    set_name: str
+    theme: str
+    release_year: int
+    category: str
+    eol_status: str | None = None
+    source_platform: str
+    source_url: str | None = None
+    market_price: float
+    reference_price: float
+    reference_label: str
+    target_roi_percent: float
+    current_bid: float
+    recommended_max_bid: float
+    break_even_bid: float
+    current_bid_gap: float
+    can_bid_now: bool
+    current_bid_status: str
+    current_bid_recommendation: str
+    purchase_shipping: float
+    buyer_fee_rate: float
+    buyer_fee_fixed: float
+    fee_applies_to_shipping: bool = False
+    buyer_fee_at_recommended_bid: float
+    buyer_fee_at_current_bid: float
+    total_purchase_cost_at_recommended_bid: float
+    total_purchase_cost_at_current_bid: float
+    expected_profit_at_recommended_bid: float
+    expected_profit_at_current_bid: float
+    expected_roi_at_recommended_bid: float
+    expected_roi_at_current_bid: float
+    total_selling_costs: float
+    warnings: list[str]
+    source_prices: dict[str, float]
+
+
 class CodeLookupResponse(SetLookupResponse):
     """Set lookup result for a scanned code."""
 
@@ -168,12 +233,16 @@ def _detect_source_platform(source_url: str | None, source_platform: str | None)
         return None
 
     lowered = source_url.lower()
+    if "catawiki" in lowered:
+        return "CATAWIKI"
     if "kleinanzeigen" in lowered:
         return "KLEINANZEIGEN"
     if "ebay" in lowered:
         return "EBAY"
     if "amazon" in lowered:
         return "AMAZON"
+    if "whatnot" in lowered:
+        return "WHATNOT"
     return "UNKNOWN"
 
 
@@ -251,6 +320,107 @@ async def _resolve_set_number_from_code(code: str) -> str | None:
     except Exception as exc:
         logger.warning("lookup_code.lookup_failed", code=code, error=str(exc))
         return None
+
+
+def _default_target_roi_for_category(category: str) -> float:
+    mapping = {
+        "FRESH": settings.min_roi_fresh,
+        "SWEET_SPOT": settings.min_roi_sweet_spot,
+        "ESTABLISHED": settings.min_roi_established,
+        "VINTAGE": settings.min_roi_vintage,
+        "LEGACY": settings.min_roi_legacy,
+    }
+    return float(mapping.get(category, settings.min_roi_sweet_spot))
+
+
+def _estimate_monthly_sales(prices: list[ScrapedPrice]) -> int | None:
+    for price in prices:
+        if price.source == "EBAY_SOLD" and price.sold_count:
+            return int(price.sold_count / 2)
+    return None
+
+
+async def _gather_market_context(
+    *,
+    set_number: str,
+    set_name: str | None = None,
+    theme: str | None = None,
+    release_year: int | None = None,
+    uvp: float | None = None,
+    eol_status: str | None = None,
+) -> tuple[list[ScrapedPrice], str, str, int, float | None, str]:
+    prices: list[ScrapedPrice] = []
+    resolved_set_name = set_name or f"LEGO {set_number}"
+    resolved_theme = theme or "Unknown"
+    resolved_release_year = release_year or 2020
+    resolved_uvp = uvp
+    resolved_eol_status = eol_status or "UNKNOWN"
+
+    async def scrape_source(scraper_cls, requested_set_number: str):
+        try:
+            async with scraper_cls() as scraper:
+                info = await scraper.get_set_info(requested_set_number)
+                price = await scraper.get_price(requested_set_number)
+                return info, price
+        except Exception as exc:
+            logger.warning("analysis.scraper_failed", scraper=scraper_cls.__name__, error=str(exc))
+            return None, None
+
+    scrapers = [
+        BrickEconomyScraper,
+        BrickMergeScraper,
+        EbaySoldScraper,
+        IdealoScraper,
+        AmazonScraper,
+        LegoComScraper,
+    ]
+
+    results = await asyncio.gather(
+        *[scrape_source(scraper_cls, set_number) for scraper_cls in scrapers],
+        return_exceptions=True,
+    )
+
+    for result in results:
+        if isinstance(result, Exception):
+            continue
+        info, price = result
+        if info:
+            resolved_set_name, resolved_theme, resolved_release_year, resolved_uvp, resolved_eol_status = _merge_set_info(
+                info=info,
+                set_number=set_number,
+                set_name=resolved_set_name,
+                theme=resolved_theme,
+                release_year=resolved_release_year,
+                uvp=resolved_uvp,
+                eol_status=resolved_eol_status,
+            )
+        if price:
+            prices.append(price)
+
+    if _needs_metadata_retry(resolved_theme, resolved_release_year, resolved_uvp, resolved_eol_status):
+        (
+            resolved_set_name,
+            resolved_theme,
+            resolved_release_year,
+            resolved_uvp,
+            resolved_eol_status,
+        ) = await _retry_authoritative_metadata(
+            set_number,
+            resolved_set_name,
+            resolved_theme,
+            resolved_release_year,
+            resolved_uvp,
+            resolved_eol_status,
+        )
+
+    return (
+        prices,
+        resolved_set_name,
+        resolved_theme,
+        resolved_release_year,
+        resolved_uvp,
+        resolved_eol_status,
+    )
 
 
 def _history_to_response(entry: AnalysisHistoryEntry) -> AnalysisResponse:
@@ -478,77 +648,14 @@ async def analyze_offer(
     logger.info("analysis.start", set_number=request.set_number, price=request.offer_price)
 
     # ── Step 1: Gather data from all scrapers ────────────
-    prices: list[ScrapedPrice] = []
-    set_name = request.set_name or f"LEGO {request.set_number}"
-    theme = request.theme or "Unknown"
-    release_year = request.release_year or 2020
-    uvp = request.uvp
-    eol_status = request.eol_status or "UNKNOWN"
-
-    async def scrape_source(scraper_cls, set_number: str):
-        """Run a single scraper safely."""
-        try:
-            async with scraper_cls() as scraper:
-                info = await scraper.get_set_info(set_number)
-                price = await scraper.get_price(set_number)
-                return scraper_cls.__name__, info, price
-        except Exception as e:
-            logger.warning("analysis.scraper_failed", scraper=scraper_cls.__name__, error=str(e))
-            return scraper_cls.__name__, None, None
-
-    # Run all scrapers concurrently
-    scrapers = [
-        BrickEconomyScraper,
-        BrickMergeScraper,
-        EbaySoldScraper,
-        IdealoScraper,
-        AmazonScraper,
-        LegoComScraper,
-    ]
-
-    results = await asyncio.gather(
-        *[scrape_source(s, request.set_number) for s in scrapers],
-        return_exceptions=True,
+    prices, set_name, theme, release_year, uvp, eol_status = await _gather_market_context(
+        set_number=request.set_number,
+        set_name=request.set_name,
+        theme=request.theme,
+        release_year=request.release_year,
+        uvp=request.uvp,
+        eol_status=request.eol_status,
     )
-
-    for result in results:
-        if isinstance(result, Exception):
-            continue
-        _scraper_name, info, price = result
-        if info:
-            set_name, theme, release_year, uvp, eol_status = _merge_set_info(
-                info=info,
-                set_number=request.set_number,
-                set_name=set_name,
-                theme=theme,
-                release_year=release_year,
-                uvp=uvp,
-                eol_status=eol_status,
-            )
-        if price:
-            prices.append(price)
-
-    # Override with user-provided values
-    if request.set_name:
-        set_name = request.set_name
-    if request.theme:
-        theme = request.theme
-    if request.release_year:
-        release_year = request.release_year
-    if request.uvp:
-        uvp = request.uvp
-    if request.eol_status:
-        eol_status = request.eol_status
-
-    if _needs_metadata_retry(theme, release_year, uvp, eol_status):
-        set_name, theme, release_year, uvp, eol_status = await _retry_authoritative_metadata(
-            request.set_number,
-            set_name,
-            theme,
-            release_year,
-            uvp,
-            eol_status,
-        )
 
     # ── Step 2: Run analysis engine ──────────────────────
     detected_platform = _detect_source_platform(request.source_url, request.source_platform)
@@ -559,10 +666,7 @@ async def analyze_offer(
             eol_status = "AVAILABLE"
 
     # Estimate monthly sales from eBay data
-    monthly_sales = None
-    for p in prices:
-        if p.source == "EBAY_SOLD" and p.sold_count:
-            monthly_sales = int(p.sold_count / 2)  # 60 days → monthly
+    monthly_sales = _estimate_monthly_sales(prices)
 
     analysis = analyze_deal(
         set_number=request.set_number,
@@ -650,6 +754,153 @@ async def analyze_offer(
     return await _store_history(session, response)
 
 
+def _build_auction_fee_profile(request: AuctionMaxBidRequest, platform: str) -> AuctionFeeProfile:
+    normalized_platform = (platform or "CATAWIKI").upper()
+    default_rate = settings.catawiki_buyer_fee_rate if normalized_platform == "CATAWIKI" else 0.0
+    default_fixed = settings.catawiki_buyer_fee_fixed if normalized_platform == "CATAWIKI" else 0.0
+    return AuctionFeeProfile(
+        platform=normalized_platform,
+        buyer_fee_rate=request.buyer_fee_rate if request.buyer_fee_rate is not None else default_rate,
+        buyer_fee_fixed=request.buyer_fee_fixed if request.buyer_fee_fixed is not None else default_fixed,
+        fee_applies_to_shipping=request.fee_applies_to_shipping,
+    )
+
+
+@router.post("/auction-max-bid", response_model=AuctionMaxBidResponse)
+async def calculate_auction_max_bid(request: AuctionMaxBidRequest):
+    """Calculate a fee-aware hammer-price ceiling for auction marketplaces."""
+    logger.info(
+        "analysis.auction_max_bid.start",
+        set_number=request.set_number,
+        current_bid=request.current_bid,
+        platform=request.source_platform,
+    )
+
+    prices, set_name, theme, release_year, uvp, eol_status = await _gather_market_context(
+        set_number=request.set_number,
+        set_name=request.set_name,
+        theme=request.theme,
+        release_year=request.release_year,
+        uvp=request.uvp,
+        eol_status=request.eol_status,
+    )
+
+    detected_platform = _detect_source_platform(request.source_url, request.source_platform) or request.source_platform or "CATAWIKI"
+    detected_platform = detected_platform.upper()
+
+    still_in_retail = eol_status in ("AVAILABLE", "RETIRING_SOON")
+    if not still_in_retail and detected_platform in {"AMAZON", "LEGO"}:
+        still_in_retail = True
+        if eol_status == "UNKNOWN":
+            eol_status = "AVAILABLE"
+
+    monthly_sales = _estimate_monthly_sales(prices)
+    baseline_analysis = analyze_deal(
+        set_number=request.set_number,
+        set_name=set_name,
+        release_year=release_year,
+        theme=theme,
+        offer_price=request.current_bid,
+        prices=prices,
+        uvp=uvp,
+        eol_status=eol_status,
+        monthly_sales=monthly_sales,
+        still_in_retail=still_in_retail,
+        purchase_shipping=request.purchase_shipping,
+    )
+
+    target_roi = request.desired_roi_percent
+    if target_roi is None:
+        target_roi = _default_target_roi_for_category(baseline_analysis.category)
+
+    fee_profile = _build_auction_fee_profile(request, detected_platform)
+    bid_result = calculate_max_auction_bid(
+        expected_sale_price=baseline_analysis.reference_price,
+        target_roi_percent=target_roi,
+        profile=fee_profile,
+        purchase_shipping=request.purchase_shipping,
+        uvp=uvp,
+    )
+    current_total_purchase_cost, current_buyer_fee = calculate_auction_purchase_total(
+        bid=request.current_bid,
+        purchase_shipping=bid_result.purchase_shipping,
+        profile=fee_profile,
+    )
+    expected_profit_at_current_bid = round(bid_result.net_sale_revenue - current_total_purchase_cost, 2)
+    expected_roi_at_current_bid = (
+        round(expected_profit_at_current_bid / current_total_purchase_cost * 100, 1)
+        if current_total_purchase_cost > 0
+        else 0.0
+    )
+
+    current_bid_gap = round(bid_result.max_bid - request.current_bid, 2)
+    can_bid_now = current_bid_gap >= 0
+    if current_bid_gap >= 5:
+        current_bid_status = "UNDER_LIMIT"
+        current_bid_recommendation = "Noch Luft bis zum Maximalgebot."
+    elif current_bid_gap >= 0:
+        current_bid_status = "AT_LIMIT"
+        current_bid_recommendation = "Nur noch wenig Luft. Auto-Bid eng setzen."
+    else:
+        current_bid_status = "OVER_LIMIT"
+        current_bid_recommendation = "Nicht weiter bieten. Gebot liegt bereits über deinem Zielkorridor."
+
+    warnings = list(baseline_analysis.market_consensus.warnings)
+    if detected_platform == "CATAWIKI":
+        warnings.insert(
+            0,
+            "Catawiki all-in = Hammerpreis + 9% + 3€ Käuferschutz + Versand. Zölle oder Importabgaben sind nicht enthalten.",
+        )
+    if baseline_analysis.market_consensus.num_sources < 2:
+        warnings.append("Datenlage dünn. Maximalgebot besser konservativ ansetzen.")
+
+    logger.info(
+        "analysis.auction_max_bid.complete",
+        set_number=request.set_number,
+        platform=detected_platform,
+        max_bid=bid_result.max_bid,
+        current_bid=request.current_bid,
+        can_bid_now=can_bid_now,
+    )
+
+    return AuctionMaxBidResponse(
+        set_number=request.set_number,
+        set_name=baseline_analysis.set_name,
+        theme=baseline_analysis.theme,
+        release_year=baseline_analysis.release_year,
+        category=baseline_analysis.category,
+        eol_status=eol_status,
+        source_platform=detected_platform,
+        source_url=request.source_url,
+        market_price=baseline_analysis.market_consensus.consensus_price,
+        reference_price=baseline_analysis.reference_price,
+        reference_label=baseline_analysis.reference_label,
+        target_roi_percent=round(float(target_roi), 1),
+        current_bid=round(request.current_bid, 2),
+        recommended_max_bid=bid_result.max_bid,
+        break_even_bid=bid_result.break_even_bid,
+        current_bid_gap=current_bid_gap,
+        can_bid_now=can_bid_now,
+        current_bid_status=current_bid_status,
+        current_bid_recommendation=current_bid_recommendation,
+        purchase_shipping=bid_result.purchase_shipping,
+        buyer_fee_rate=bid_result.buyer_fee_rate,
+        buyer_fee_fixed=bid_result.buyer_fee_fixed,
+        fee_applies_to_shipping=bid_result.fee_applies_to_shipping,
+        buyer_fee_at_recommended_bid=bid_result.buyer_fee_at_max_bid,
+        buyer_fee_at_current_bid=current_buyer_fee,
+        total_purchase_cost_at_recommended_bid=bid_result.total_purchase_cost_at_max_bid,
+        total_purchase_cost_at_current_bid=current_total_purchase_cost,
+        expected_profit_at_recommended_bid=bid_result.expected_profit_at_max_bid,
+        expected_profit_at_current_bid=expected_profit_at_current_bid,
+        expected_roi_at_recommended_bid=bid_result.expected_roi_at_max_bid,
+        expected_roi_at_current_bid=expected_roi_at_current_bid,
+        total_selling_costs=bid_result.total_selling_costs,
+        warnings=warnings,
+        source_prices=baseline_analysis.market_consensus.source_prices,
+    )
+
+
 # Persistent analysis history
 @router.get("/history", response_model=list[AnalysisResponse])
 async def get_analysis_history(session: AsyncSession = Depends(get_session)):
@@ -723,12 +974,14 @@ async def lookup_code(request: CodeLookupRequest):
 
 @router.post("/parse-url", response_model=ParseUrlResponse)
 async def parse_listing_url(request: ParseUrlRequest):
-    """Parse a Kleinanzeigen/eBay/Amazon URL to extract set number and price.
+    """Parse a marketplace URL to extract set number and price.
 
     Supports:
     - kleinanzeigen.de listing URLs
     - ebay.de listing URLs
     - amazon.de product URLs
+    - catawiki.com lot URLs
+    - whatnot.com listing URLs
     """
     url = request.url.strip()
     logger.info("parse_url.start", url=url)
@@ -740,6 +993,10 @@ async def parse_listing_url(request: ParseUrlRequest):
         platform = "EBAY"
     elif "amazon.de" in url or "amazon.com" in url:
         platform = "AMAZON"
+    elif "catawiki.com" in url:
+        platform = "CATAWIKI"
+    elif "whatnot.com" in url:
+        platform = "WHATNOT"
 
     # First: try to extract set numbers from URL slug (fast, no HTTP needed)
     # Kleinanzeigen URLs look like: /s-anzeige/lego-naboo-starfighter-7877/2994338498-23-3902
@@ -774,6 +1031,7 @@ async def parse_listing_url(request: ParseUrlRequest):
 
     title = ""
     price = None
+    shipping = None
     set_number = None
     condition = "NEW_SEALED"
 
@@ -815,6 +1073,23 @@ async def parse_listing_url(request: ParseUrlRequest):
             m = re.search(r"([\d.,]+)", price_text.replace(".", "").replace(",", "."))
             if m:
                 price = float(m.group(1))
+
+    elif platform == "CATAWIKI":
+        title_el = soup.select_one("h1")
+        title = title_el.get_text(strip=True) if title_el else ""
+
+        bid_el = soup.select_one("main [class*=bid], main [class*=amount], main [data-testid*=bid]")
+        if bid_el:
+            bid_text = bid_el.get_text(" ", strip=True)
+            m = re.search(r"(\d+(?:[.,]\d+)?)", bid_text.replace(".", "").replace(",", "."))
+            if m:
+                price = float(m.group(1))
+
+        shipping_el = soup.find(string=re.compile(r"Lieferung|Versand", re.IGNORECASE))
+        if shipping_el:
+            shipping_match = re.search(r"(\d+(?:[.,]\d+)?)\s*€", shipping_el.strip().replace(".", "").replace(",", "."))
+            if shipping_match:
+                shipping = float(shipping_match.group(1))
 
     else:
         title_el = soup.select_one("h1")
@@ -859,7 +1134,7 @@ async def parse_listing_url(request: ParseUrlRequest):
         set_numbers=all_set_numbers,
         is_konvolut=is_konvolut,
         price=price,
-        shipping=None,  # Kleinanzeigen renders shipping via JS
+        shipping=shipping,
         title=title,
         condition=condition,
         platform=platform,
@@ -885,6 +1160,62 @@ class MultiAnalysisResponse(BaseModel):
     results: list[AnalysisResponse]
     summary: dict  # total_market_value, total_investment, combined_roi, recommendation
     price_allocation: dict[str, float]  # how total_price was split per set
+
+
+def _allocate_bundle_shipping(
+    *,
+    set_numbers: list[str],
+    price_allocation: dict[str, float],
+    total_purchase_shipping: float,
+) -> dict[str, float]:
+    """Distribute bundle shipping across sets proportional to their allocated price."""
+    if total_purchase_shipping <= 0 or not set_numbers:
+        return {set_number: 0.0 for set_number in set_numbers}
+
+    total_allocated = sum(price_allocation.get(set_number, 0.0) for set_number in set_numbers)
+    if total_allocated <= 0:
+        equal_share = round(total_purchase_shipping / len(set_numbers), 2)
+        shipping_allocation = {set_number: equal_share for set_number in set_numbers}
+    else:
+        shipping_allocation = {}
+        for set_number in set_numbers:
+            share = price_allocation.get(set_number, 0.0) / total_allocated
+            shipping_allocation[set_number] = round(total_purchase_shipping * share, 2)
+
+    rounding_delta = round(total_purchase_shipping - sum(shipping_allocation.values()), 2)
+    if rounding_delta and set_numbers:
+        shipping_allocation[set_numbers[-1]] = round(
+            shipping_allocation[set_numbers[-1]] + rounding_delta,
+            2,
+        )
+    return shipping_allocation
+
+
+def _with_bundle_metrics(
+    result: AnalysisResponse,
+    *,
+    allocated_price: float,
+    allocated_shipping: float,
+) -> AnalysisResponse:
+    """Recompute bundle item metrics from allocated buy share and current market value."""
+    total_purchase_cost = round(allocated_price + allocated_shipping, 2)
+    net_profit = round(result.market_price - total_purchase_cost - result.total_selling_costs, 2)
+    roi_percent = round((net_profit / total_purchase_cost) * 100, 1) if total_purchase_cost > 0 else 0.0
+
+    calibration_delta = None
+    if result.calibrated_roi_percent is not None:
+        calibration_delta = result.calibrated_roi_percent - result.roi_percent
+
+    updated_fields = {
+        "offer_price": round(allocated_price, 2),
+        "total_purchase_cost": total_purchase_cost,
+        "net_profit": net_profit,
+        "roi_percent": roi_percent,
+    }
+    if calibration_delta is not None:
+        updated_fields["calibrated_roi_percent"] = round(roi_percent + calibration_delta, 1)
+
+    return result.model_copy(update=updated_fields)
 
 
 @router.post("/analyze-multi", response_model=MultiAnalysisResponse)
@@ -978,15 +1309,30 @@ async def analyze_multi(request: AnalyzeMultiRequest):
     if not valid_results:
         raise HTTPException(status_code=500, detail="Keine der Analysen war erfolgreich")
 
-    # ── Step 4: Calculate summary ──
-    total_market_value = sum(r.market_price for r in valid_results)
-    total_investment = request.total_price + (request.purchase_shipping or 0.0)
-    total_selling_costs = sum(r.total_selling_costs for r in valid_results)
-    total_net_profit = total_market_value - total_investment - total_selling_costs
+    # ── Step 4: Recompute per-set bundle metrics so cards align with the bundle summary ──
+    shipping_allocation = _allocate_bundle_shipping(
+        set_numbers=request.set_numbers,
+        price_allocation=price_allocation,
+        total_purchase_shipping=request.purchase_shipping or 0.0,
+    )
+    bundle_results = [
+        _with_bundle_metrics(
+            result,
+            allocated_price=price_allocation.get(result.set_number, result.offer_price),
+            allocated_shipping=shipping_allocation.get(result.set_number, 0.0),
+        )
+        for result in valid_results
+    ]
+
+    # ── Step 5: Calculate summary ──
+    total_market_value = sum(r.market_price for r in bundle_results)
+    total_investment = sum(r.total_purchase_cost for r in bundle_results)
+    total_selling_costs = sum(r.total_selling_costs for r in bundle_results)
+    total_net_profit = sum(r.net_profit for r in bundle_results)
     combined_roi = (total_net_profit / total_investment * 100) if total_investment > 0 else 0.0
 
     # Overall recommendation logic
-    recommendations = [r.recommendation for r in valid_results]
+    recommendations = [r.recommendation for r in bundle_results]
     if any(r in ("GO_STAR", "GO") for r in recommendations):
         overall_recommendation = "GO"
     elif all(r == "NO_GO" for r in recommendations):
@@ -1013,7 +1359,7 @@ async def analyze_multi(request: AnalyzeMultiRequest):
     )
 
     return MultiAnalysisResponse(
-        results=valid_results,
+        results=bundle_results,
         summary=summary,
         price_allocation=price_allocation,
     )
