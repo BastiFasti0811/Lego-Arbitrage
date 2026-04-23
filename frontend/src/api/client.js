@@ -95,9 +95,18 @@ export const api = {
   lookupSet: (setNumber) => request(`/analysis/lookup/${setNumber}`),
   lookupCode: (code) => request("/analysis/lookup-code", { method: "POST", body: JSON.stringify({ code }) }),
   parseUrl: (url) => request("/analysis/parse-url", { method: "POST", body: JSON.stringify({ url }) }),
+  auctionMaxBid: (data) => request("/analysis/auction-max-bid", { method: "POST", body: JSON.stringify(data) }),
   sellerCheck: (sellerUrl) => request("/analysis/seller-check", { method: "POST", body: JSON.stringify({ seller_url: sellerUrl }) }),
   analyzeMulti: (data) => request("/analysis/analyze-multi", { method: "POST", body: JSON.stringify(data) }),
   analysisHistory: () => request("/analysis/history"),
+
+  // Auctions
+  listAuctionWatch: () => request("/auctions/"),
+  addAuctionWatch: (data) => request("/auctions/", { method: "POST", body: JSON.stringify(data) }),
+  updateAuctionWatch: (id, data) => request(`/auctions/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  refreshAuctionWatch: (id) => request(`/auctions/${id}/refresh`, { method: "POST" }),
+  removeAuctionWatch: (id) => request(`/auctions/${id}`, { method: "DELETE" }),
+  discoverAuctions: (data) => request("/auctions/discover", { method: "POST", body: JSON.stringify(data) }),
 
   // Feedback
   feedbackPerformance: () => request("/feedback/performance"),

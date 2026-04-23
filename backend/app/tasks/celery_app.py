@@ -12,6 +12,8 @@ celery_app = Celery(
     include=[
         "app.tasks.scrape_daily",
         "app.tasks.analyze_new",
+        "app.tasks.auction_watch",
+        "app.tasks.catawiki_scan",
         "app.tasks.update_inventory",
     ],
 )
@@ -54,6 +56,18 @@ celery_app.conf.beat_schedule = {
     "refresh-known-set-metadata": {
         "task": "app.tasks.scrape_daily.refresh_known_set_metadata",
         "schedule": crontab(minute=15, hour=4),
+        "options": {"queue": "scraping"},
+    },
+    # Re-evaluate watched auction lots every morning
+    "refresh-auction-watchlist": {
+        "task": "app.tasks.auction_watch.refresh_auction_watchlist",
+        "schedule": crontab(minute=20, hour=8),
+        "options": {"queue": "analysis"},
+    },
+    # Scan configured auction-source categories once per day
+    "scan-catawiki-categories": {
+        "task": "app.tasks.catawiki_scan.scan_configured_categories",
+        "schedule": crontab(minute=40, hour=8),
         "options": {"queue": "scraping"},
     },
     # Weekly model retraining (Sunday 03:00)

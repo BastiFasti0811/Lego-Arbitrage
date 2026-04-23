@@ -172,3 +172,60 @@ async def send_daily_summary(
     except Exception as e:
         logger.error("telegram.summary_failed", error=str(e))
         return False
+
+
+async def send_auction_watch_alert(item, set_number: str, set_name: str) -> bool:
+    """Send a Telegram alert for a watched auction lot."""
+    runtime_settings = await get_settings_map(["telegram_bot_token", "telegram_chat_id"])
+    bot_token = runtime_settings.get("telegram_bot_token")
+    chat_id = runtime_settings.get("telegram_chat_id")
+
+    if not bot_token or not chat_id:
+        return False
+
+    msg = (
+        f"*Auktions-Watch*\n"
+        f"LEGO {set_number} - {set_name}\n"
+        f"Plattform: {item.source_platform}\n"
+        f"Aktuelles Gebot: {item.current_bid:.0f} EUR\n"
+        f"Maximalgebot: {(item.max_bid or 0):.0f} EUR\n"
+        f"Luft: {(item.bid_gap or 0):+.0f} EUR\n"
+        f"ROI jetzt: {(item.expected_roi_current or 0):.1f}%\n"
+    )
+    if item.recommendation_text:
+        msg += f"\n{item.recommendation_text}\n"
+    if item.source_url:
+        msg += f"\n{item.source_url}"
+
+    try:
+        bot = Bot(token=bot_token)
+        await bot.send_message(chat_id=chat_id, text=msg, parse_mode=ParseMode.MARKDOWN)
+        return True
+    except Exception as e:
+        logger.error("telegram.auction_watch_failed", error=str(e))
+        return False
+
+
+async def send_auction_discovery_summary(discovered: list[dict]) -> bool:
+    """Send a compact Telegram summary for newly scanned auction opportunities."""
+    runtime_settings = await get_settings_map(["telegram_bot_token", "telegram_chat_id"])
+    bot_token = runtime_settings.get("telegram_bot_token")
+    chat_id = runtime_settings.get("telegram_chat_id")
+
+    if not bot_token or not chat_id or not discovered:
+        return False
+
+    platforms = sorted({item.get("source_platform", "AUCTION") for item in discovered})
+    platform_label = ", ".join(platforms)
+    lines = [f"*Auction Scan ({platform_label})*", f"Treffer: {len(discovered)}", ""]
+    for item in discovered[:5]:
+        lines.append(
+            f"{item.get('source_platform', 'AUCTION')} | LEGO {item['set_number']} | Gebot {item['current_bid']:.0f} EUR | Max {item['recommended_max_bid']:.0f} EUR"
+        )
+    try:
+        bot = Bot(token=bot_token)
+        await bot.send_message(chat_id=chat_id, text="\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        return True
+    except Exception as e:
+        logger.error("telegram.auction_discovery_failed", error=str(e))
+        return False

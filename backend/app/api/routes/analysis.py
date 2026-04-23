@@ -13,6 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.engine.decision_engine import analyze_deal
 from app.models import AnalysisHistoryEntry, DealFeedback, LegoSet, async_session, get_session
+from app.services.auction_watch import evaluate_auction
+from app.services.bricklink import BrickLinkScraper, parse_listing_page as parse_bricklink_listing_page
+from app.services.catawiki import CatawikiScraper, parse_lot_page
+from app.services.whatnot import WhatnotScraper, parse_listing_page as parse_whatnot_listing_page
 from app.scrapers import (
     AmazonScraper,
     BrickEconomyScraper,
@@ -113,6 +117,63 @@ class AnalyzeRequest(BaseModel):
     eol_status: str | None = None
 
 
+class AuctionMaxBidRequest(BaseModel):
+    """Calculate the highest auction hammer price worth paying."""
+
+    set_number: str
+    current_bid: float
+    purchase_shipping: float | None = None
+    source_url: str | None = None
+    source_platform: str = "CATAWIKI"
+    desired_roi_percent: float | None = None
+    buyer_fee_rate: float | None = None
+    buyer_fee_fixed: float | None = None
+    fee_applies_to_shipping: bool = False
+    set_name: str | None = None
+    theme: str | None = None
+    release_year: int | None = None
+    uvp: float | None = None
+    eol_status: str | None = None
+
+
+class AuctionMaxBidResponse(BaseModel):
+    """Bid ceiling and current auction economics."""
+
+    set_number: str
+    set_name: str
+    theme: str
+    release_year: int
+    category: str
+    eol_status: str | None = None
+    source_platform: str
+    source_url: str | None = None
+    market_price: float
+    reference_price: float
+    reference_label: str
+    target_roi_percent: float
+    current_bid: float
+    recommended_max_bid: float
+    break_even_bid: float
+    current_bid_gap: float
+    can_bid_now: bool
+    bid_status: str
+    recommendation_text: str
+    purchase_shipping: float
+    buyer_fee_rate: float
+    buyer_fee_fixed: float
+    fee_applies_to_shipping: bool
+    buyer_fee_at_current_bid: float
+    buyer_fee_at_recommended_bid: float
+    total_purchase_cost_at_current_bid: float
+    total_purchase_cost_at_recommended_bid: float
+    expected_profit_at_current_bid: float
+    expected_profit_at_recommended_bid: float
+    expected_roi_at_current_bid: float
+    expected_roi_at_recommended_bid: float
+    warnings: list[str]
+    source_prices: dict[str, float]
+
+
 class CodeLookupResponse(SetLookupResponse):
     """Set lookup result for a scanned code."""
 
@@ -168,12 +229,18 @@ def _detect_source_platform(source_url: str | None, source_platform: str | None)
         return None
 
     lowered = source_url.lower()
+    if "catawiki" in lowered:
+        return "CATAWIKI"
     if "kleinanzeigen" in lowered:
         return "KLEINANZEIGEN"
     if "ebay" in lowered:
         return "EBAY"
     if "amazon" in lowered:
         return "AMAZON"
+    if "whatnot" in lowered:
+        return "WHATNOT"
+    if "bricklink" in lowered:
+        return "BRICKLINK"
     return "UNKNOWN"
 
 
@@ -650,6 +717,63 @@ async def analyze_offer(
     return await _store_history(session, response)
 
 
+@router.post("/auction-max-bid", response_model=AuctionMaxBidResponse)
+async def calculate_auction_max_bid(request: AuctionMaxBidRequest):
+    """Calculate a fee-aware max bid for Catawiki or similar auction sources."""
+    evaluation = await evaluate_auction(
+        set_number=request.set_number,
+        current_bid=request.current_bid,
+        purchase_shipping=request.purchase_shipping,
+        source_url=request.source_url,
+        source_platform=request.source_platform,
+        desired_roi_percent=request.desired_roi_percent,
+        buyer_fee_rate=request.buyer_fee_rate,
+        buyer_fee_fixed=request.buyer_fee_fixed,
+        fee_applies_to_shipping=request.fee_applies_to_shipping,
+        set_name=request.set_name,
+        theme=request.theme,
+        release_year=request.release_year,
+        uvp=request.uvp,
+        eol_status=request.eol_status,
+    )
+
+    return AuctionMaxBidResponse(
+        set_number=request.set_number,
+        set_name=evaluation.analysis.set_name,
+        theme=evaluation.analysis.theme,
+        release_year=evaluation.analysis.release_year,
+        category=evaluation.analysis.category,
+        eol_status=evaluation.eol_status,
+        source_platform=evaluation.detected_platform,
+        source_url=request.source_url,
+        market_price=evaluation.analysis.market_consensus.consensus_price,
+        reference_price=evaluation.analysis.reference_price,
+        reference_label=evaluation.analysis.reference_label,
+        target_roi_percent=evaluation.bid_result.target_roi_percent,
+        current_bid=round(request.current_bid, 2),
+        recommended_max_bid=evaluation.bid_result.max_bid,
+        break_even_bid=evaluation.bid_result.break_even_bid,
+        current_bid_gap=evaluation.current_bid_gap,
+        can_bid_now=evaluation.can_bid_now,
+        bid_status=evaluation.bid_status,
+        recommendation_text=evaluation.recommendation_text,
+        purchase_shipping=evaluation.bid_result.purchase_shipping,
+        buyer_fee_rate=evaluation.bid_result.buyer_fee_rate,
+        buyer_fee_fixed=evaluation.bid_result.buyer_fee_fixed,
+        fee_applies_to_shipping=evaluation.bid_result.fee_applies_to_shipping,
+        buyer_fee_at_current_bid=evaluation.current_buyer_fee,
+        buyer_fee_at_recommended_bid=evaluation.bid_result.buyer_fee_at_max_bid,
+        total_purchase_cost_at_current_bid=evaluation.current_total_purchase_cost,
+        total_purchase_cost_at_recommended_bid=evaluation.bid_result.total_purchase_cost_at_max_bid,
+        expected_profit_at_current_bid=evaluation.expected_profit_at_current_bid,
+        expected_profit_at_recommended_bid=evaluation.bid_result.expected_profit_at_max_bid,
+        expected_roi_at_current_bid=evaluation.expected_roi_at_current_bid,
+        expected_roi_at_recommended_bid=evaluation.bid_result.expected_roi_at_max_bid,
+        warnings=evaluation.warnings,
+        source_prices=evaluation.analysis.market_consensus.source_prices,
+    )
+
+
 # Persistent analysis history
 @router.get("/history", response_model=list[AnalysisResponse])
 async def get_analysis_history(session: AsyncSession = Depends(get_session)):
@@ -723,12 +847,15 @@ async def lookup_code(request: CodeLookupRequest):
 
 @router.post("/parse-url", response_model=ParseUrlResponse)
 async def parse_listing_url(request: ParseUrlRequest):
-    """Parse a Kleinanzeigen/eBay/Amazon URL to extract set number and price.
+    """Parse a marketplace URL to extract set number and price.
 
     Supports:
     - kleinanzeigen.de listing URLs
     - ebay.de listing URLs
     - amazon.de product URLs
+    - catawiki.com lot URLs
+    - whatnot.com listing URLs
+    - bricklink.com item URLs
     """
     url = request.url.strip()
     logger.info("parse_url.start", url=url)
@@ -740,6 +867,12 @@ async def parse_listing_url(request: ParseUrlRequest):
         platform = "EBAY"
     elif "amazon.de" in url or "amazon.com" in url:
         platform = "AMAZON"
+    elif "catawiki.com" in url:
+        platform = "CATAWIKI"
+    elif "whatnot.com" in url:
+        platform = "WHATNOT"
+    elif "bricklink.com" in url:
+        platform = "BRICKLINK"
 
     # First: try to extract set numbers from URL slug (fast, no HTTP needed)
     # Kleinanzeigen URLs look like: /s-anzeige/lego-naboo-starfighter-7877/2994338498-23-3902
@@ -756,9 +889,20 @@ async def parse_listing_url(request: ParseUrlRequest):
 
     # Try to fetch the page for more details
     try:
-        from app.scrapers.kleinanzeigen import KleinanzeigenScraper
-        async with KleinanzeigenScraper() as scraper:
-            html = await scraper._fetch(url)
+        if platform == "CATAWIKI":
+            async with CatawikiScraper() as scraper:
+                html = await scraper._fetch(url)
+        elif platform == "WHATNOT":
+            async with WhatnotScraper() as scraper:
+                html = await scraper._fetch(url)
+        elif platform == "BRICKLINK":
+            async with BrickLinkScraper() as scraper:
+                html = await scraper._fetch(url)
+        else:
+            from app.scrapers.kleinanzeigen import KleinanzeigenScraper
+
+            async with KleinanzeigenScraper() as scraper:
+                html = await scraper._fetch(url)
     except Exception as e:
         logger.warning("parse_url.fetch_failed", url=url, error=str(e))
         all_set_numbers = list(dict.fromkeys(url_set_numbers))  # deduplicate, preserve order
@@ -774,6 +918,7 @@ async def parse_listing_url(request: ParseUrlRequest):
 
     title = ""
     price = None
+    shipping = None
     set_number = None
     condition = "NEW_SEALED"
 
@@ -815,6 +960,21 @@ async def parse_listing_url(request: ParseUrlRequest):
             m = re.search(r"([\d.,]+)", price_text.replace(".", "").replace(",", "."))
             if m:
                 price = float(m.group(1))
+    elif platform == "CATAWIKI":
+        lot = parse_lot_page(html, url)
+        title = lot.title
+        price = lot.current_bid
+        shipping = lot.shipping_eur
+    elif platform == "WHATNOT":
+        lot = parse_whatnot_listing_page(html, url)
+        title = lot.title
+        price = lot.current_bid
+        shipping = lot.shipping_eur
+    elif platform == "BRICKLINK":
+        lot = parse_bricklink_listing_page(html, url)
+        title = lot.title
+        price = lot.current_bid
+        shipping = lot.shipping_eur
 
     else:
         title_el = soup.select_one("h1")
@@ -859,7 +1019,7 @@ async def parse_listing_url(request: ParseUrlRequest):
         set_numbers=all_set_numbers,
         is_konvolut=is_konvolut,
         price=price,
-        shipping=None,  # Kleinanzeigen renders shipping via JS
+        shipping=shipping,
         title=title,
         condition=condition,
         platform=platform,

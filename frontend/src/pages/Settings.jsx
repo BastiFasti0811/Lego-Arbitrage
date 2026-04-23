@@ -34,6 +34,45 @@ const FIELD_CONFIG = [
       { key: "kleinanzeigen_password", label: "Passwort", type: "password" },
     ],
   },
+  {
+    category: "catawiki",
+    title: "Catawiki Scan",
+    description:
+      "Optional fuer Discovery-Scans. Cookie und User Agent helfen, wenn Catawiki anonyme Requests einschraenkt.",
+    enabled: true,
+    fields: [
+      { key: "catawiki_cookie_header", label: "Cookie Header", type: "password" },
+      { key: "catawiki_user_agent", label: "User Agent", type: "text" },
+      { key: "catawiki_scan_urls", label: "Kategorie-URLs", type: "textarea", rows: 5 },
+      { key: "catawiki_max_results_per_url", label: "Max Ergebnisse pro URL", type: "number" },
+    ],
+  },
+  {
+    category: "whatnot",
+    title: "Whatnot Scan",
+    description:
+      "Optional fuer Discovery-Scans. Besonders nuetzlich fuer Live-Listings und aktuelle Store-Angebote.",
+    enabled: true,
+    fields: [
+      { key: "whatnot_cookie_header", label: "Cookie Header", type: "password" },
+      { key: "whatnot_user_agent", label: "User Agent", type: "text" },
+      { key: "whatnot_scan_urls", label: "Kategorie-URLs", type: "textarea", rows: 5 },
+      { key: "whatnot_max_results_per_url", label: "Max Ergebnisse pro URL", type: "number" },
+    ],
+  },
+  {
+    category: "bricklink",
+    title: "BrickLink Scan",
+    description:
+      "Optional fuer Discovery-Scans auf BrickLink-Suchseiten oder Shop-Ansichten.",
+    enabled: true,
+    fields: [
+      { key: "bricklink_cookie_header", label: "Cookie Header", type: "password" },
+      { key: "bricklink_user_agent", label: "User Agent", type: "text" },
+      { key: "bricklink_scan_urls", label: "Kategorie-URLs", type: "textarea", rows: 5 },
+      { key: "bricklink_max_results_per_url", label: "Max Ergebnisse pro URL", type: "number" },
+    ],
+  },
 ];
 
 function isTruthy(value) {
@@ -60,6 +99,25 @@ function SettingsField({ field, sectionEnabled, values, dirtyValues, onChange })
           {field.label}
         </span>
       </label>
+    );
+  }
+
+  if (field.type === "textarea") {
+    return (
+      <div>
+        <label className="block text-sm font-medium text-text-secondary mb-1.5">{field.label}</label>
+        <textarea
+          disabled={!sectionEnabled}
+          rows={field.rows || 4}
+          value={currentValue}
+          onChange={(event) => onChange(field.key, event.target.value)}
+          placeholder={!sectionEnabled ? "Deaktiviert" : ""}
+          className={`w-full px-3 py-2 rounded-lg border text-sm transition-colors resize-y min-h-28
+            bg-bg-primary border-border text-text-primary placeholder-text-muted
+            focus:outline-none focus:ring-2 focus:ring-lego-yellow/50 focus:border-lego-yellow
+            ${!sectionEnabled ? "opacity-50 cursor-not-allowed" : ""}`}
+        />
+      </div>
     );
   }
 

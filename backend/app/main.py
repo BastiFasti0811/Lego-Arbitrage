@@ -10,7 +10,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from app.config import settings
-from app.api.routes import sets, analysis, scout, watchlist, feedback, inventory, auth, settings as settings_routes
+from app.api.routes import auctions, sets, analysis, scout, watchlist, feedback, inventory, auth, settings as settings_routes
 from app.api.routes.auth import verify_cookie, COOKIE_NAME
 from app.models import Base, engine
 
@@ -67,6 +67,7 @@ async def auth_middleware(request: Request, call_next):
 app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 app.include_router(sets.router, prefix="/api/sets", tags=["Sets"])
 app.include_router(analysis.router, prefix="/api/analysis", tags=["Analysis"])
+app.include_router(auctions.router, prefix="/api/auctions", tags=["Auctions"])
 app.include_router(scout.router, prefix="/api/scout", tags=["Scout"])
 app.include_router(watchlist.router, prefix="/api/watchlist", tags=["Watchlist"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["Feedback"])
