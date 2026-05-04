@@ -11,6 +11,7 @@ build/
 .venv/
 venv/
 env/
+backend/uv.lock
 
 # Environment & Secrets
 .env
