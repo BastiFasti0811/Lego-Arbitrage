@@ -41,7 +41,7 @@ services:
     env_file: ./backend/.env
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-lego}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lego_arbitrage}
-      DATABASE_URL_SYNC: postgresql://${POSTGRES_USER:-lego}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lego_arbitrage}
+      DATABASE_URL_SYNC: postgresql+psycopg://${POSTGRES_USER:-lego}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lego_arbitrage}
       REDIS_URL: redis://redis:6379/0
       MEDIA_ROOT: /data
     depends_on:
@@ -72,7 +72,7 @@ services:
     env_file: ./backend/.env
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-lego}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lego_arbitrage}
-      DATABASE_URL_SYNC: postgresql://${POSTGRES_USER:-lego}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lego_arbitrage}
+      DATABASE_URL_SYNC: postgresql+psycopg://${POSTGRES_USER:-lego}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lego_arbitrage}
       REDIS_URL: redis://redis:6379/0
       MEDIA_ROOT: /data
     depends_on:
@@ -93,7 +93,7 @@ services:
     env_file: ./backend/.env
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-lego}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lego_arbitrage}
-      DATABASE_URL_SYNC: postgresql://${POSTGRES_USER:-lego}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lego_arbitrage}
+      DATABASE_URL_SYNC: postgresql+psycopg://${POSTGRES_USER:-lego}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lego_arbitrage}
       REDIS_URL: redis://redis:6379/0
       MEDIA_ROOT: /data
     depends_on:

@@ -61,8 +61,8 @@ async def login(body: LoginRequest, response: Response):
         value=token,
         httponly=True,
         max_age=COOKIE_MAX_AGE,
-        samesite="lax",
-        secure=False,  # set True behind HTTPS in production
+        samesite=settings.session_cookie_samesite,
+        secure=settings.session_cookie_secure,
     )
     return {"authenticated": True}
 

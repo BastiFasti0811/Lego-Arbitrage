@@ -1,7 +1,7 @@
 """Re-evaluate watched auction lots on a schedule."""
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from sqlalchemy import select
@@ -72,7 +72,7 @@ async def _refresh_auction_watchlist_async() -> dict:
                 item.set_category = evaluation.analysis.category
                 item.eol_status = evaluation.eol_status
                 item.warning_text = evaluation.warnings[0] if evaluation.warnings else None
-                item.last_checked_at = datetime.now(timezone.utc)
+                item.last_checked_at = datetime.now(UTC)
                 item.check_count = (item.check_count or 0) + 1
                 item.status = "ACTIVE" if evaluation.can_bid_now else "OVER_LIMIT"
 
@@ -82,12 +82,12 @@ async def _refresh_auction_watchlist_async() -> dict:
                     summary["under_limit"] += 1
                     should_alert = (
                         item.last_alerted_at is None
-                        or item.last_alerted_at < datetime.now(timezone.utc) - timedelta(hours=20)
+                        or item.last_alerted_at < datetime.now(UTC) - timedelta(hours=20)
                     )
                     if should_alert:
                         sent = await send_auction_watch_alert(item, lego_set.set_number, lego_set.set_name)
                         if sent:
-                            item.last_alerted_at = datetime.now(timezone.utc)
+                            item.last_alerted_at = datetime.now(UTC)
                             summary["alerts_sent"] += 1
             except Exception as exc:
                 summary["errors"] += 1

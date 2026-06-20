@@ -1,6 +1,7 @@
 """App settings model — stores configuration in database."""
 from sqlalchemy import Boolean, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
+
 from app.models.base import Base
 
 

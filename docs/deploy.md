@@ -106,6 +106,19 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
 docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 ```
 
+Fresh installations should run Alembic before the first app start:
+
+```bash
+docker compose --env-file .env.prod -f docker-compose.prod.yml run --rm api alembic upgrade head
+```
+
+Existing installations that were created by the old startup `create_all`
+bootstrap should be stamped once after confirming the schema matches the repo:
+
+```bash
+docker compose --env-file .env.prod -f docker-compose.prod.yml run --rm api alembic stamp head
+```
+
 You can also run the versioned helper from the repo root on the server:
 
 ```bash

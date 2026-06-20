@@ -1,7 +1,6 @@
 """Kleinanzeigen.de scraper — private offers, often cheaper than retail."""
 
 import re
-from datetime import datetime, timezone
 
 import structlog
 from bs4 import BeautifulSoup
@@ -153,8 +152,6 @@ class KleinanzeigenScraper(BaseScraper):
                     price = _parse_ka_price(price_text)
                     if not price or price < 5.0:
                         continue
-
-                    is_negotiable = "VB" in price_text or "vb" in price_text
 
                     # Link
                     link_el = item.select_one("a[href*='/s-anzeige/'], a[href*='/anzeige/']")

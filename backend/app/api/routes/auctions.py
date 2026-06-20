@@ -1,6 +1,6 @@
 """Auction watchlist and discovery routes."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
@@ -8,8 +8,10 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.platforms import detect_source_platform
 from app.models import AuctionWatchItem, LegoSet, get_session
 from app.runtime_settings import get_settings_map
+from app.security.url_policy import UnsafeUrlError, validate_marketplace_url
 from app.services.auction_watch import evaluate_auction
 from app.services.bricklink import BrickLinkScraper
 from app.services.catawiki import CatawikiScraper
@@ -140,12 +142,7 @@ async def _get_scan_settings(platform: str) -> dict[str, str | None]:
 
 
 def _platform_from_url(url: str) -> str:
-    lowered = (url or "").lower()
-    if "whatnot.com" in lowered:
-        return "WHATNOT"
-    if "bricklink.com" in lowered:
-        return "BRICKLINK"
-    return "CATAWIKI"
+    return _normalize_platform(detect_source_platform(url, None))
 
 
 def _split_urls(value: str | None) -> list[str]:
@@ -253,7 +250,7 @@ async def _apply_watch_evaluation(item: AuctionWatchItem, lego_set: LegoSet) -> 
     item.set_category = evaluation.analysis.category
     item.eol_status = evaluation.eol_status
     item.warning_text = evaluation.warnings[0] if evaluation.warnings else None
-    item.last_checked_at = datetime.now(timezone.utc)
+    item.last_checked_at = datetime.now(UTC)
     item.check_count = (item.check_count or 0) + 1
     item.status = "ACTIVE" if evaluation.can_bid_now else "OVER_LIMIT"
 
@@ -310,6 +307,7 @@ async def _discover_for_category(
     max_results: int,
 ) -> list[AuctionDiscoverResult]:
     platform = _normalize_platform(source_platform or _platform_from_url(category_url))
+    validate_marketplace_url(category_url, platform)
     async with _make_scraper(platform, cookie_header, user_agent) as scraper:
         lots = await scraper.scan_category(category_url, limit=max_results)
 
@@ -459,16 +457,19 @@ async def discover_auction_lots(request: AuctionDiscoverRequest):
 
     discovered: list[AuctionDiscoverResult] = []
     for category_url in category_urls:
-        effective_platform = _normalize_platform(platform if request.category_urls else _platform_from_url(category_url))
-        discovered.extend(
-            await _discover_for_category(
-                category_url=category_url,
-                source_platform=effective_platform,
-                cookie_header=cookie_header,
-                user_agent=user_agent,
-                max_results=max_results,
+        try:
+            effective_platform = _platform_from_url(category_url)
+            discovered.extend(
+                await _discover_for_category(
+                    category_url=category_url,
+                    source_platform=effective_platform,
+                    cookie_header=cookie_header,
+                    user_agent=user_agent,
+                    max_results=max_results,
+                )
             )
-        )
+        except UnsafeUrlError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     discovered.sort(key=lambda item: (item.can_bid_now, item.expected_profit_current or 0), reverse=True)
     return discovered

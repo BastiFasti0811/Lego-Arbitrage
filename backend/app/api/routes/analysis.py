@@ -8,26 +8,25 @@ import structlog
 from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.engine.decision_engine import analyze_deal
-from app.models import AnalysisHistoryEntry, DealFeedback, LegoSet, async_session, get_session
-from app.services.auction_watch import evaluate_auction
-from app.services.bricklink import BrickLinkScraper, parse_listing_page as parse_bricklink_listing_page
-from app.services.catawiki import CatawikiScraper, parse_lot_page
-from app.services.whatnot import WhatnotScraper, parse_listing_page as parse_whatnot_listing_page
-from app.scrapers import (
-    AmazonScraper,
-    BrickEconomyScraper,
-    BrickMergeScraper,
-    EbaySoldScraper,
-    IdealoScraper,
-    LegoComScraper,
-    METADATA_SCRAPERS,
-)
-from app.scrapers.base import ScrapedPrice
+from app.domain.platforms import detect_source_platform as infer_source_platform
+from app.models import AnalysisHistoryEntry, async_session, get_session
 from app.scrapers.kleinanzeigen import _parse_ka_price
+from app.security.url_policy import UnsafeUrlError, validate_marketplace_url
+from app.services.auction_watch import evaluate_auction
+from app.services.bricklink import BrickLinkScraper
+from app.services.bricklink import parse_listing_page as parse_bricklink_listing_page
+from app.services.catawiki import CatawikiScraper, parse_lot_page
+from app.services.deal_analysis import (
+    DealAnalysisCommand,
+    DealAnalysisUseCase,
+    ScraperMarketContextProvider,
+    SqlAlchemyAnalysisRepository,
+)
+from app.services.whatnot import WhatnotScraper
+from app.services.whatnot import parse_listing_page as parse_whatnot_listing_page
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -223,25 +222,7 @@ class AnalysisResponse(BaseModel):
 
 
 def _detect_source_platform(source_url: str | None, source_platform: str | None) -> str | None:
-    if source_platform:
-        return source_platform
-    if not source_url:
-        return None
-
-    lowered = source_url.lower()
-    if "catawiki" in lowered:
-        return "CATAWIKI"
-    if "kleinanzeigen" in lowered:
-        return "KLEINANZEIGEN"
-    if "ebay" in lowered:
-        return "EBAY"
-    if "amazon" in lowered:
-        return "AMAZON"
-    if "whatnot" in lowered:
-        return "WHATNOT"
-    if "bricklink" in lowered:
-        return "BRICKLINK"
-    return "UNKNOWN"
+    return infer_source_platform(source_url, source_platform)
 
 
 def _set_info_to_lookup_response(code: str, matched_set_number: str, info) -> CodeLookupResponse:
@@ -404,134 +385,6 @@ async def _store_history(session: AsyncSession, response: AnalysisResponse) -> A
     return stored
 
 
-async def _get_feedback_calibration(session: AsyncSession) -> tuple[float | None, int]:
-    completed = await session.scalar(
-        select(func.count(DealFeedback.id)).where(DealFeedback.roi_deviation.isnot(None))
-    )
-    completed_count = completed or 0
-    if completed_count < 3:
-        return None, completed_count
-
-    avg_deviation = await session.scalar(
-        select(func.avg(DealFeedback.roi_deviation)).where(DealFeedback.roi_deviation.isnot(None))
-    )
-    if avg_deviation is None:
-        return None, completed_count
-
-    clamped = max(-15.0, min(15.0, float(avg_deviation)))
-    return round(clamped, 1), completed_count
-
-
-def _merge_set_info(
-    *,
-    info,
-    set_number: str,
-    set_name: str,
-    theme: str,
-    release_year: int,
-    uvp: float | None,
-    eol_status: str,
-) -> tuple[str, str, int, float | None, str]:
-    if info.set_name and set_name == f"LEGO {set_number}":
-        set_name = info.set_name
-    if info.theme and theme == "Unknown":
-        theme = info.theme
-    if info.release_year and release_year == 2020:
-        release_year = info.release_year
-    if info.uvp_eur and not uvp:
-        uvp = info.uvp_eur
-    if info.eol_status and eol_status == "UNKNOWN":
-        eol_status = info.eol_status
-    return set_name, theme, release_year, uvp, eol_status
-
-
-def _needs_metadata_retry(theme: str, release_year: int, uvp: float | None, eol_status: str) -> bool:
-    return theme == "Unknown" or release_year == 2020 or not uvp or eol_status == "UNKNOWN"
-
-
-async def _retry_authoritative_metadata(
-    set_number: str,
-    set_name: str,
-    theme: str,
-    release_year: int,
-    uvp: float | None,
-    eol_status: str,
-) -> tuple[str, str, int, float | None, str]:
-    for scraper_cls in METADATA_SCRAPERS:
-        if not _needs_metadata_retry(theme, release_year, uvp, eol_status):
-            break
-        try:
-            async with scraper_cls() as scraper:
-                info = await scraper.get_set_info(set_number)
-            if info:
-                set_name, theme, release_year, uvp, eol_status = _merge_set_info(
-                    info=info,
-                    set_number=set_number,
-                    set_name=set_name,
-                    theme=theme,
-                    release_year=release_year,
-                    uvp=uvp,
-                    eol_status=eol_status,
-                )
-        except Exception as exc:
-            logger.warning(
-                "analysis.metadata_retry_failed",
-                scraper=scraper_cls.__name__,
-                set_number=set_number,
-                error=str(exc),
-            )
-    return set_name, theme, release_year, uvp, eol_status
-
-
-async def _upsert_set_from_analysis(
-    session: AsyncSession,
-    *,
-    set_number: str,
-    set_name: str,
-    theme: str,
-    release_year: int,
-    uvp: float | None,
-    eol_status: str,
-    market_price: float,
-) -> None:
-    result = await session.execute(select(LegoSet).where(LegoSet.set_number == set_number))
-    lego_set = result.scalar_one_or_none()
-
-    if lego_set is None:
-        lego_set = LegoSet(
-            set_number=set_number,
-            set_name=set_name,
-            theme=theme,
-            release_year=release_year,
-            uvp_eur=uvp,
-            eol_status=eol_status,
-            current_market_price=market_price if market_price > 0 else None,
-        )
-        if lego_set.release_year:
-            lego_set.category = lego_set.compute_category().value
-        session.add(lego_set)
-        await session.flush()
-        return
-
-    if set_name and (
-        not lego_set.set_name or lego_set.set_name == lego_set.set_number or lego_set.set_name == f"LEGO {set_number}"
-    ):
-        lego_set.set_name = set_name
-    if theme and (not lego_set.theme or lego_set.theme == "Unknown"):
-        lego_set.theme = theme
-    if release_year and (not lego_set.release_year or lego_set.release_year == 2020):
-        lego_set.release_year = release_year
-    if uvp and not lego_set.uvp_eur:
-        lego_set.uvp_eur = uvp
-    if eol_status and eol_status != "UNKNOWN":
-        lego_set.eol_status = eol_status
-    if market_price > 0:
-        lego_set.current_market_price = market_price
-        lego_set.market_price_updated_at = datetime.utcnow()
-    if lego_set.release_year:
-        lego_set.category = lego_set.compute_category().value
-
-
 @router.post("/analyze", response_model=AnalysisResponse)
 async def analyze_offer(
     request: AnalyzeRequest,
@@ -544,108 +397,28 @@ async def analyze_offer(
     """
     logger.info("analysis.start", set_number=request.set_number, price=request.offer_price)
 
-    # ── Step 1: Gather data from all scrapers ────────────
-    prices: list[ScrapedPrice] = []
-    set_name = request.set_name or f"LEGO {request.set_number}"
-    theme = request.theme or "Unknown"
-    release_year = request.release_year or 2020
-    uvp = request.uvp
-    eol_status = request.eol_status or "UNKNOWN"
-
-    async def scrape_source(scraper_cls, set_number: str):
-        """Run a single scraper safely."""
-        try:
-            async with scraper_cls() as scraper:
-                info = await scraper.get_set_info(set_number)
-                price = await scraper.get_price(set_number)
-                return scraper_cls.__name__, info, price
-        except Exception as e:
-            logger.warning("analysis.scraper_failed", scraper=scraper_cls.__name__, error=str(e))
-            return scraper_cls.__name__, None, None
-
-    # Run all scrapers concurrently
-    scrapers = [
-        BrickEconomyScraper,
-        BrickMergeScraper,
-        EbaySoldScraper,
-        IdealoScraper,
-        AmazonScraper,
-        LegoComScraper,
-    ]
-
-    results = await asyncio.gather(
-        *[scrape_source(s, request.set_number) for s in scrapers],
-        return_exceptions=True,
+    use_case = DealAnalysisUseCase(
+        market_context=ScraperMarketContextProvider(),
+        repository=SqlAlchemyAnalysisRepository(session),
     )
-
-    for result in results:
-        if isinstance(result, Exception):
-            continue
-        _scraper_name, info, price = result
-        if info:
-            set_name, theme, release_year, uvp, eol_status = _merge_set_info(
-                info=info,
-                set_number=request.set_number,
-                set_name=set_name,
-                theme=theme,
-                release_year=release_year,
-                uvp=uvp,
-                eol_status=eol_status,
-            )
-        if price:
-            prices.append(price)
-
-    # Override with user-provided values
-    if request.set_name:
-        set_name = request.set_name
-    if request.theme:
-        theme = request.theme
-    if request.release_year:
-        release_year = request.release_year
-    if request.uvp:
-        uvp = request.uvp
-    if request.eol_status:
-        eol_status = request.eol_status
-
-    if _needs_metadata_retry(theme, release_year, uvp, eol_status):
-        set_name, theme, release_year, uvp, eol_status = await _retry_authoritative_metadata(
-            request.set_number,
-            set_name,
-            theme,
-            release_year,
-            uvp,
-            eol_status,
+    outcome = await use_case.execute(
+        DealAnalysisCommand(
+            set_number=request.set_number,
+            offer_price=request.offer_price,
+            condition=request.condition,
+            box_damage=request.box_damage,
+            purchase_shipping=request.purchase_shipping,
+            source_url=request.source_url,
+            source_platform=request.source_platform,
+            set_name=request.set_name,
+            theme=request.theme,
+            release_year=request.release_year,
+            uvp=request.uvp,
+            eol_status=request.eol_status,
         )
-
-    # ── Step 2: Run analysis engine ──────────────────────
-    detected_platform = _detect_source_platform(request.source_url, request.source_platform)
-    still_in_retail = eol_status in ("AVAILABLE", "RETIRING_SOON")
-    if not still_in_retail and detected_platform in {"AMAZON", "LEGO"}:
-        still_in_retail = True
-        if eol_status == "UNKNOWN":
-            eol_status = "AVAILABLE"
-
-    # Estimate monthly sales from eBay data
-    monthly_sales = None
-    for p in prices:
-        if p.source == "EBAY_SOLD" and p.sold_count:
-            monthly_sales = int(p.sold_count / 2)  # 60 days → monthly
-
-    analysis = analyze_deal(
-        set_number=request.set_number,
-        set_name=set_name,
-        release_year=release_year,
-        theme=theme,
-        offer_price=request.offer_price,
-        prices=prices,
-        uvp=uvp,
-        eol_status=eol_status,
-        condition=request.condition,
-        box_damage=request.box_damage,
-        monthly_sales=monthly_sales,
-        still_in_retail=still_in_retail,
-        purchase_shipping=request.purchase_shipping,
     )
+    analysis = outcome.analysis
+    context = outcome.context
 
     logger.info(
         "analysis.complete",
@@ -655,22 +428,11 @@ async def analyze_offer(
         risk=analysis.risk.total,
     )
 
-    calibration_roi_delta, calibration_sample_size = await _get_feedback_calibration(session)
-    calibrated_roi_percent = analysis.roi.roi_percent
-    suggestions = list(analysis.suggestions)
-    if calibration_roi_delta is not None:
-        calibrated_roi_percent = round(analysis.roi.roi_percent + calibration_roi_delta, 1)
-        direction = "unter" if calibration_roi_delta < 0 else "über"
-        suggestions.insert(
-            0,
-            f"Lern-Korrektur: echte Verkäufe lagen zuletzt im Schnitt {abs(calibration_roi_delta):.1f}pp {direction} der Prognose ({calibration_sample_size} Verkäufe)",
-        )
-
     response = AnalysisResponse(
         set_number=analysis.set_number,
         set_name=analysis.set_name,
         source_url=request.source_url,
-        source_platform=detected_platform,
+        source_platform=context.detected_platform,
         release_year=analysis.release_year,
         theme=analysis.theme,
         set_age=analysis.set_age,
@@ -681,8 +443,8 @@ async def analyze_offer(
         market_price=analysis.market_consensus.consensus_price,
         reference_price=analysis.reference_price,
         reference_label=analysis.reference_label,
-        still_in_retail=still_in_retail,
-        eol_status=eol_status,
+        still_in_retail=context.still_in_retail,
+        eol_status=context.eol_status,
         num_sources=analysis.market_consensus.num_sources,
         roi_percent=analysis.roi.roi_percent,
         annualized_roi=analysis.roi.annualized_roi,
@@ -693,25 +455,14 @@ async def analyze_offer(
         risk_rating=analysis.risk.rating,
         recommendation=analysis.recommendation,
         reason=analysis.reason,
-        suggestions=suggestions,
+        suggestions=outcome.suggestions,
         opportunity_score=analysis.opportunity_score,
         confidence=analysis.confidence,
         warnings=analysis.market_consensus.warnings,
         source_prices=analysis.market_consensus.source_prices,
         analyzed_at=analysis.analyzed_at.isoformat(),
-        calibration_roi_delta=calibration_roi_delta,
-        calibrated_roi_percent=calibrated_roi_percent,
-    )
-
-    await _upsert_set_from_analysis(
-        session,
-        set_number=analysis.set_number,
-        set_name=analysis.set_name,
-        theme=analysis.theme,
-        release_year=analysis.release_year,
-        uvp=analysis.uvp,
-        eol_status=eol_status,
-        market_price=analysis.market_consensus.consensus_price,
+        calibration_roi_delta=outcome.calibration_roi_delta,
+        calibrated_roi_percent=outcome.calibrated_roi_percent,
     )
 
     return await _store_history(session, response)
@@ -873,6 +624,11 @@ async def parse_listing_url(request: ParseUrlRequest):
         platform = "WHATNOT"
     elif "bricklink.com" in url:
         platform = "BRICKLINK"
+
+    try:
+        validate_marketplace_url(url, platform if platform != "UNKNOWN" else None)
+    except UnsafeUrlError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # First: try to extract set numbers from URL slug (fast, no HTTP needed)
     # Kleinanzeigen URLs look like: /s-anzeige/lego-naboo-starfighter-7877/2994338498-23-3902
@@ -1188,6 +944,11 @@ async def check_seller(request: SellerCheckRequest):
     """
     url = request.seller_url.strip()
     logger.info("seller_check.start", url=url)
+
+    try:
+        validate_marketplace_url(url, "KLEINANZEIGEN")
+    except UnsafeUrlError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Normalize URL: if it's a regular listing, try to find seller link
     # Typical seller listing URLs:

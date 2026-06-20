@@ -1,5 +1,7 @@
 """Scout API for on-demand and cached deal discovery."""
 
+import asyncio
+
 import structlog
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -120,23 +122,27 @@ async def scout_deals(request: ScoutRequest, session: AsyncSession = Depends(get
         set_result = await session.execute(select(LegoSet).where(LegoSet.set_number == set_number))
         lego_set = set_result.scalar_one_or_none()
 
-        prices: list[ScrapedPrice] = []
-        for scraper_cls in PRICE_SCRAPERS:
+        async def scrape_price(scraper_cls) -> ScrapedPrice | None:
             try:
                 async with scraper_cls() as scraper:
-                    price = await scraper.get_price(set_number)
-                    if price:
-                        prices.append(price)
+                    return await scraper.get_price(set_number)
             except Exception as exc:
                 logger.warning("scout.price_failed", scraper=scraper_cls.__name__, error=str(exc))
+                return None
 
-        offers: list[ScrapedOffer] = []
-        for scraper_cls in OFFER_SCRAPERS:
+        price_results = await asyncio.gather(*(scrape_price(scraper_cls) for scraper_cls in PRICE_SCRAPERS))
+        prices = [price for price in price_results if price]
+
+        async def scrape_offers(scraper_cls) -> list[ScrapedOffer]:
             try:
                 async with scraper_cls() as scraper:
-                    offers.extend(await scraper.get_offers(set_number))
+                    return await scraper.get_offers(set_number)
             except Exception as exc:
                 logger.warning("scout.offers_failed", scraper=scraper_cls.__name__, error=str(exc))
+                return []
+
+        offer_results = await asyncio.gather(*(scrape_offers(scraper_cls) for scraper_cls in OFFER_SCRAPERS))
+        offers = [offer for scraper_offers in offer_results for offer in scraper_offers]
 
         total_offers += len(offers)
 

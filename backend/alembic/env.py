@@ -2,13 +2,14 @@
 
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from alembic import context
 from app.config import settings
-from app.models.base import Base
+
 # Import all models so Alembic can detect them
-from app.models import LegoSet, PriceRecord, Offer, DealFeedback, WatchlistItem  # noqa
+from app.models import DealFeedback, LegoSet, Offer, PriceRecord, WatchlistItem  # noqa
+from app.models.base import Base
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url_sync)

@@ -220,7 +220,10 @@ async def send_auction_discovery_summary(discovered: list[dict]) -> bool:
     lines = [f"*Auction Scan ({platform_label})*", f"Treffer: {len(discovered)}", ""]
     for item in discovered[:5]:
         lines.append(
-            f"{item.get('source_platform', 'AUCTION')} | LEGO {item['set_number']} | Gebot {item['current_bid']:.0f} EUR | Max {item['recommended_max_bid']:.0f} EUR"
+
+                f"{item.get('source_platform', 'AUCTION')} | LEGO {item['set_number']} | "
+                f"Gebot {item['current_bid']:.0f} EUR | Max {item['recommended_max_bid']:.0f} EUR"
+
         )
     try:
         bot = Bot(token=bot_token)

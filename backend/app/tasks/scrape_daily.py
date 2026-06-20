@@ -128,15 +128,22 @@ async def _scrape_set_prices_async(set_number: str) -> dict:
             try:
                 async with scraper_cls() as scraper:
                     offers = await scraper.get_offers(set_number)
-                    for offer in offers:
+                    offer_urls = list({offer.offer_url for offer in offers if offer.offer_url})
+                    existing_by_key: dict[tuple[str, str], Offer] = {}
+                    if offer_urls:
                         existing_offer_result = await session.execute(
                             select(Offer).where(
                                 Offer.set_id == lego_set.id,
-                                Offer.platform == offer.platform,
-                                Offer.offer_url == offer.offer_url,
+                                Offer.offer_url.in_(offer_urls),
                             )
                         )
-                        existing_offer = existing_offer_result.scalar_one_or_none()
+                        existing_by_key = {
+                            (existing.platform, existing.offer_url): existing
+                            for existing in existing_offer_result.scalars().all()
+                        }
+
+                    for offer in offers:
+                        existing_offer = existing_by_key.get((offer.platform, offer.offer_url))
 
                         if existing_offer:
                             existing_offer.offer_title = offer.offer_title

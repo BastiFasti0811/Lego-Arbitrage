@@ -1,7 +1,6 @@
 """Amazon.de scraper — marketplace prices, third-party sellers, error prices."""
 
 import re
-from datetime import datetime, timezone
 
 import structlog
 from bs4 import BeautifulSoup
@@ -206,9 +205,6 @@ class AmazonScraper(BaseScraper):
                         rating_match = re.search(r"([\d,]+)", rating_el.get_text())
                         if rating_match:
                             rating = float(rating_match.group(1).replace(",", ".")) * 20  # 5-star → 100%
-
-                    # Check if Prime eligible (indicates Amazon as seller)
-                    is_prime = bool(result.select_one("[class*=prime], .a-icon-prime"))
 
                     offers.append(ScrapedOffer(
                         platform="AMAZON",

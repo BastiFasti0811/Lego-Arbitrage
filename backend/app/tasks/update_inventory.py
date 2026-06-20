@@ -6,6 +6,7 @@ from datetime import datetime
 import structlog
 from sqlalchemy import select
 
+from app.domain.classification import categorize_release_year
 from app.engine.market_consensus import calculate_consensus
 from app.models.base import async_session
 from app.models.inventory import InventoryItem, InventoryStatus
@@ -40,17 +41,7 @@ def _run_async(coro):
 def _categorize_set(release_year: int | None = None) -> str:
     if not release_year:
         return SetCategory.SWEET_SPOT.value
-
-    age = datetime.now().year - release_year
-    if age <= 1:
-        return SetCategory.FRESH.value
-    if age <= 4:
-        return SetCategory.SWEET_SPOT.value
-    if age <= 7:
-        return SetCategory.ESTABLISHED.value
-    if age <= 11:
-        return SetCategory.VINTAGE.value
-    return SetCategory.LEGACY.value
+    return categorize_release_year(release_year)
 
 
 def _detect_price_peak(history: list[dict] | None) -> bool:

@@ -9,6 +9,11 @@ from app.models import AppSetting, get_session
 from app.runtime_settings import get_settings_map
 
 router = APIRouter()
+SECRET_MASK = "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
+)
 
 
 class SettingResponse(BaseModel):
@@ -91,7 +96,7 @@ DEFAULT_SETTINGS = [
         "label": "User Agent",
         "description": "Optionaler User Agent fuer Catawiki-Scans",
         "is_secret": False,
-        "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+        "value": DEFAULT_USER_AGENT,
     },
     {
         "key": "catawiki_scan_urls",
@@ -121,7 +126,7 @@ DEFAULT_SETTINGS = [
         "label": "User Agent",
         "description": "Optionaler User Agent fuer Whatnot-Scans",
         "is_secret": False,
-        "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+        "value": DEFAULT_USER_AGENT,
     },
     {
         "key": "whatnot_scan_urls",
@@ -151,7 +156,7 @@ DEFAULT_SETTINGS = [
         "label": "User Agent",
         "description": "Optionaler User Agent fuer BrickLink-Scans",
         "is_secret": False,
-        "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+        "value": DEFAULT_USER_AGENT,
     },
     {
         "key": "bricklink_scan_urls",
@@ -169,6 +174,7 @@ DEFAULT_SETTINGS = [
         "value": "20",
     },
 ]
+DEFAULT_SETTINGS_BY_KEY = {setting["key"]: setting for setting in DEFAULT_SETTINGS}
 
 
 @router.get("/", response_model=list[SettingResponse])
@@ -192,7 +198,7 @@ async def list_settings(category: str | None = None, session: AsyncSession = Dep
             continue
         setting_response = SettingResponse.model_validate(setting)
         if setting.is_secret and setting.value:
-            setting_response.value = "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
+            setting_response.value = SECRET_MASK
         response.append(setting_response)
 
     return response
@@ -202,12 +208,18 @@ async def list_settings(category: str | None = None, session: AsyncSession = Dep
 async def update_settings(updates: list[SettingUpdate], session: AsyncSession = Depends(get_session)):
     """Update one or more settings."""
     for update in updates:
+        default = DEFAULT_SETTINGS_BY_KEY.get(update.key)
+        if default is None:
+            raise HTTPException(status_code=400, detail=f"Unbekannter Setting-Key: {update.key}")
+
         result = await session.execute(select(AppSetting).where(AppSetting.key == update.key))
         setting = result.scalar_one_or_none()
+        if setting and setting.is_secret and update.value == SECRET_MASK:
+            continue
         if setting:
             setting.value = update.value
         else:
-            session.add(AppSetting(key=update.key, value=update.value))
+            session.add(AppSetting(**{**default, "value": update.value}))
 
     await session.commit()
     return await list_settings(session=session)

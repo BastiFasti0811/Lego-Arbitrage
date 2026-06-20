@@ -1,15 +1,15 @@
 """Analysis tasks — evaluate new offers and send notifications."""
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import structlog
-from sqlalchemy import select, and_
+from sqlalchemy import and_, select
 
 from app.engine.decision_engine import Recommendation, analyze_deal
 from app.models import LegoSet, Offer, PriceRecord
 from app.models.base import async_session
-from app.notifications.telegram_bot import send_deal_alert, send_daily_summary
+from app.notifications.telegram_bot import send_daily_summary, send_deal_alert
 from app.scrapers.base import ScrapedPrice
 from app.tasks.celery_app import celery_app
 
@@ -43,17 +43,22 @@ async def _analyze_new_async() -> dict:
             )
             .limit(100)
         )
+        offer_rows = result.all()
+        set_ids = {lego_set.id for _offer, lego_set in offer_rows}
+        prices_by_set_id: dict[int, list[PriceRecord]] = {set_id: [] for set_id in set_ids}
+        if set_ids:
+            price_result = await session.execute(
+                select(PriceRecord)
+                .where(PriceRecord.set_id.in_(set_ids))
+                .where(PriceRecord.scraped_at > datetime.now(UTC) - timedelta(days=7))
+                .order_by(PriceRecord.set_id, PriceRecord.scraped_at.desc())
+            )
+            for price_record in price_result.scalars().all():
+                prices_by_set_id.setdefault(price_record.set_id, []).append(price_record)
 
-        for offer, lego_set in result.all():
+        for offer, lego_set in offer_rows:
             try:
-                # Get recent prices for this set
-                price_result = await session.execute(
-                    select(PriceRecord)
-                    .where(PriceRecord.set_id == lego_set.id)
-                    .where(PriceRecord.scraped_at > datetime.now(timezone.utc) - timedelta(days=7))
-                    .order_by(PriceRecord.scraped_at.desc())
-                )
-                db_prices = price_result.scalars().all()
+                db_prices = prices_by_set_id.get(lego_set.id, [])
 
                 # Convert to ScrapedPrice objects
                 scraped_prices = [
@@ -117,7 +122,7 @@ def send_daily_summary_task() -> dict:
 async def _send_summary_async() -> dict:
     """Send daily summary via Telegram."""
     async with async_session() as session:
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         yesterday = today - timedelta(days=1)
 
         # Count today's analyzed offers
@@ -130,9 +135,6 @@ async def _send_summary_async() -> dict:
 
         go_deals = [o for o in offers if o.recommendation in (Recommendation.GO_STAR, Recommendation.GO)]
         total_profit = sum(o.estimated_roi or 0 for o in go_deals)
-
-        # Find best deal
-        best = max(go_deals, key=lambda o: o.estimated_roi or 0) if go_deals else None
 
         # Build best deal analysis (simplified) for summary
         best_analysis = None

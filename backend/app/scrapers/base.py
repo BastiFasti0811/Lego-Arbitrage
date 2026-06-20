@@ -4,7 +4,7 @@ import asyncio
 import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import structlog
@@ -12,6 +12,7 @@ from fake_useragent import UserAgent
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.config import settings
+from app.security.url_policy import validate_url_for_scraper
 
 logger = structlog.get_logger()
 ua = UserAgent()
@@ -32,7 +33,7 @@ class ScrapedPrice:
     source_url: str | None = None
     is_reliable: bool = True
     notes: str | None = None
-    scraped_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    scraped_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 @dataclass
@@ -52,7 +53,7 @@ class ScrapedOffer:
     seller_location: str | None = None
     is_auction: bool = False
     auction_end: datetime | None = None
-    discovered_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    discovered_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 @dataclass
@@ -120,14 +121,16 @@ class BaseScraper(ABC):
     )
     async def _fetch(self, url: str) -> str:
         """Fetch a URL with retry logic and rate limiting."""
+        safe_url = validate_url_for_scraper(url, self.name)
         await self._delay()
         client = await self._get_client()
 
         # Rotate user agent on each request
         client.headers["User-Agent"] = ua.random
 
-        logger.info("scraper.fetch", scraper=self.name, url=url[:100])
-        response = await client.get(url)
+        logger.info("scraper.fetch", scraper=self.name, url=safe_url[:100])
+        response = await client.get(safe_url)
+        validate_url_for_scraper(str(response.url), self.name)
         response.raise_for_status()
         return response.text
 

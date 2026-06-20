@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.engine.roi_calculator import calculate_ebay_fees
 from app.models import AnalysisHistoryEntry, DealFeedback, LegoSet, get_session
 from app.models.inventory import InventoryItem, InventoryStatus
 from app.models.inventory_photo import InventoryPhoto
@@ -369,7 +370,7 @@ async def mark_as_sold(
         raise HTTPException(status_code=400, detail="Item already sold")
 
     total_invested = item.buy_price + item.buy_shipping
-    selling_costs = data.sell_price * 0.129 + 0.35 + data.sell_price * 0.019 + 0.35
+    selling_costs = sum(calculate_ebay_fees(data.sell_price))
     realized_profit = data.sell_price - total_invested - selling_costs
 
     item.status = InventoryStatus.SOLD.value

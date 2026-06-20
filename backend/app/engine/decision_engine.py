@@ -5,9 +5,10 @@ into a clear investment recommendation.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.config import settings
+from app.domain.classification import categorize_release_year, current_year
 from app.engine.market_consensus import MarketConsensus, calculate_consensus
 from app.engine.risk_scorer import RiskBreakdown, calculate_risk_score
 from app.engine.roi_calculator import ROIResult, calculate_roi
@@ -54,7 +55,7 @@ class AnalysisResult:
     suggestions: list[str] = field(default_factory=list)
 
     # ── Metadata ─────────────────────────────────────────
-    analyzed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    analyzed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     confidence: float = 1.0  # 0-1, reduced if data unreliable
 
     # ── Opportunity Score (for ranking) ──────────────────
@@ -99,17 +100,7 @@ def _get_holding_months(category: str) -> float:
 
 def _categorize_set(release_year: int, current_year: int = 2026) -> str:
     """Determine set category from age."""
-    age = current_year - release_year
-    if age <= 1:
-        return SetCategory.FRESH.value
-    elif age <= 4:
-        return SetCategory.SWEET_SPOT.value
-    elif age <= 7:
-        return SetCategory.ESTABLISHED.value
-    elif age <= 11:
-        return SetCategory.VINTAGE.value
-    else:
-        return SetCategory.LEGACY.value
+    return categorize_release_year(release_year, current_year)
 
 
 def _select_reference_price(
@@ -153,9 +144,9 @@ def analyze_deal(
 
     This is the main entry point for the analysis pipeline.
     """
-    current_year = 2026
-    set_age = current_year - release_year
-    category = _categorize_set(release_year, current_year)
+    analysis_year = current_year()
+    set_age = analysis_year - release_year
+    category = _categorize_set(release_year, analysis_year)
     holding_months = _get_holding_months(category)
     if still_in_retail:
         holding_months = max(holding_months, 12.0)

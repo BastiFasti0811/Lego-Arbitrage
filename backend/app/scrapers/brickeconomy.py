@@ -1,7 +1,6 @@
 """BrickEconomy.com scraper — global market prices, growth %, EOL status."""
 
 import re
-from datetime import datetime, timezone
 
 import structlog
 from bs4 import BeautifulSoup

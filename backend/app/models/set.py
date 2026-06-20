@@ -1,15 +1,16 @@
 """LEGO Set model — core entity representing a LEGO set."""
 
 from datetime import date, datetime
-from enum import Enum
+from enum import StrEnum
 
 from sqlalchemy import Date, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.domain.classification import categorize_release_year, set_age
 from app.models.base import Base
 
 
-class SetCategory(str, Enum):
+class SetCategory(StrEnum):
     """Set age category relative to current year."""
 
     FRESH = "FRESH"  # 0-1 years (Frisch Retired/Retiring)
@@ -19,7 +20,7 @@ class SetCategory(str, Enum):
     LEGACY = "LEGACY"  # 12+ years
 
 
-class EOLStatus(str, Enum):
+class EOLStatus(StrEnum):
     """End-of-Life status."""
 
     AVAILABLE = "AVAILABLE"  # Still in retail
@@ -28,7 +29,7 @@ class EOLStatus(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
-class ThemeTier(str, Enum):
+class ThemeTier(StrEnum):
     """Theme investment tier."""
 
     TIER_1 = "TIER_1"  # Premium: Star Wars, Harry Potter, Marvel, DC
@@ -89,24 +90,14 @@ class LegoSet(Base):
 
     @property
     def set_age(self) -> int:
-        """Age of the set in years (relative to 2026)."""
-        return 2026 - self.release_year
+        """Age of the set in years."""
+        return set_age(self.release_year)
 
     def compute_category(self) -> SetCategory:
         """Determine investment category based on set age."""
-        age = self.set_age
-        if age <= 1:
-            return SetCategory.FRESH
-        elif age <= 4:
-            return SetCategory.SWEET_SPOT
-        elif age <= 7:
-            return SetCategory.ESTABLISHED
-        elif age <= 11:
-            return SetCategory.VINTAGE
-        else:
-            return SetCategory.LEGACY
+        return SetCategory(categorize_release_year(self.release_year))
 
 
 # Import here to avoid circular imports — these are defined in their own files
-from app.models.price import PriceRecord  # noqa: E402
 from app.models.offer import Offer  # noqa: E402
+from app.models.price import PriceRecord  # noqa: E402

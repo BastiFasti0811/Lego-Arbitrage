@@ -1,15 +1,15 @@
 """Active offers found on marketplaces."""
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
 
 
-class OfferPlatform(str, Enum):
+class OfferPlatform(StrEnum):
     """Platform where the offer was found."""
 
     EBAY = "EBAY"
@@ -22,7 +22,7 @@ class OfferPlatform(str, Enum):
     OTHER = "OTHER"
 
 
-class OfferCondition(str, Enum):
+class OfferCondition(StrEnum):
     """Condition of the set in the offer."""
 
     NEW_SEALED = "NEW_SEALED"
@@ -32,7 +32,7 @@ class OfferCondition(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
-class OfferStatus(str, Enum):
+class OfferStatus(StrEnum):
     """Tracking status of the offer."""
 
     ACTIVE = "ACTIVE"

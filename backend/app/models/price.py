@@ -1,7 +1,7 @@
 """Price records from various data sources."""
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -9,7 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 
 
-class PriceSource(str, Enum):
+class PriceSource(StrEnum):
     """Data source for price information."""
 
     BRICKECONOMY = "BRICKECONOMY"

@@ -6,16 +6,18 @@ from dataclasses import dataclass
 import structlog
 
 from app.config import settings
+from app.domain.metadata import merge_set_info, needs_metadata_retry
+from app.domain.platforms import detect_source_platform
 from app.engine.decision_engine import analyze_deal
 from app.engine.roi_calculator import calculate_ebay_fees, estimate_shipping
 from app.scrapers import (
+    METADATA_SCRAPERS,
     AmazonScraper,
     BrickEconomyScraper,
     BrickMergeScraper,
     EbaySoldScraper,
     IdealoScraper,
     LegoComScraper,
-    METADATA_SCRAPERS,
 )
 from app.scrapers.base import ScrapedPrice
 
@@ -71,28 +73,6 @@ class AuctionEvaluation:
     eol_status: str
 
 
-def detect_source_platform(source_url: str | None, source_platform: str | None) -> str | None:
-    if source_platform:
-        return source_platform
-    if not source_url:
-        return None
-
-    lowered = source_url.lower()
-    if "catawiki" in lowered:
-        return "CATAWIKI"
-    if "kleinanzeigen" in lowered:
-        return "KLEINANZEIGEN"
-    if "ebay" in lowered:
-        return "EBAY"
-    if "amazon" in lowered:
-        return "AMAZON"
-    if "whatnot" in lowered:
-        return "WHATNOT"
-    if "bricklink" in lowered:
-        return "BRICKLINK"
-    return "UNKNOWN"
-
-
 def build_fee_profile(
     *,
     source_platform: str,
@@ -127,33 +107,6 @@ def estimate_monthly_sales(prices: list[ScrapedPrice]) -> int | None:
         if price.source == "EBAY_SOLD" and price.sold_count:
             return int(price.sold_count / 2)
     return None
-
-
-def merge_set_info(
-    *,
-    info,
-    set_number: str,
-    set_name: str,
-    theme: str,
-    release_year: int,
-    uvp: float | None,
-    eol_status: str,
-) -> tuple[str, str, int, float | None, str]:
-    if info.set_name and (not set_name or set_name == set_number or set_name == f"LEGO {set_number}"):
-        set_name = info.set_name
-    if info.theme and (theme == "Unknown" or not theme):
-        theme = info.theme
-    if info.release_year and (release_year == 2020 or not release_year):
-        release_year = info.release_year
-    if info.uvp_eur and not uvp:
-        uvp = info.uvp_eur
-    if info.eol_status and eol_status == "UNKNOWN":
-        eol_status = info.eol_status
-    return set_name, theme, release_year, uvp, eol_status
-
-
-def needs_metadata_retry(theme: str, release_year: int, uvp: float | None, eol_status: str) -> bool:
-    return theme == "Unknown" or release_year == 2020 or not uvp or eol_status == "UNKNOWN"
 
 
 async def retry_authoritative_metadata(

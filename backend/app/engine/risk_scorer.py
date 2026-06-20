@@ -7,8 +7,7 @@ data quality, theme popularity.
 
 from dataclasses import dataclass
 
-from app.models.set import EOLStatus, SetCategory, ThemeTier
-
+from app.models.set import EOLStatus
 
 # Theme classification for risk scoring
 TIER_1_THEMES = {

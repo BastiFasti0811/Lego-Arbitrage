@@ -16,10 +16,31 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: lego_arbitrage
+          POSTGRES_USER: lego
+          POSTGRES_PASSWORD: lego_secret
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lego -d lego_arbitrage"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -35,9 +56,19 @@ jobs:
           npm run lint
           npm run build
 
-      - name: Compile backend sources
+      - name: Verify backend
         working-directory: backend
-        run: python -m compileall app
+        env:
+          DATABASE_URL: postgresql+asyncpg://lego:lego_secret@localhost:5432/lego_arbitrage
+          DATABASE_URL_SYNC: postgresql+psycopg://lego:lego_secret@localhost:5432/lego_arbitrage
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[dev]"
+          python -m compileall app
+          python -m pytest
+          python -m ruff check .
+          python -m alembic upgrade head
+          python -m alembic check
 
       - name: Validate compose files
         run: |

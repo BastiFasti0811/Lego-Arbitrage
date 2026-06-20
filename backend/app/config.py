@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     app_version: str = "0.2.0"
     debug: bool = False
     log_level: str = "INFO"
+    auto_create_tables_on_startup: bool = False
 
     # ── Database ─────────────────────────────────────────
     database_url: str = Field(
@@ -21,9 +22,11 @@ class Settings(BaseSettings):
         description="Async PostgreSQL connection string",
     )
     database_url_sync: str = Field(
-        default="postgresql://lego:lego_secret@localhost:5432/lego_arbitrage",
+        default="postgresql+psycopg://lego:lego_secret@localhost:5432/lego_arbitrage",
         description="Sync PostgreSQL connection string (for Alembic)",
     )
+    database_pool_size: int = 5
+    database_max_overflow: int = 10
 
     # ── Redis ────────────────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"
@@ -97,6 +100,8 @@ class Settings(BaseSettings):
     # ── Dashboard Auth ─────────────────────────────────────
     dashboard_password: str | None = None
     session_secret: str | None = None
+    session_cookie_secure: bool = True
+    session_cookie_samesite: str = "lax"
 
     # ── Media / Uploads ─────────────────────────────────
     media_root: Path = Path("data")

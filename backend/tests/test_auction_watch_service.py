@@ -9,7 +9,10 @@ from app.services.auction_watch import (
 def test_detect_source_platform_handles_supported_sources():
     assert detect_source_platform("https://www.catawiki.com/de/l/102824557", None) == "CATAWIKI"
     assert detect_source_platform("https://www.whatnot.com/de-DE/listing/123", None) == "WHATNOT"
-    assert detect_source_platform("https://www.bricklink.com/v2/catalog/catalogitem.page?S=75313-1", None) == "BRICKLINK"
+    assert (
+        detect_source_platform("https://www.bricklink.com/v2/catalog/catalogitem.page?S=75313-1", None)
+        == "BRICKLINK"
+    )
 
 
 def test_solve_max_bid_round_trip_for_catawiki_defaults():

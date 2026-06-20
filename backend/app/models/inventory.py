@@ -1,7 +1,7 @@
 """Inventory model - tracks purchased LEGO sets for portfolio management."""
 
 from datetime import date, datetime
-from enum import Enum
+from enum import StrEnum
 
 from sqlalchemy import Boolean, Date, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -9,7 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 
 
-class InventoryStatus(str, Enum):
+class InventoryStatus(StrEnum):
     HOLDING = "HOLDING"
     SOLD = "SOLD"
 

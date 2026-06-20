@@ -1,7 +1,6 @@
 """eBay.de Sold Items scraper — actual German market prices from completed sales."""
 
 import re
-from datetime import datetime, timezone
 
 import structlog
 from bs4 import BeautifulSoup
@@ -73,7 +72,7 @@ class EbaySoldScraper(BaseScraper):
             condition = ""  # All conditions
         else:
             query = f"LEGO {set_number} neu versiegelt"
-            condition = f"&LH_ItemCondition=1000"  # New only
+            condition = "&LH_ItemCondition=1000"  # New only
         params = (
             f"_nkw={query.replace(' ', '+')}"
             f"&LH_Complete=1"  # Completed

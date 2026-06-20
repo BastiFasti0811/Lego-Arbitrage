@@ -3,28 +3,18 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAppStore } from "../stores/appStore";
 import VerdictBadge from "../components/VerdictBadge";
-
-const verdictBg = {
-  GO_STAR: "from-go-star/20 to-go-star/5 border-go-star/30",
-  GO: "from-go/20 to-go/5 border-go/30",
-  CHECK: "from-check/20 to-check/5 border-check/30",
-  NO_GO: "from-no-go/20 to-no-go/5 border-no-go/30",
-};
-
-const EURO = "\u20ac";
-const ICON_UP = "\u25b4";
-const ICON_DOWN = "\u25be";
-const ICON_RIGHT = "\u25b8";
-const ICON_CLOSE = "\u2715";
-const ICON_EXTERNAL = "\u2197";
-const formatMoney = (value, digits = 2) => `${Number(value).toFixed(digits)}${EURO}`;
-const formatAnalyzedAt = (value) =>
-  new Date(value).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" });
-const referenceLabelMap = {
-  LEGO_UVP: "LEGO UVP",
-  MARKT_KONSENS: "Markt-Konsens",
-  ANGEBOT_PREIS: "Angebotspreis",
-};
+import {
+  EURO,
+  ICON_CLOSE,
+  ICON_DOWN,
+  ICON_EXTERNAL,
+  ICON_RIGHT,
+  ICON_UP,
+  formatAnalyzedAt,
+  formatMoney,
+  referenceLabelMap,
+  verdictBg,
+} from "./dealCheckerUtils";
 
 function describeLearning(stats) {
   if (!stats?.completed_deals) {

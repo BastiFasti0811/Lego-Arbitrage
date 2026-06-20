@@ -5,13 +5,13 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from app.api.routes import analysis, auctions, auth, feedback, inventory, scout, sets, watchlist
+from app.api.routes import settings as settings_routes
+from app.api.routes.auth import COOKIE_NAME, verify_cookie
 from app.config import settings
-from app.api.routes import auctions, sets, analysis, scout, watchlist, feedback, inventory, auth, settings as settings_routes
-from app.api.routes.auth import verify_cookie, COOKIE_NAME
 from app.models import Base, engine
 
 logger = structlog.get_logger()
@@ -21,8 +21,10 @@ logger = structlog.get_logger()
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
     logger.info("app.starting", version=settings.app_version)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    if settings.auto_create_tables_on_startup:
+        logger.warning("db.auto_create_tables_enabled")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
     yield
     logger.info("app.shutdown")
 
@@ -44,17 +46,26 @@ app.add_middleware(
 )
 
 # ── Auth Middleware ────────────────────────────────────────
-PUBLIC_PATHS = {"/api/auth/login", "/health", "/", "/docs", "/openapi.json"}
+PUBLIC_PATHS = {"/api/auth/login", "/health", "/"}
+DOCS_PATHS = {"/docs", "/openapi.json"}
 
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
-    # Allow public paths and non-API routes
-    if path in PUBLIC_PATHS or not path.startswith("/api/"):
+    if path in PUBLIC_PATHS:
         return await call_next(request)
-    # Check cookie on all other /api/* routes
+
     cookie = request.cookies.get(COOKIE_NAME)
+    if path in DOCS_PATHS:
+        if settings.debug or verify_cookie(cookie):
+            return await call_next(request)
+        return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+
+    if not path.startswith("/api/"):
+        return await call_next(request)
+
+    # Check cookie on all other /api/* routes
     if not verify_cookie(cookie):
         return JSONResponse(
             status_code=401,
