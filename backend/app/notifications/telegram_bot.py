@@ -232,3 +232,38 @@ async def send_auction_discovery_summary(discovered: list[dict]) -> bool:
     except Exception as e:
         logger.error("telegram.auction_discovery_failed", error=str(e))
         return False
+
+
+async def send_pipeline_health_alert(problems: list[dict]) -> bool:
+    """Alert when scheduled pipeline tasks are stale or failing.
+
+    Not subject to the GO-only filter — health alerts are always relevant.
+    Each problem dict: {task_name, status, age_hours, detail}.
+    """
+    runtime_settings = await get_settings_map(["telegram_bot_token", "telegram_chat_id"])
+    bot_token = runtime_settings.get("telegram_bot_token")
+    chat_id = runtime_settings.get("telegram_chat_id")
+
+    if not bot_token or not chat_id or not problems:
+        return False
+
+    status_emoji = {"failing": "🔴", "stale": "🟠"}
+    lines = ["⚠️ *Pipeline-Health-Warnung*", "Geplante Tasks melden Probleme:", ""]
+    for p in problems:
+        emoji = status_emoji.get(p.get("status"), "⚪")
+        short_name = p["task_name"].split(".")[-1]
+        age = p.get("age_hours")
+        age_text = f" (seit {age:.1f}h)" if age is not None else ""
+        lines.append(f"{emoji} `{short_name}` — {p.get('status')}{age_text}")
+        detail = p.get("detail")
+        if detail:
+            lines.append(f"   ↳ {str(detail)[:120]}")
+
+    try:
+        bot = Bot(token=bot_token)
+        await bot.send_message(chat_id=chat_id, text="\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        logger.info("telegram.health_alert_sent", problems=len(problems))
+        return True
+    except Exception as e:
+        logger.error("telegram.health_alert_failed", error=str(e))
+        return False

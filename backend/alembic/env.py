@@ -8,7 +8,7 @@ from alembic import context
 from app.config import settings
 
 # Import all models so Alembic can detect them
-from app.models import DealFeedback, LegoSet, Offer, PriceRecord, WatchlistItem  # noqa
+from app.models import DealFeedback, LegoSet, Offer, PriceRecord, TaskHeartbeat, WatchlistItem  # noqa
 from app.models.base import Base
 
 config = context.config

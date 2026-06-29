@@ -4,6 +4,7 @@ from app.models.analysis_history import AnalysisHistoryEntry
 from app.models.auction_watch import AuctionWatchItem
 from app.models.base import Base, async_session, engine, get_session
 from app.models.feedback import DealFeedback, WatchlistItem
+from app.models.heartbeat import TaskHeartbeat
 from app.models.inventory import InventoryItem, InventoryStatus
 from app.models.inventory_photo import InventoryPhoto
 from app.models.offer import Offer, OfferCondition, OfferPlatform, OfferStatus
@@ -30,6 +31,7 @@ __all__ = [
     "OfferStatus",
     "DealFeedback",
     "WatchlistItem",
+    "TaskHeartbeat",
     "InventoryItem",
     "InventoryStatus",
     "InventoryPhoto",

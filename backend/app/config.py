@@ -114,6 +114,10 @@ class Settings(BaseSettings):
     scrape_interval_hours: int = 6  # How often to run full scrape
     analysis_interval_minutes: int = 30  # How often to analyze new offers
 
+    # ── Pipeline Health Monitoring ───────────────────────
+    heartbeat_enabled: bool = True  # Run the hourly pipeline-health watchdog
+    heartbeat_realert_hours: int = 6  # Min hours between repeat alerts per task
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "case_sensitive": False}
 
 
