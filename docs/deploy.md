@@ -132,6 +132,55 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f --tail=20
 curl -sS http://127.0.0.1/lego/health
 ```
 
+### Pipeline Health
+
+Beyond the API `/health` endpoint, the worker tracks when each scheduled task
+last ran/succeeded. The `pipeline-health-check` beat job (hourly) sends a
+Telegram alert when a task is **stale** (no recent success) or **failing**, so a
+silently broken scraper surfaces instead of going unnoticed. Inspect it any time:
+
+```bash
+# Cookie-authenticated dashboard endpoint
+curl -sS http://127.0.0.1/lego/api/system/status | jq
+```
+
+Tuning lives in `backend/.env`: `HEARTBEAT_ENABLED` (default `true`) and
+`HEARTBEAT_REALERT_HOURS` (default `6`, throttles repeat alerts per task).
+
+## Backup
+
+The PostgreSQL data lives under `${DATA_ROOT}/postgres` on the Hetzner block
+volume, which is **not** part of Hetzner's automatic backups. Use the bundled
+scripts to take and verify logical dumps.
+
+```bash
+# One-off backup (writes a verified, gzipped dump to ${BACKUP_DIR:-${DATA_ROOT}/backups})
+bash scripts/backup-db.sh
+
+# List backups
+ls -lh /mnt/HC_Volume_105179687/lego-arbitrage/backups
+
+# Restore a dump (DESTRUCTIVE — drops & recreates objects)
+CONFIRM=yes bash scripts/restore-db.sh /mnt/HC_Volume_105179687/lego-arbitrage/backups/<file>.sql.gz
+```
+
+Schedule it nightly via cron on the server (as the deploy user):
+
+```bash
+crontab -e
+# Daily 03:30 — adjust the repo path to your checkout. The explicit PATH is
+# required because cron's default PATH does not include docker/rclone.
+30 3 * * * cd /opt/lego-arbitrage && PATH=/usr/local/bin:/usr/bin:/bin bash scripts/backup-db.sh >> /var/log/lego-backup.log 2>&1
+```
+
+Backup tunables live in `.env.prod`: `BACKUP_DIR`, `BACKUP_KEEP` (retained
+dumps, default 14) and `BACKUP_REMOTE` (optional rclone destination for a true
+off-site copy — the local dump alone does not survive volume loss).
+
+> **Verify restores.** A backup you have never restored is not a backup. After
+> the first nightly run, restore the latest dump into a throwaway database and
+> confirm row counts before trusting it.
+
 ## Rollback
 
 ```bash

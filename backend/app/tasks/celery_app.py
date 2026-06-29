@@ -1,9 +1,15 @@
 """Celery application configuration and task scheduling."""
 
+import asyncio
+
+import structlog
 from celery import Celery
 from celery.schedules import crontab
+from celery.signals import task_failure, task_success
 
 from app.config import settings
+
+logger = structlog.get_logger()
 
 celery_app = Celery(
     "lego_arbitrage",
@@ -15,6 +21,7 @@ celery_app = Celery(
         "app.tasks.auction_watch",
         "app.tasks.catawiki_scan",
         "app.tasks.update_inventory",
+        "app.tasks.health_check",
     ],
 )
 
@@ -82,4 +89,37 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(minute=30, hour="*/6"),
         "options": {"queue": "analysis"},
     },
+    # Pipeline-health watchdog every hour (alerts on stale/failing tasks)
+    "pipeline-health-check": {
+        "task": "app.tasks.health_check.check_pipeline_health",
+        "schedule": crontab(minute=15),
+        "options": {"queue": "analysis"},
+    },
 }
+
+
+# ── Task Heartbeat Signals ───────────────────────────────
+# Automatically record every task's run/success so the pipeline-health
+# watchdog can detect silent failures. Importing the heartbeat service here
+# would create no cycle (it never imports celery_app), but we import lazily
+# inside the handler to keep worker startup order robust.
+def _record(sender, *, success: bool, detail: object | None) -> None:
+    try:
+        name = getattr(sender, "name", None)
+        if not name:
+            return
+        from app.services.heartbeat import record_heartbeat
+
+        asyncio.run(record_heartbeat(name, success=success, detail=detail))
+    except Exception as exc:  # noqa: BLE001 — never let heartbeat tracking break a task
+        logger.warning("heartbeat.signal_failed", error=str(exc))
+
+
+@task_success.connect
+def _on_task_success(sender=None, result=None, **kwargs) -> None:
+    _record(sender, success=True, detail=result)
+
+
+@task_failure.connect
+def _on_task_failure(sender=None, exception=None, **kwargs) -> None:
+    _record(sender, success=False, detail=exception)
