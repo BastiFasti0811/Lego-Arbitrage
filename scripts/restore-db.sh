@@ -37,7 +37,8 @@ if ! gzip -t "${BACKUP_FILE}" 2>/dev/null; then
 fi
 
 # Read target DB name from the env file without shell-evaluating it.
-env_get() { sed -n "s/^$1=//p" "${ENV_FILE}" | tail -n1; }
+# tr -d '\r' tolerates CRLF env files (e.g. edited on Windows).
+env_get() { sed -n "s/^$1=//p" "${ENV_FILE}" | tail -n1 | tr -d '\r'; }
 TARGET_DB="${POSTGRES_DB:-$(env_get POSTGRES_DB)}"
 TARGET_DB="${TARGET_DB:-lego_arbitrage}"
 

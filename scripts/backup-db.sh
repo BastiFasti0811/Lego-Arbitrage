@@ -35,8 +35,10 @@ fi
 # Read a single KEY=value from the env file WITHOUT sourcing it, so values with
 # shell metacharacters (e.g. a strong DB password) can never break the script
 # or execute code. Matches how `docker compose --env-file` treats the file.
+# `tr -d '\r'` tolerates CRLF env files (e.g. edited on Windows) — a trailing
+# carriage return would otherwise corrupt every value (paths, counts, db name).
 env_get() {
-  sed -n "s/^$1=//p" "${ENV_FILE}" | tail -n1
+  sed -n "s/^$1=//p" "${ENV_FILE}" | tail -n1 | tr -d '\r'
 }
 
 # Real environment wins over the file (lets cron / operators override).
