@@ -1,6 +1,5 @@
 """Analysis tasks — evaluate new offers and send notifications."""
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 
 import structlog
@@ -11,13 +10,10 @@ from app.models import LegoSet, Offer, PriceRecord
 from app.models.base import async_session
 from app.notifications.telegram_bot import send_daily_summary, send_deal_alert
 from app.scrapers.base import ScrapedPrice
+from app.tasks.async_runner import run_async as _run_async
 from app.tasks.celery_app import celery_app
 
 logger = structlog.get_logger()
-
-
-def _run_async(coro):
-    return asyncio.run(coro)
 
 
 @celery_app.task(name="app.tasks.analyze_new.analyze_new_offers")

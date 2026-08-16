@@ -1,6 +1,5 @@
 """Re-evaluate watched auction lots on a schedule."""
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 
 import structlog
@@ -10,13 +9,10 @@ from app.models import AuctionWatchItem, LegoSet
 from app.models.base import async_session
 from app.notifications.telegram_bot import send_auction_watch_alert
 from app.services.auction_watch import evaluate_auction
+from app.tasks.async_runner import run_async as _run_async
 from app.tasks.celery_app import celery_app
 
 logger = structlog.get_logger()
-
-
-def _run_async(coro):
-    return asyncio.run(coro)
 
 
 @celery_app.task(name="app.tasks.auction_watch.refresh_auction_watchlist")

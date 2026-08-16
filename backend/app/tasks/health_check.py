@@ -5,7 +5,6 @@ single consolidated Telegram alert when something is stale or failing.
 Re-alerts are throttled per task via ``heartbeat_realert_hours``.
 """
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 
 import structlog
@@ -16,14 +15,10 @@ from app.models.base import async_session
 from app.models.heartbeat import TaskHeartbeat
 from app.notifications.telegram_bot import send_pipeline_health_alert
 from app.services.heartbeat import evaluate_health, filter_unthrottled, load_heartbeats
+from app.tasks.async_runner import run_async as _run_async
 from app.tasks.celery_app import celery_app
 
 logger = structlog.get_logger()
-
-
-def _run_async(coro):
-    """Run async code inside sync Celery tasks."""
-    return asyncio.run(coro)
 
 
 @celery_app.task(name="app.tasks.health_check.check_pipeline_health")

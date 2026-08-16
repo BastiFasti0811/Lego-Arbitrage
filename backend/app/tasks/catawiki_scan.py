@@ -1,20 +1,16 @@
 """Scheduled discovery scan for configured auction source categories."""
 
-import asyncio
 
 import structlog
 
 from app.api.routes.auctions import _discover_configured_platform
 from app.notifications.telegram_bot import send_auction_discovery_summary
+from app.tasks.async_runner import run_async as _run_async
 from app.tasks.celery_app import celery_app
 
 logger = structlog.get_logger()
 
 SUPPORTED_DISCOVERY_PLATFORMS = ("CATAWIKI", "WHATNOT", "BRICKLINK")
-
-
-def _run_async(coro):
-    return asyncio.run(coro)
 
 
 @celery_app.task(name="app.tasks.catawiki_scan.scan_configured_categories")

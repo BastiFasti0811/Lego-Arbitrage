@@ -1,6 +1,5 @@
 """Scheduled scraping tasks that refresh prices and active offers."""
 
-import asyncio
 from datetime import UTC, datetime
 
 import structlog
@@ -10,14 +9,10 @@ from app.engine.market_consensus import calculate_consensus
 from app.models import LegoSet, Offer, PriceRecord, WatchlistItem
 from app.models.base import async_session
 from app.scrapers import METADATA_SCRAPERS, OFFER_SCRAPERS, PRICE_SCRAPERS
+from app.tasks.async_runner import run_async as _run_async
 from app.tasks.celery_app import celery_app
 
 logger = structlog.get_logger()
-
-
-def _run_async(coro):
-    """Run async code inside sync Celery tasks."""
-    return asyncio.run(coro)
 
 
 def _apply_set_info(lego_set: LegoSet, info, *, overwrite_uvp: bool = False) -> bool:
