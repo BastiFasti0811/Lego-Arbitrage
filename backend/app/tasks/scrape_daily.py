@@ -1,7 +1,7 @@
 """Scheduled scraping tasks that refresh prices and active offers."""
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 
 import structlog
 from sqlalchemy import select
@@ -82,7 +82,7 @@ async def _scrape_set_prices_async(set_number: str) -> dict:
             results["errors"].append("Set not found in database")
             return results
 
-        now = datetime.now(datetime.UTC)
+        now = datetime.now(UTC)
         scraped_prices = []
 
         for scraper_cls in PRICE_SCRAPERS:
