@@ -267,3 +267,47 @@ async def send_pipeline_health_alert(problems: list[dict]) -> bool:
     except Exception as e:
         logger.error("telegram.health_alert_failed", error=str(e))
         return False
+
+
+def format_weekly_report(stats: dict) -> str:
+    """Weekly dead-man report text. Zero scraped prices IS the alarm, not silence."""
+    prices = stats.get("prices_7d", 0)
+    price_flag = "⚠️ " if prices == 0 else ""
+    lines = [
+        "📊 *Wochenreport LEGO-Arbitrage*",
+        "",
+        f"{price_flag}Preise gescraped (7 Tage): *{prices}*",
+        f"Neue Angebote (7 Tage): {stats.get('offers_7d', 0)}",
+        f"GO-Deals (7 Tage): {stats.get('go_7d', 0)}",
+        f"Aktive Watchlist: {stats.get('watchlist_active', 0)}",
+        "",
+    ]
+    problems = stats.get("problems") or []
+    if problems:
+        lines.append("🔧 Probleme:")
+        lines.extend(f"• `{name.split('.')[-1]}`" for name in problems)
+    else:
+        lines.append("✅ Alle überwachten Tasks im Soll")
+    if prices == 0:
+        lines.append("")
+        lines.append("⚠️ Diese Woche keine Preisdaten geschrieben — Pipeline prüfen!")
+    return "\n".join(lines)
+
+
+async def send_weekly_report(stats: dict) -> bool:
+    """Send the weekly pipeline report — always, even when every number is zero."""
+    runtime_settings = await get_settings_map(["telegram_bot_token", "telegram_chat_id"])
+    bot_token = runtime_settings.get("telegram_bot_token")
+    chat_id = runtime_settings.get("telegram_chat_id")
+
+    if not bot_token or not chat_id:
+        return False
+
+    try:
+        bot = Bot(token=bot_token)
+        await bot.send_message(chat_id=chat_id, text=format_weekly_report(stats), parse_mode=ParseMode.MARKDOWN)
+        logger.info("telegram.weekly_report_sent")
+        return True
+    except Exception as e:
+        logger.error("telegram.weekly_report_failed", error=str(e))
+        return False

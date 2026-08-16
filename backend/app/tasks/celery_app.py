@@ -22,6 +22,7 @@ celery_app = Celery(
         "app.tasks.catawiki_scan",
         "app.tasks.update_inventory",
         "app.tasks.health_check",
+        "app.tasks.weekly_report",
     ],
 )
 
@@ -45,6 +46,12 @@ celery_app.conf.beat_schedule = {
     "scrape-all-sets": {
         "task": "app.tasks.scrape_daily.scrape_all_watched_sets",
         "schedule": crontab(minute=0, hour="*/6"),
+        "options": {"queue": "scraping"},
+    },
+    # Kleinanzeigen-only offer lane over the watchlist (2h cadence, aborts on block)
+    "scrape-kleinanzeigen-watched": {
+        "task": "app.tasks.scrape_daily.scrape_kleinanzeigen_watched",
+        "schedule": crontab(minute=10, hour="*/2"),
         "options": {"queue": "scraping"},
     },
     # Analyze new offers every 30 minutes
@@ -77,11 +84,11 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(minute=40, hour=8),
         "options": {"queue": "scraping"},
     },
-    # Weekly model retraining (Sunday 03:00)
-    "weekly-retrain": {
-        "task": "app.tasks.analyze_new.retrain_model",
-        "schedule": crontab(minute=0, hour=3, day_of_week=0),
-        "options": {"queue": "ml"},
+    # Weekly Telegram report — dead-man switch for the whole pipeline (Sunday 18:00)
+    "weekly-report": {
+        "task": "app.tasks.weekly_report.send_weekly_report_task",
+        "schedule": crontab(minute=0, hour=18, day_of_week=0),
+        "options": {"queue": "notifications"},
     },
     # Update inventory valuations every 6 hours (offset from scraping)
     "update-inventory": {

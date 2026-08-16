@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 
+import httpx
 import structlog
 from sqlalchemy import select
 
@@ -9,6 +10,7 @@ from app.engine.market_consensus import calculate_consensus
 from app.models import LegoSet, Offer, PriceRecord, WatchlistItem
 from app.models.base import async_session
 from app.scrapers import METADATA_SCRAPERS, OFFER_SCRAPERS, PRICE_SCRAPERS
+from app.scrapers.kleinanzeigen import KleinanzeigenScraper
 from app.tasks.async_runner import run_async as _run_async
 from app.tasks.celery_app import celery_app
 
@@ -123,63 +125,7 @@ async def _scrape_set_prices_async(set_number: str) -> dict:
             try:
                 async with scraper_cls() as scraper:
                     offers = await scraper.get_offers(set_number)
-                    offer_urls = list({offer.offer_url for offer in offers if offer.offer_url})
-                    existing_by_key: dict[tuple[str, str], Offer] = {}
-                    if offer_urls:
-                        existing_offer_result = await session.execute(
-                            select(Offer).where(
-                                Offer.set_id == lego_set.id,
-                                Offer.offer_url.in_(offer_urls),
-                            )
-                        )
-                        existing_by_key = {
-                            (existing.platform, existing.offer_url): existing
-                            for existing in existing_offer_result.scalars().all()
-                        }
-
-                    for offer in offers:
-                        existing_offer = existing_by_key.get((offer.platform, offer.offer_url))
-
-                        if existing_offer:
-                            existing_offer.offer_title = offer.offer_title
-                            existing_offer.price_eur = offer.price_eur
-                            existing_offer.shipping_eur = offer.shipping_eur
-                            existing_offer.total_price_eur = offer.price_eur + (offer.shipping_eur or 0)
-                            existing_offer.condition = offer.condition
-                            existing_offer.box_damage = offer.box_damage
-                            existing_offer.sealed = offer.sealed
-                            existing_offer.seller_name = offer.seller_name
-                            existing_offer.seller_rating = offer.seller_rating
-                            existing_offer.seller_location = offer.seller_location
-                            existing_offer.status = "ACTIVE"
-                            existing_offer.last_seen_at = now
-                            existing_offer.is_auction = offer.is_auction
-                            existing_offer.auction_end = offer.auction_end
-                        else:
-                            session.add(
-                                Offer(
-                                    set_id=lego_set.id,
-                                    platform=offer.platform,
-                                    offer_url=offer.offer_url,
-                                    offer_title=offer.offer_title,
-                                    price_eur=offer.price_eur,
-                                    shipping_eur=offer.shipping_eur,
-                                    total_price_eur=offer.price_eur + (offer.shipping_eur or 0),
-                                    condition=offer.condition,
-                                    box_damage=offer.box_damage,
-                                    sealed=offer.sealed,
-                                    seller_name=offer.seller_name,
-                                    seller_rating=offer.seller_rating,
-                                    seller_location=offer.seller_location,
-                                    status="ACTIVE",
-                                    discovered_at=now,
-                                    last_seen_at=now,
-                                    is_auction=offer.is_auction,
-                                    auction_end=offer.auction_end,
-                                )
-                            )
-
-                        results["offers"] += 1
+                results["offers"] += await _upsert_offers(session, lego_set, offers, now)
             except Exception as exc:
                 results["errors"].append(f"{scraper_cls.__name__} offers: {exc}")
                 logger.error("scrape.offers_failed", scraper=scraper_cls.__name__, error=str(exc))
@@ -228,6 +174,122 @@ async def _scrape_all_watched_async() -> dict:
 
     logger.info("scrape.all_complete", **summary)
     return summary
+
+
+async def _upsert_offers(session, lego_set: LegoSet, offers, now: datetime) -> int:
+    """Insert new offers / refresh known ones, keyed by (platform, offer_url)."""
+    offer_urls = list({offer.offer_url for offer in offers if offer.offer_url})
+    existing_by_key: dict[tuple[str, str], Offer] = {}
+    if offer_urls:
+        existing_offer_result = await session.execute(
+            select(Offer).where(
+                Offer.set_id == lego_set.id,
+                Offer.offer_url.in_(offer_urls),
+            )
+        )
+        existing_by_key = {
+            (existing.platform, existing.offer_url): existing
+            for existing in existing_offer_result.scalars().all()
+        }
+
+    count = 0
+    for offer in offers:
+        existing_offer = existing_by_key.get((offer.platform, offer.offer_url))
+
+        if existing_offer:
+            existing_offer.offer_title = offer.offer_title
+            existing_offer.price_eur = offer.price_eur
+            existing_offer.shipping_eur = offer.shipping_eur
+            existing_offer.total_price_eur = offer.price_eur + (offer.shipping_eur or 0)
+            existing_offer.condition = offer.condition
+            existing_offer.box_damage = offer.box_damage
+            existing_offer.sealed = offer.sealed
+            existing_offer.seller_name = offer.seller_name
+            existing_offer.seller_rating = offer.seller_rating
+            existing_offer.seller_location = offer.seller_location
+            existing_offer.status = "ACTIVE"
+            existing_offer.last_seen_at = now
+            existing_offer.is_auction = offer.is_auction
+            existing_offer.auction_end = offer.auction_end
+        else:
+            session.add(
+                Offer(
+                    set_id=lego_set.id,
+                    platform=offer.platform,
+                    offer_url=offer.offer_url,
+                    offer_title=offer.offer_title,
+                    price_eur=offer.price_eur,
+                    shipping_eur=offer.shipping_eur,
+                    total_price_eur=offer.price_eur + (offer.shipping_eur or 0),
+                    condition=offer.condition,
+                    box_damage=offer.box_damage,
+                    sealed=offer.sealed,
+                    seller_name=offer.seller_name,
+                    seller_rating=offer.seller_rating,
+                    seller_location=offer.seller_location,
+                    status="ACTIVE",
+                    discovered_at=now,
+                    last_seen_at=now,
+                    is_auction=offer.is_auction,
+                    auction_end=offer.auction_end,
+                )
+            )
+
+        count += 1
+    return count
+
+
+@celery_app.task(name="app.tasks.scrape_daily.scrape_kleinanzeigen_watched")
+def scrape_kleinanzeigen_watched() -> dict:
+    """Fast lane: refresh Kleinanzeigen offers for the watchlist every 2 hours."""
+    return _run_async(_scrape_kleinanzeigen_async())
+
+
+async def _scrape_kleinanzeigen_async() -> dict:
+    """Kleinanzeigen-only offer refresh over the active watchlist.
+
+    A 403/429 aborts the remaining run — a rate-limit signal must reduce
+    pressure immediately, never turn into a request burst.
+    """
+    results = {"total_sets": 0, "offers": 0, "errors": [], "aborted": False}
+
+    async with async_session() as session:
+        watched = await session.execute(
+            select(LegoSet)
+            .join(WatchlistItem, WatchlistItem.set_id == LegoSet.id)
+            .where(WatchlistItem.is_active)
+        )
+        lego_sets = list(watched.scalars().all())
+        results["total_sets"] = len(lego_sets)
+
+        now = datetime.now(UTC)
+        for lego_set in lego_sets:
+            try:
+                async with KleinanzeigenScraper() as scraper:
+                    offers = await scraper.get_offers(lego_set.set_number)
+                results["offers"] += await _upsert_offers(session, lego_set, offers, now)
+            except httpx.HTTPStatusError as exc:
+                results["errors"].append(f"{lego_set.set_number}: HTTP {exc.response.status_code}")
+                if exc.response.status_code in (403, 429):
+                    results["aborted"] = True
+                    logger.warning(
+                        "scrape.kleinanzeigen_blocked",
+                        set_number=lego_set.set_number,
+                        status=exc.response.status_code,
+                    )
+                    break
+            except Exception as exc:
+                results["errors"].append(f"{lego_set.set_number}: {exc}")
+        await session.commit()
+
+    logger.info(
+        "scrape.kleinanzeigen_complete",
+        total_sets=results["total_sets"],
+        offers=results["offers"],
+        aborted=results["aborted"],
+        errors=len(results["errors"]),
+    )
+    return results
 
 
 @celery_app.task(name="app.tasks.scrape_daily.refresh_known_set_metadata")

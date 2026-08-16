@@ -49,6 +49,7 @@ def test_run_async_disposes_pool_when_coro_raises(monkeypatch):
         "app.tasks.health_check",
         "app.tasks.scrape_daily",
         "app.tasks.update_inventory",
+        "app.tasks.weekly_report",
     ],
 )
 def test_task_modules_share_pool_resetting_runner(module_name):

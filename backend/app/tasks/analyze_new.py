@@ -136,28 +136,11 @@ async def _send_summary_async() -> dict:
         best_analysis = None
         # (In production, you'd reconstruct the full analysis here)
 
-        await send_daily_summary(
+        sent = await send_daily_summary(
             deals_found=len(offers),
             go_deals=len(go_deals),
             best_deal=best_analysis,
             total_potential_profit=total_profit,
         )
 
-    return {"sent": True, "deals": len(offers), "go_deals": len(go_deals)}
-
-
-@celery_app.task(name="app.tasks.analyze_new.retrain_model")
-def retrain_model() -> dict:
-    """Weekly ML model retraining with new feedback data.
-
-    Phase 3: This will use DealFeedback data to retrain the
-    price prediction model and adjust strategy parameters.
-    """
-    logger.info("ml.retrain_started")
-    # TODO Phase 3: Implement ML retraining pipeline
-    # 1. Load DealFeedback data
-    # 2. Calculate prediction accuracy
-    # 3. Retrain XGBoost model
-    # 4. Update strategy parameters if improved
-    # 5. Log metrics to MLflow
-    return {"status": "placeholder", "message": "ML retraining not yet implemented (Phase 3)"}
+    return {"sent": sent, "deals": len(offers), "go_deals": len(go_deals)}
