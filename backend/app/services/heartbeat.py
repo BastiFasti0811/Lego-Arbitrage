@@ -33,7 +33,13 @@ MONITORED_TASKS: dict[str, int] = {
     "app.tasks.auction_watch.refresh_auction_watchlist": 26,   # daily 08:20
     "app.tasks.catawiki_scan.scan_configured_categories": 26,  # daily 08:40
     "app.tasks.update_inventory.update_inventory_valuations": 8,  # every 6h
+    "app.tasks.scrape_daily.scrape_kleinanzeigen_watched": 5,     # every 2h
+    "app.tasks.weekly_report.send_weekly_report_task": 194,       # weekly Sunday 18:00
 }
+
+# Nutzarbeit threshold: a full day of 6h scrape cycles plus slack. Past this,
+# a green pipeline that writes no prices counts as dead.
+PRICE_DATA_MAX_AGE_HOURS = 26
 
 _DETAIL_MAX_LEN = 2000
 
@@ -169,6 +175,49 @@ def evaluate_health(heartbeats: Sequence[TaskHeartbeat], now: datetime) -> Healt
 
     healthy = not any(t.status in ("stale", "failing") for t in tasks)
     return HealthReport(healthy=healthy, checked_at=now, tasks=tasks)
+
+
+def evaluate_data_freshness(
+    latest_price_at: datetime | None,
+    active_watchlist: int,
+    now: datetime,
+) -> TaskHealth | None:
+    """Nutzarbeit check: an active watchlist must produce recent price writes.
+
+    Catches the failure mode heartbeats cannot see — tasks reporting success
+    while writing nothing. Pure (no I/O); returns a synthetic problem or None.
+    """
+    if active_watchlist <= 0:
+        return None
+
+    max_age = PRICE_DATA_MAX_AGE_HOURS * 3600
+    if latest_price_at is None:
+        return TaskHealth(
+            task_name="pipeline.price_data_freshness",
+            status="stale",
+            last_success_at=None,
+            last_run_at=None,
+            last_status=None,
+            age_seconds=None,
+            max_age_seconds=max_age,
+            detail="Watchlist aktiv, aber noch nie ein Preis geschrieben",
+        )
+
+    if latest_price_at.tzinfo is None:
+        latest_price_at = latest_price_at.replace(tzinfo=UTC)
+    age = (now - latest_price_at).total_seconds()
+    if age <= max_age:
+        return None
+    return TaskHealth(
+        task_name="pipeline.price_data_freshness",
+        status="stale",
+        last_success_at=latest_price_at,
+        last_run_at=None,
+        last_status=None,
+        age_seconds=age,
+        max_age_seconds=max_age,
+        detail=f"Letzter Preis vor {age / 3600:.1f} h",
+    )
 
 
 def filter_unthrottled(

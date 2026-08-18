@@ -1,6 +1,5 @@
 """Inventory valuation and sell-signal detection tasks."""
 
-import asyncio
 from datetime import datetime
 
 import structlog
@@ -13,6 +12,7 @@ from app.models.inventory import InventoryItem, InventoryStatus
 from app.models.set import LegoSet, SetCategory
 from app.scrapers import PRICE_SCRAPERS
 from app.scrapers.brickmerge import BrickMergeScraper
+from app.tasks.async_runner import run_async as _run_async
 from app.tasks.celery_app import celery_app
 
 logger = structlog.get_logger()
@@ -32,10 +32,6 @@ ROI_TARGETS = {
     SetCategory.VINTAGE.value: 30.0,
     SetCategory.LEGACY.value: 40.0,
 }
-
-
-def _run_async(coro):
-    return asyncio.run(coro)
 
 
 def _categorize_set(release_year: int | None = None) -> str:

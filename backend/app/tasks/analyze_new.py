@@ -1,6 +1,5 @@
 """Analysis tasks — evaluate new offers and send notifications."""
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 
 import structlog
@@ -11,13 +10,10 @@ from app.models import LegoSet, Offer, PriceRecord
 from app.models.base import async_session
 from app.notifications.telegram_bot import send_daily_summary, send_deal_alert
 from app.scrapers.base import ScrapedPrice
+from app.tasks.async_runner import run_async as _run_async
 from app.tasks.celery_app import celery_app
 
 logger = structlog.get_logger()
-
-
-def _run_async(coro):
-    return asyncio.run(coro)
 
 
 @celery_app.task(name="app.tasks.analyze_new.analyze_new_offers")
@@ -140,28 +136,11 @@ async def _send_summary_async() -> dict:
         best_analysis = None
         # (In production, you'd reconstruct the full analysis here)
 
-        await send_daily_summary(
+        sent = await send_daily_summary(
             deals_found=len(offers),
             go_deals=len(go_deals),
             best_deal=best_analysis,
             total_potential_profit=total_profit,
         )
 
-    return {"sent": True, "deals": len(offers), "go_deals": len(go_deals)}
-
-
-@celery_app.task(name="app.tasks.analyze_new.retrain_model")
-def retrain_model() -> dict:
-    """Weekly ML model retraining with new feedback data.
-
-    Phase 3: This will use DealFeedback data to retrain the
-    price prediction model and adjust strategy parameters.
-    """
-    logger.info("ml.retrain_started")
-    # TODO Phase 3: Implement ML retraining pipeline
-    # 1. Load DealFeedback data
-    # 2. Calculate prediction accuracy
-    # 3. Retrain XGBoost model
-    # 4. Update strategy parameters if improved
-    # 5. Log metrics to MLflow
-    return {"status": "placeholder", "message": "ML retraining not yet implemented (Phase 3)"}
+    return {"sent": sent, "deals": len(offers), "go_deals": len(go_deals)}

@@ -4,7 +4,7 @@
 - Stand: Arbeitsstand Maerz 2026
 - Implementiert: Backend API, Scraper, ROI-/Risk-Engine, Telegram, Celery, Dashboard
 - Masterplan: LEGO-Arbitrage-Masterplan.html
-- Owner: Sebastian (sebastian.willkommen@conuti.de)
+- Owner: Sebastian (privat, GitHub: BastiFasti0811)
 
 ## Architektur
 - Hosting: Hetzner Cloud auf `spm-prod-01` in `NBG1`
