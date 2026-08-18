@@ -50,6 +50,11 @@ dev = [
     "httpx",  # for TestClient
 ]
 
+[tool.setuptools.packages.find]
+# Only `app` ships as package; `alembic/` lives beside it and broke setuptools
+# auto-discovery ("Multiple top-level packages discovered in a flat-layout").
+include = ["app*"]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 120
