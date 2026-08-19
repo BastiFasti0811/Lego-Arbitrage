@@ -100,17 +100,39 @@ Recommended GitHub environment setup:
 
 ## Deploy
 
-```bash
-git pull --ff-only
-docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
-docker compose --env-file .env.prod -f docker-compose.prod.yml ps
-```
-
-Fresh installations should run Alembic before the first app start:
+Pushes to `main` trigger [deploy-production.yml](../.github/workflows/deploy-production.yml),
+which runs the verify job and then executes the versioned deploy script on the
+server. The same script is the supported way to deploy manually, from the repo
+root on the server:
 
 ```bash
-docker compose --env-file .env.prod -f docker-compose.prod.yml run --rm api alembic upgrade head
+bash scripts/deploy-prod.sh
 ```
+
+The script performs these steps in order:
+
+1. `git pull --ff-only`
+2. `docker compose ... build` — build the new images while the old containers
+   keep serving
+3. `docker compose ... run --rm -T api alembic upgrade head` — apply database
+   migrations from the freshly built image in a one-off container
+4. `docker compose ... up -d --remove-orphans` — swap the containers to the
+   new images
+5. Poll the API health endpoint for up to 60 seconds
+
+A failed migration aborts the deploy before any app container is restarted:
+the previous code keeps running against the previous schema (PostgreSQL DDL is
+transactional, and `alembic/env.py` runs the whole upgrade in one transaction,
+so a failed run rolls back completely). One caveat: `compose run` converges
+the postgres/redis dependencies first, so a deploy that also changes their
+compose config can recreate those two before the migration step. Because the
+old containers keep serving while migrations run, **migrations must stay
+backward compatible** with the previous release — additive changes only; use
+the expand/contract pattern for renames and drops.
+
+Fresh installations need no extra migration step: `compose run` starts
+postgres as a dependency, waits for it to become healthy, and applies the full
+schema before the API starts.
 
 Existing installations that were created by the old startup `create_all`
 bootstrap should be stamped once after confirming the schema matches the repo:
@@ -119,10 +141,13 @@ bootstrap should be stamped once after confirming the schema matches the repo:
 docker compose --env-file .env.prod -f docker-compose.prod.yml run --rm api alembic stamp head
 ```
 
-You can also run the versioned helper from the repo root on the server:
+The script's call sequence and abort behavior are covered by
+[tests/deploy-prod.test.sh](../tests/deploy-prod.test.sh) (stubbed `docker`
+and `git`, no containers involved), which also runs in the workflow's verify
+job:
 
 ```bash
-bash scripts/deploy-prod.sh
+bash tests/deploy-prod.test.sh
 ```
 
 ## Health Checks
@@ -188,6 +213,11 @@ git fetch --all --tags
 git checkout <known-good-commit-or-tag>
 docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
 ```
+
+Rolling back the code does not downgrade the schema. As long as migrations
+follow the backward-compatibility rule above, the previous release runs fine
+against the newer schema; a schema downgrade (`alembic downgrade`) is a
+deliberate manual step.
 
 ## GitHub Account Note
 

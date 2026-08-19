@@ -32,10 +32,13 @@
 ## Deployment Pattern
 
 ```bash
-git pull --ff-only
-docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
-docker compose --env-file .env.prod -f docker-compose.prod.yml ps
+bash scripts/deploy-prod.sh
 ```
+
+The script builds the new images, applies Alembic migrations from the freshly
+built image, then swaps the containers; a failed migration aborts before any
+app container is restarted. Details in [deploy.md](deploy.md#deploy). Do not
+deploy with a plain `up -d --build` — that skips the migration step.
 
 ## DNS
 

@@ -21,7 +21,19 @@ fi
 
 git pull --ff-only
 
-docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --build --remove-orphans \
+# Build first, then migrate from the freshly built image (it contains the new
+# revision files), then swap containers. A failed migration aborts the deploy
+# while the previous containers keep serving; migrations must therefore stay
+# backward compatible with the code that is still running.
+docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" build
+
+echo "Applying database migrations (alembic upgrade head)..."
+if ! docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" run --rm -T api alembic upgrade head; then
+  echo "Database migration step failed. Aborting deploy; the running app containers were not restarted." >&2
+  exit 1
+fi
+
+docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --remove-orphans \
   postgres redis api worker beat frontend
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
 
