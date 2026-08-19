@@ -29,7 +29,7 @@ docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" build
 
 echo "Applying database migrations (alembic upgrade head)..."
 if ! docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" run --rm -T api alembic upgrade head; then
-  echo "Database migration failed. Aborting deploy; the running containers were not touched." >&2
+  echo "Database migration step failed. Aborting deploy; the running app containers were not restarted." >&2
   exit 1
 fi
 

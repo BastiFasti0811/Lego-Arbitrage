@@ -47,13 +47,17 @@ printf 'git %s\n' "$*" >> "${CALL_LOG}"
 exit 0
 STUB
 
-  # The docker stub succeeds by default; with MIGRATION_FAIL=1 the alembic
-  # migration call fails so the abort path can be exercised.
+  # The docker stub succeeds by default; MIGRATION_FAIL=1 fails the alembic
+  # migration call, BUILD_FAIL=1 fails the compose build call, so the abort
+  # paths can be exercised.
   cat > "${SANDBOX}/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 printf 'docker %s\n' "$*" >> "${CALL_LOG}"
 if [[ "$*" == *"alembic upgrade head"* && "${MIGRATION_FAIL:-0}" == "1" ]]; then
   exit 7
+fi
+if [[ "$*" == *" build"* && "${BUILD_FAIL:-0}" == "1" ]]; then
+  exit 3
 fi
 exit 0
 STUB
@@ -61,13 +65,14 @@ STUB
   chmod +x "${SANDBOX}/bin/git" "${SANDBOX}/bin/docker"
 }
 
-run_deploy() {
+run_deploy() { # usage: run_deploy [migration_fail] [build_fail]
+  local migration_fail="${1:-0}" build_fail="${2:-0}"
   DEPLOY_RC=0
   (
     cd "${SANDBOX}/repo"
     export PATH="${SANDBOX}/bin:${PATH}"
     export CALL_LOG
-    export MIGRATION_FAIL="${1:-0}"
+    export MIGRATION_FAIL="${migration_fail}" BUILD_FAIL="${build_fail}"
     bash scripts/deploy-prod.sh
   ) > "${SANDBOX}/stdout.log" 2> "${SANDBOX}/stderr.log" || DEPLOY_RC=$?
 }
@@ -108,7 +113,7 @@ assert_order() {
 
 CURRENT_TEST="success: pull -> build -> migrate -> up -> healthcheck"
 make_sandbox t1
-run_deploy 0
+run_deploy
 
 if [[ "${DEPLOY_RC}" -ne 0 ]]; then
   fail "expected exit 0, got ${DEPLOY_RC} (stderr: $(cat "${SANDBOX}/stderr.log"))"
@@ -118,6 +123,7 @@ assert_called "${BUILD_CALL}"
 assert_called "${MIGRATE_CALL}"
 assert_called "${UP_CALL}"
 assert_called "${HEALTH_CALL}"
+assert_not_called "--build"
 assert_order "${PULL_CALL}" "${BUILD_CALL}"
 assert_order "${BUILD_CALL}" "${MIGRATE_CALL}"
 assert_order "${MIGRATE_CALL}" "${UP_CALL}"
@@ -136,9 +142,23 @@ assert_called "${BUILD_CALL}"
 assert_called "${MIGRATE_CALL}"
 assert_not_called " up -d"
 assert_not_called "docker exec lego-api-prod"
-if ! grep -qi "migration failed" "${SANDBOX}/stderr.log"; then
-  fail "expected a 'migration failed' message on stderr"
+if ! grep -qi "migration step failed" "${SANDBOX}/stderr.log"; then
+  fail "expected a 'migration step failed' message on stderr"
 fi
+
+# --- Test 3: failed build aborts before migrations and restart --------------
+
+CURRENT_TEST="failure: broken build aborts deploy before migrate/up"
+make_sandbox t3
+run_deploy 0 1
+
+if [[ "${DEPLOY_RC}" -eq 0 ]]; then
+  fail "expected non-zero exit when the build fails"
+fi
+assert_called "${BUILD_CALL}"
+assert_not_called "alembic upgrade head"
+assert_not_called " up -d"
+assert_not_called "docker exec lego-api-prod"
 
 # --- Result -----------------------------------------------------------------
 

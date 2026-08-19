@@ -120,12 +120,15 @@ The script performs these steps in order:
    new images
 5. Poll the API health endpoint for up to 60 seconds
 
-A failed migration aborts the deploy before any container is restarted: the
-previous code keeps running against the previous schema (PostgreSQL DDL is
-transactional, so Alembic rolls the failed revision back). Because the old
-containers keep serving while migrations run, **migrations must stay backward
-compatible** with the previous release — additive changes only; use the
-expand/contract pattern for renames and drops.
+A failed migration aborts the deploy before any app container is restarted:
+the previous code keeps running against the previous schema (PostgreSQL DDL is
+transactional, and `alembic/env.py` runs the whole upgrade in one transaction,
+so a failed run rolls back completely). One caveat: `compose run` converges
+the postgres/redis dependencies first, so a deploy that also changes their
+compose config can recreate those two before the migration step. Because the
+old containers keep serving while migrations run, **migrations must stay
+backward compatible** with the previous release — additive changes only; use
+the expand/contract pattern for renames and drops.
 
 Fresh installations need no extra migration step: `compose run` starts
 postgres as a dependency, waits for it to become healthy, and applies the full
