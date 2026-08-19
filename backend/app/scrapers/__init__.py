@@ -20,11 +20,13 @@ ALL_SCRAPERS: list[type[BaseScraper]] = [
     LegoComScraper,
 ]
 
-# Scrapers that provide market prices (for consensus calculation)
+# Scrapers that provide market prices (for consensus calculation).
+# IdealoScraper is deliberately absent: the site answers 403 from the
+# production host, and its whole-page fallback then reported phantom prices
+# (6,99 EUR for an 850 EUR set). Re-add once it can be fetched reliably.
 PRICE_SCRAPERS: list[type[BaseScraper]] = [
     EbaySoldScraper,
     BrickEconomyScraper,
-    IdealoScraper,
     BrickMergeScraper,
 ]
 

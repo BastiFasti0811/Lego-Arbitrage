@@ -17,6 +17,20 @@ from app.tasks.celery_app import celery_app
 logger = structlog.get_logger()
 
 
+def _is_plausible_price(price_eur: float, uvp_eur: float | None) -> bool:
+    """Reject prices that cannot belong to this set.
+
+    Scrapers occasionally pick up a neighbouring product's price. This guards
+    market-price sources (not offers): a consensus source below 20 % of UVP is
+    a parsing accident, not a bargain — sealed retail never clears that deep.
+    Upward outliers are legitimate (EOL premiums), so only the lower bound is
+    guarded.
+    """
+    if not uvp_eur or uvp_eur <= 0:
+        return True
+    return price_eur >= uvp_eur * 0.20
+
+
 def _apply_set_info(lego_set: LegoSet, info, *, overwrite_uvp: bool = False) -> bool:
     """Merge scraped metadata into a set record."""
     changed = False
@@ -86,6 +100,15 @@ async def _scrape_set_prices_async(set_number: str) -> dict:
             try:
                 async with scraper_cls() as scraper:
                     price = await scraper.get_price(set_number)
+                    if price and not _is_plausible_price(price.price_eur, lego_set.uvp_eur):
+                        logger.warning(
+                            "scrape.implausible_price",
+                            set_number=set_number,
+                            source=price.source,
+                            price=price.price_eur,
+                            uvp=lego_set.uvp_eur,
+                        )
+                        price = None
                     if price:
                         scraped_prices.append(price)
                         session.add(

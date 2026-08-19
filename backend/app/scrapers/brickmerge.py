@@ -124,7 +124,11 @@ class BrickMergeScraper(BaseScraper):
             html = await self._fetch_detail_page(set_number)
             soup = BeautifulSoup(html, "lxml")
 
-            # Primary: BrickMerge's own best price ("ab X,XX €" in the title).
+            # BrickMerge's own aggregated best price ("ab X,XX €" in the title)
+            # is the ONLY trustworthy number here. Scanning the page for any
+            # price picks up UVP, price history and related-product prices —
+            # an EOL set without offers yielded a 69,99 accessory as its
+            # "market price". No offers means no price.
             lowest = None
             title_el = soup.select_one("title")
             if title_el:
@@ -133,20 +137,7 @@ class BrickMergeScraper(BaseScraper):
                     lowest = _parse_de_price(ab_match.group(0))
 
             if lowest is None:
-                prices = []
-                for el in soup.find_all(string=re.compile(r"\d+[.,]\d{2}\s*€")):
-                    context = el.strip()
-                    # Savings amounts, UVP and "(x% unter UVP)" asides are not offer prices.
-                    if re.search(r"UVP|gespart|Ersparnis", context, re.I) or re.search(r"€\s*\(", context):
-                        continue
-                    price = _parse_de_price(context)
-                    if price is not None and 5.0 < price < 5000.0:
-                        prices.append(price)
-                if prices:
-                    lowest = min(prices)
-
-            if lowest is None:
-                logger.warning("brickmerge.no_prices", set_number=set_number)
+                logger.info("brickmerge.no_current_offers", set_number=set_number)
                 return None
 
             return ScrapedPrice(
