@@ -5,23 +5,23 @@ import re
 import structlog
 from bs4 import BeautifulSoup
 
-from app.scrapers.base import BaseScraper, ScrapedOffer, ScrapedPrice, ScrapedSetInfo
+from app.scrapers.base import (
+    MIN_PLAUSIBLE_SET_PRICE,
+    BaseScraper,
+    ScrapedOffer,
+    ScrapedPrice,
+    ScrapedSetInfo,
+    parse_de_price,
+)
 
 logger = structlog.get_logger()
 
 BASE_URL = "https://www.brickmerge.de"
 
 
-def _parse_de_price(text: str) -> float | None:
-    """Parse German-format prices like '1.234,56 €', '1499,99 €' or '234,56€'.
-
-    The lookbehind keeps the match from starting mid-number ('1499,99' must
-    never parse as 499.99).
-    """
-    match = re.search(r"(?<![\d.])(\d{1,3}(?:\.\d{3})+|\d+),(\d{2})\s*€", text)
-    if match:
-        return float(f"{match.group(1).replace('.', '')}.{match.group(2)}")
-    return None
+# Single shared implementation — three divergent copies of German price
+# parsing is exactly how the mid-number bug survived this long.
+_parse_de_price = parse_de_price
 
 
 class BrickMergeScraper(BaseScraper):
@@ -88,10 +88,12 @@ class BrickMergeScraper(BaseScraper):
                         theme = theme or h1_match.group(1).strip()
                         set_name = h1_match.group(2).strip()
 
-            # UVP extraction from page text
-            uvp_match = re.search(r"UVP\s*[:.]?\s*(\d+[.,]\d{2})\s*€", html)
+            # UVP extraction from page text (keyword-anchored, robust parsing)
+            uvp_match = re.search(r"UVP\s*[:.]?\s*[\d.,]+\s*€", html)
             if uvp_match:
-                uvp = float(uvp_match.group(1).replace(",", "."))
+                candidate = _parse_de_price(uvp_match.group(0))
+                if candidate is not None and candidate >= MIN_PLAUSIBLE_SET_PRICE:
+                    uvp = candidate
 
             # EOL status
             eol_status = None

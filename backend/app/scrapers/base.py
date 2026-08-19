@@ -2,6 +2,7 @@
 
 import asyncio
 import random
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -15,6 +16,23 @@ from app.config import settings
 from app.security.url_policy import validate_url_for_scraper
 
 logger = structlog.get_logger()
+
+# Minimum amount that can plausibly be a LEGO set price. Below this we are
+# looking at shipping, per-piece figures or loyalty points — every scraper
+# that grabbed "the first price on the page" got burned by exactly those.
+MIN_PLAUSIBLE_SET_PRICE = 5.0
+
+
+def parse_de_price(text: str) -> float | None:
+    """Parse a German-format price ('1.234,56 €', '129,99 €', '850 €').
+
+    The lookbehind prevents matches from starting mid-number, so '1499,99'
+    never parses as 499.99.
+    """
+    match = re.search(r"(?<![\d.])(\d{1,3}(?:\.\d{3})+|\d+)(?:,(\d{2}))?\s*€", text)
+    if not match:
+        return None
+    return float(f"{match.group(1).replace('.', '')}.{match.group(2) or '00'}")
 ua = UserAgent()
 
 

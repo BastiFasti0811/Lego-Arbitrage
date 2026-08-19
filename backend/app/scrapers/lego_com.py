@@ -5,11 +5,28 @@ import re
 import structlog
 from bs4 import BeautifulSoup
 
-from app.scrapers.base import BaseScraper, ScrapedPrice, ScrapedSetInfo
+from app.scrapers.base import MIN_PLAUSIBLE_SET_PRICE, BaseScraper, ScrapedPrice, ScrapedSetInfo, parse_de_price
 
 logger = structlog.get_logger()
 
 BASE_URL = "https://www.lego.com/de-de"
+
+
+def _extract_uvp(page_text: str) -> float | None:
+    """Pick the set's UVP out of a LEGO.com product page.
+
+    Taking the first price-like match wrote shipping costs and per-piece
+    figures into the database as UVP (0,40 € / 0,11 €), which then anchored
+    ROI calculations. Only amounts that can be a set price qualify; of those
+    the largest wins, since accessories and add-ons are always cheaper than
+    the set itself.
+    """
+    candidates = [
+        value
+        for match in re.finditer(r"(?<![\d.])(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{2})?\s*€", page_text)
+        if (value := parse_de_price(match.group(0))) is not None and value >= MIN_PLAUSIBLE_SET_PRICE
+    ]
+    return max(candidates) if candidates else None
 
 
 class LegoComScraper(BaseScraper):
@@ -74,9 +91,7 @@ class LegoComScraper(BaseScraper):
                 info.eol_status = "UNKNOWN"
 
             # Price from LEGO.com
-            price_match = re.search(r"(\d+[.,]\d{2})\s*€", page_text)
-            if price_match:
-                info.uvp_eur = float(price_match.group(1).replace(",", "."))
+            info.uvp_eur = _extract_uvp(page_text)
 
             # Piece count
             pieces_match = re.search(r"(\d[\d.]*)\s*(?:Teile|pieces|pcs)", page_text, re.I)

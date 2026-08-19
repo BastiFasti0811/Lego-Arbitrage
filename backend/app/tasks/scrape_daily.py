@@ -10,6 +10,7 @@ from app.engine.market_consensus import calculate_consensus
 from app.models import LegoSet, Offer, PriceRecord, WatchlistItem
 from app.models.base import async_session
 from app.scrapers import METADATA_SCRAPERS, OFFER_SCRAPERS, PRICE_SCRAPERS
+from app.scrapers.base import MIN_PLAUSIBLE_SET_PRICE
 from app.scrapers.kleinanzeigen import KleinanzeigenScraper
 from app.tasks.async_runner import run_async as _run_async
 from app.tasks.celery_app import celery_app
@@ -26,7 +27,9 @@ def _is_plausible_price(price_eur: float, uvp_eur: float | None) -> bool:
     Upward outliers are legitimate (EOL premiums), so only the lower bound is
     guarded.
     """
-    if not uvp_eur or uvp_eur <= 0:
+    # An implausible UVP is itself scraped data. Never let a corrupt anchor
+    # (0,40 € for a 35 € set was real) reject a correct price.
+    if not uvp_eur or uvp_eur < MIN_PLAUSIBLE_SET_PRICE:
         return True
     return price_eur >= uvp_eur * 0.20
 
