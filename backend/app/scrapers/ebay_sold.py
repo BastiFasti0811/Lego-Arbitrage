@@ -46,6 +46,62 @@ def _calculate_median(prices: list[float]) -> float:
     return filtered[n // 2] if n % 2 else (filtered[n // 2 - 1] + filtered[n // 2]) / 2
 
 
+def _is_challenge_page(html: str) -> bool:
+    """eBay bot wall (splashui challenge) instead of search results."""
+    return "splashui" in html or "entschuldigen Sie die St" in html
+
+
+def _extract_card_offers(soup: BeautifulSoup) -> list[dict]:
+    """Parse the current eBay results layout (li.s-card, 2026)."""
+    results = []
+    for card in soup.select("li.s-card"):
+        title_el = card.select_one(".s-card__title")
+        price_el = card.select_one(".s-card__price")
+        if not title_el or not price_el:
+            continue
+        price = _parse_ebay_price(price_el.get_text())
+        if not price or not 5.0 < price < 10000.0:
+            continue
+        text = card.get_text(" ", strip=True)
+        if re.search(r"\bAnzeige\b|SPONSORED", text):
+            continue
+        title = title_el.get_text(strip=True)
+        # eBays Template-/Platzhalterkarten tragen keinen echten Artikel.
+        if not title or "Shop on eBay" in title:
+            continue
+
+        link_el = card.select_one("a[href*='itm/']")
+        # Tracking-Query abschneiden — stabiler Upsert-Key über Laufzeiten hinweg.
+        href = (link_el.get("href", "") if link_el else "").split("?")[0]
+
+        if re.search(r"\bNeu\b|Brandneu", text):
+            condition = "NEW_SEALED"
+        elif re.search(r"Gebraucht", text, re.I):
+            condition = "USED_COMPLETE"
+        else:
+            condition = "UNKNOWN"
+
+        shipping = None
+        if re.search(r"[Kk]ostenlos\w*\s+(Versand|Lieferung)", text):
+            shipping = 0.0
+        else:
+            ship_match = re.search(r"(?:EUR|€)?\s*[\d.,]+\s*(?:EUR|€)?\s*Versand", text)
+            if ship_match:
+                shipping = _parse_ebay_price(ship_match.group(0))
+
+        results.append(
+            {
+                "title": title,
+                "price": price,
+                "url": href,
+                "condition": condition,
+                "is_auction": bool(re.search(r"Gebot", text)),
+                "shipping": shipping,
+            }
+        )
+    return results
+
+
 class EbaySoldScraper(BaseScraper):
     """Scrapes eBay.de for sold/completed listings.
 
@@ -105,6 +161,11 @@ class EbaySoldScraper(BaseScraper):
         Supports both old (.s-item) and new (ul.srp-results > li) eBay layouts.
         """
         prices = []
+
+        # Strategy 0: current layout (2026) — li.s-card cards
+        prices = [card["price"] for card in _extract_card_offers(soup)]
+        if prices:
+            return prices
 
         # Strategy 1: New eBay layout (2025+) — ul.srp-results > li
         ul = soup.select_one("ul.srp-results")
@@ -167,6 +228,9 @@ class EbaySoldScraper(BaseScraper):
             if len(prices) < 3:
                 logger.warning("ebay_sold.too_few_results", set_number=set_number, count=len(prices))
                 if not prices:
+                    if _is_challenge_page(html):
+                        logger.warning("ebay_sold.blocked", set_number=set_number)
+                        return await self._price_from_active_listings(set_number)
                     return None
 
             median = _calculate_median(prices)
@@ -186,6 +250,31 @@ class EbaySoldScraper(BaseScraper):
             logger.error("ebay_sold.price_failed", set_number=set_number, error=str(e))
             return None
 
+    async def _price_from_active_listings(self, set_number: str) -> ScrapedPrice | None:
+        """Fallback price signal while the sold search is bot-walled.
+
+        Median of current Buy-It-Now asking prices — weaker than sold data,
+        therefore never marked reliable.
+        """
+        url = self._build_active_url(set_number)
+        html = await self._fetch(url)
+        soup = BeautifulSoup(html, "lxml")
+        prices = [card["price"] for card in _extract_card_offers(soup)]
+        if len(prices) < 3:
+            return None
+        median = _calculate_median(prices)
+        return ScrapedPrice(
+            source="EBAY_ACTIVE",
+            price_eur=median,
+            median_price=median,
+            min_price=min(prices),
+            max_price=max(prices),
+            sold_count=len(prices),
+            source_url=url,
+            is_reliable=False,
+            notes=f"Fallback: Median aus {len(prices)} aktiven BIN-Listungen (Sold-Suche blockiert)",
+        )
+
     async def get_offers(self, set_number: str) -> list[ScrapedOffer]:
         """Get active eBay Buy It Now offers."""
         offers = []
@@ -194,6 +283,22 @@ class EbaySoldScraper(BaseScraper):
             html = await self._fetch(url)
             soup = BeautifulSoup(html, "lxml")
 
+            for card in _extract_card_offers(soup)[:20]:
+                offers.append(
+                    ScrapedOffer(
+                        platform="EBAY",
+                        offer_url=card["url"],
+                        offer_title=card["title"],
+                        price_eur=card["price"],
+                        shipping_eur=card["shipping"],
+                        condition=card["condition"],
+                        is_auction=card["is_auction"],
+                    )
+                )
+            if offers:
+                return offers
+
+            # Legacy layout fallback
             items = soup.select(".s-item, .srp-results .s-item__wrapper")
 
             for item in items[:20]:  # Max 20 offers
