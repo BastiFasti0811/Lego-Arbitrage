@@ -10,7 +10,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Install Python dependencies. Only pyproject.toml is in the context here, so
+# the lego-arbitrage dist ends up metadata-only and this large layer stays
+# cacheable; app.* is imported from the working tree copied below, never from
+# site-packages (alembic.ini's prepend_sys_path relies on this).
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir .[dev]

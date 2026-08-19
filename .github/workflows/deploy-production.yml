@@ -70,8 +70,16 @@ jobs:
           python -m compileall app
           python -m pytest
           python -m ruff check .
-          python -m alembic upgrade head
-          python -m alembic check
+          # Mimic the prod image for the migration check: there `app` exists
+          # only as a working-tree directory, never as an installed package,
+          # and alembic runs as a console script (deploy-prod.sh, compose run).
+          python -m pip uninstall --yes lego-arbitrage
+          if python -m pip show --quiet lego-arbitrage; then
+            echo "lego-arbitrage is still installed — prod-image mimicry is broken" >&2
+            exit 1
+          fi
+          alembic upgrade head
+          alembic check
 
       - name: Validate compose files
         run: |
