@@ -3,7 +3,7 @@
 from datetime import date, datetime
 from enum import StrEnum
 
-from sqlalchemy import Date, Float, Index, Integer, String, Text
+from sqlalchemy import Date, DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.domain.classification import categorize_release_year, set_age
@@ -74,7 +74,7 @@ class LegoSet(Base):
 
     # ── Cached Market Data ───────────────────────────────
     current_market_price: Mapped[float | None] = mapped_column(Float)
-    market_price_updated_at: Mapped[datetime | None] = mapped_column()
+    market_price_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     growth_percent: Mapped[float | None] = mapped_column(Float)  # Since release
 
     # ── Images ───────────────────────────────────────────

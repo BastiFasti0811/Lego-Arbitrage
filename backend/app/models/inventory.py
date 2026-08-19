@@ -3,7 +3,7 @@
 from datetime import date, datetime
 from enum import StrEnum
 
-from sqlalchemy import Boolean, Date, Float, Index, Integer, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -37,7 +37,7 @@ class InventoryItem(Base):
 
     # Current valuation (auto-updated by Celery)
     current_market_price: Mapped[float | None] = mapped_column(Float)
-    market_price_updated_at: Mapped[datetime | None] = mapped_column()
+    market_price_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     unrealized_profit: Mapped[float | None] = mapped_column(Float)
     unrealized_roi_percent: Mapped[float | None] = mapped_column(Float)
 

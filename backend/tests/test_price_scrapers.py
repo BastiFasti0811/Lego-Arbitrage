@@ -79,3 +79,29 @@ async def test_ebay_price_falls_back_to_active_when_sold_is_challenged(monkeypat
     assert price.is_reliable is False
     # Median der 6 echten Fixture-Listungen (450–650) — Platzhalter dürfen ihn nicht verzerren.
     assert 400.0 < price.price_eur < 600.0
+
+
+@pytest.mark.asyncio
+async def test_ebay_price_falls_back_when_sold_fetch_raises(monkeypatch):
+    # Die Wall leitet teils auf signin.ebay.de um und antwortet 403 — der
+    # Fallback muss auch greifen, wenn die Sold-Fetches per Exception sterben.
+    import httpx
+
+    active = _load("ebay_active_75192.html")
+
+    async def fake_fetch(self, url):
+        if "LH_BIN=1" in url:
+            return active
+        raise httpx.HTTPStatusError(
+            "403",
+            request=httpx.Request("GET", url),
+            response=httpx.Response(403, request=httpx.Request("GET", url)),
+        )
+
+    monkeypatch.setattr(EbaySoldScraper, "_fetch", fake_fetch)
+
+    async with EbaySoldScraper() as scraper:
+        price = await scraper.get_price("75192")
+
+    assert price is not None
+    assert price.source == "EBAY_ACTIVE"

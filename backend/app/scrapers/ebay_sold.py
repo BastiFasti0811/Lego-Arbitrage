@@ -202,50 +202,54 @@ class EbaySoldScraper(BaseScraper):
         return prices
 
     async def get_price(self, set_number: str) -> ScrapedPrice | None:
-        """Get market price from eBay sold items (median of last 60 days).
+        """Get market price from eBay sold items, falling back to active listings.
 
         Strategy:
-        1. First try "LEGO {set_number} neu versiegelt" (new sealed)
-        2. If too few results, retry with broader "LEGO {set_number}" search
+        1. Sold search narrow ("neu versiegelt"), then broad.
+        2. If the sold search yields nothing — challenge wall in any flavor,
+           signin redirect (403) or genuinely empty — use the median of
+           active BIN listings instead of giving up silently.
         """
+        prices: list[float] = []
+        html = ""
+        url = self._build_sold_url(set_number, broad=False)
+        search_type = "new_sealed"
         try:
-            # Attempt 1: Narrow search (new sealed)
-            url = self._build_sold_url(set_number, broad=False)
             html = await self._fetch(url)
-            soup = BeautifulSoup(html, "lxml")
-            prices = self._extract_sold_prices(soup)
-            search_type = "new_sealed"
+            prices = self._extract_sold_prices(BeautifulSoup(html, "lxml"))
 
-            # Attempt 2: Broad search if too few results
             if len(prices) < 3:
                 logger.info("ebay_sold.broadening_search", set_number=set_number, narrow_count=len(prices))
                 url = self._build_sold_url(set_number, broad=True)
                 html = await self._fetch(url)
-                soup = BeautifulSoup(html, "lxml")
-                prices = self._extract_sold_prices(soup)
+                prices = self._extract_sold_prices(BeautifulSoup(html, "lxml"))
                 search_type = "all_conditions"
+        except Exception as e:
+            logger.warning("ebay_sold.sold_search_failed", set_number=set_number, error=str(e)[:160])
 
+        if prices:
             if len(prices) < 3:
                 logger.warning("ebay_sold.too_few_results", set_number=set_number, count=len(prices))
-                if not prices:
-                    if _is_challenge_page(html):
-                        logger.warning("ebay_sold.blocked", set_number=set_number)
-                        return await self._price_from_active_listings(set_number)
-                    return None
-
             median = _calculate_median(prices)
-
             return ScrapedPrice(
                 source="EBAY_SOLD",
                 price_eur=median,
                 median_price=median,
-                min_price=min(prices) if prices else None,
-                max_price=max(prices) if prices else None,
+                min_price=min(prices),
+                max_price=max(prices),
                 sold_count=len(prices),
                 source_url=url,
                 is_reliable=len(prices) >= 5,
                 notes=f"Median from {len(prices)} sold items ({search_type}, outliers filtered)",
             )
+
+        if html and _is_challenge_page(html):
+            logger.warning("ebay_sold.blocked", set_number=set_number)
+        else:
+            logger.warning("ebay_sold.no_sold_results", set_number=set_number)
+
+        try:
+            return await self._price_from_active_listings(set_number)
         except Exception as e:
             logger.error("ebay_sold.price_failed", set_number=set_number, error=str(e))
             return None
