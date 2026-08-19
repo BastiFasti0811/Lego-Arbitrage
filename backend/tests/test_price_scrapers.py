@@ -2,8 +2,17 @@ from pathlib import Path
 
 import pytest
 
-from app.scrapers.brickmerge import BrickMergeScraper
+from app.scrapers.brickmerge import BrickMergeScraper, _parse_de_price
 from app.scrapers.ebay_sold import EbaySoldScraper
+
+
+def test_brickmerge_de_price_never_matches_mid_number():
+    # Review-Finding F6: '1499,99 €' ohne Tausenderpunkt wurde als 499.99
+    # geparst (Match mitten in der Zahl) und verfälschte den Konsens.
+    assert _parse_de_price("701,36 €") == 701.36
+    assert _parse_de_price("1.499,99 €") == 1499.99
+    assert _parse_de_price("1499,99 €") == 1499.99
+    assert _parse_de_price("kein Preis") is None
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

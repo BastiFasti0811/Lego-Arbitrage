@@ -13,10 +13,14 @@ BASE_URL = "https://www.brickmerge.de"
 
 
 def _parse_de_price(text: str) -> float | None:
-    """Parse German-format prices like '1.234,56 €' or '234,56€'."""
-    match = re.search(r"(\d{1,3}(?:\.\d{3})*,\d{2})\s*€", text)
+    """Parse German-format prices like '1.234,56 €', '1499,99 €' or '234,56€'.
+
+    The lookbehind keeps the match from starting mid-number ('1499,99' must
+    never parse as 499.99).
+    """
+    match = re.search(r"(?<![\d.])(\d{1,3}(?:\.\d{3})+|\d+),(\d{2})\s*€", text)
     if match:
-        return float(match.group(1).replace(".", "").replace(",", "."))
+        return float(f"{match.group(1).replace('.', '')}.{match.group(2)}")
     return None
 
 
@@ -124,7 +128,7 @@ class BrickMergeScraper(BaseScraper):
             lowest = None
             title_el = soup.select_one("title")
             if title_el:
-                ab_match = re.search(r"ab\s+(\d{1,3}(?:\.\d{3})*,\d{2})\s*€", title_el.get_text())
+                ab_match = re.search(r"ab\s+[\d.,]+\s*€", title_el.get_text())
                 if ab_match:
                     lowest = _parse_de_price(ab_match.group(0))
 

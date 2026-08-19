@@ -2,6 +2,7 @@
 
 import re
 
+import httpx
 import structlog
 from bs4 import BeautifulSoup
 
@@ -13,15 +14,17 @@ BASE_URL = "https://www.kleinanzeigen.de"
 
 
 def _parse_ka_price(text: str) -> float | None:
-    """Parse Kleinanzeigen price: '850 €', '1.200 € VB'."""
-    match = re.search(r"([\d.]+)\s*€", text.replace(",", "."))
-    if match:
-        return float(match.group(1).replace(".", ""))
-    # Handle decimal: 850,00
-    match = re.search(r"([\d.]+,\d{2})\s*€", text)
-    if match:
-        return float(match.group(1).replace(".", "").replace(",", "."))
-    return None
+    """Parse Kleinanzeigen prices: '850 €', '1.200 € VB', '129,99 €'.
+
+    German format only — comma is the decimal separator, dot the thousands
+    separator. The lookbehind stops matches from starting mid-number.
+    """
+    match = re.search(r"(?<![\d.])(\d{1,3}(?:\.\d{3})+|\d+)(?:,(\d{2}))?\s*€", text)
+    if not match:
+        return None
+    euros = match.group(1).replace(".", "")
+    cents = match.group(2) or "00"
+    return float(f"{euros}.{cents}")
 
 
 class KleinanzeigenScraper(BaseScraper):
@@ -158,7 +161,9 @@ class KleinanzeigenScraper(BaseScraper):
                     if not link_el:
                         link_el = title_el if title_el.name == "a" else title_el.find_parent("a")
                     href = link_el.get("href", "") if link_el else ""
-                    offer_url = href if href.startswith("http") else f"{BASE_URL}{href}"
+                    # Leerer Link ergäbe die Host-Konstante als Upsert-Key — lieber
+                    # leer lassen, der Upsert überspringt Offers ohne URL.
+                    offer_url = href if href.startswith("http") else (f"{BASE_URL}{href}" if href else "")
 
                     # Location
                     location_el = item.select_one(
@@ -183,6 +188,12 @@ class KleinanzeigenScraper(BaseScraper):
                 except Exception:
                     continue
 
+        except httpx.HTTPStatusError as e:
+            # 403/429 muss nach oben — die 2h-Lane bricht darauf ab, statt den
+            # blockenden Host über alle Watchlist-Sets weiter zu hämmern.
+            if e.response.status_code in (403, 429):
+                raise
+            logger.error("kleinanzeigen.offers_failed", set_number=set_number, error=str(e))
         except Exception as e:
             logger.error("kleinanzeigen.offers_failed", set_number=set_number, error=str(e))
 

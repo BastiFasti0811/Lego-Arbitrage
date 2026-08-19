@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 import httpx
 import structlog
 from fake_useragent import UserAgent
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from app.config import settings
 from app.security.url_policy import validate_url_for_scraper
@@ -117,6 +117,11 @@ class BaseScraper(ABC):
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=30),
+        retry=retry_if_exception(
+            # Harte Bot-Blocks nie wiederholen — ein 403/429 soll den Druck
+            # senken, nicht verdreifachen.
+            lambda e: not (isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (403, 429))
+        ),
         reraise=True,
     )
     async def _fetch(self, url: str) -> str:
