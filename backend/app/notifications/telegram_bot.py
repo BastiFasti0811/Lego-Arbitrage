@@ -4,6 +4,8 @@ Sends alerts when profitable deals are found.
 Supports inline buttons for quick actions.
 """
 
+import re
+
 import structlog
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
@@ -234,6 +236,16 @@ async def send_auction_discovery_summary(discovered: list[dict]) -> bool:
         return False
 
 
+def _sanitize_markdown(text: str) -> str:
+    """Strip Telegram-Markdown control chars from untrusted detail strings.
+
+    A single unpaired underscore in a task detail made the whole consolidated
+    health alert fail with 400 — and because the re-alert throttle only burns
+    after a successful send, it failed identically every hour.
+    """
+    return re.sub(r"[_*`\[\]]", " ", text)
+
+
 async def send_pipeline_health_alert(problems: list[dict]) -> bool:
     """Alert when scheduled pipeline tasks are stale or failing.
 
@@ -257,7 +269,7 @@ async def send_pipeline_health_alert(problems: list[dict]) -> bool:
         lines.append(f"{emoji} `{short_name}` — {p.get('status')}{age_text}")
         detail = p.get("detail")
         if detail:
-            lines.append(f"   ↳ {str(detail)[:120]}")
+            lines.append(f"   ↳ {_sanitize_markdown(str(detail)[:120])}")
 
     try:
         bot = Bot(token=bot_token)

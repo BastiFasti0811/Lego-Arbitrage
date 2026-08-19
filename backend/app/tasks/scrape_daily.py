@@ -194,6 +194,10 @@ async def _upsert_offers(session, lego_set: LegoSet, offers, now: datetime) -> i
 
     count = 0
     for offer in offers:
+        # Ohne URL gibt es keinen stabilen Upsert-Key — solche Zeilen würden
+        # jede Runde neu inseriert und nie wieder aktualisiert.
+        if not offer.offer_url:
+            continue
         existing_offer = existing_by_key.get((offer.platform, offer.offer_url))
 
         if existing_offer:

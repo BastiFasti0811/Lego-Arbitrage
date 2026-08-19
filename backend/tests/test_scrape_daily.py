@@ -100,6 +100,34 @@ class _FakeKleinanzeigenScraper:
 
 
 @pytest.mark.asyncio
+async def test_upsert_skips_offers_without_url(monkeypatch):
+    # Review-Finding F7: Offers ohne Link unterlaufen den (platform, url)-
+    # Upsert-Key und würden jede Runde neu inseriert — für immer.
+    class _NoRowsResult:
+        def scalars(self):
+            return _FakeScalars([])
+
+    class _RecordingSession:
+        def __init__(self):
+            self.added = []
+
+        async def execute(self, _query):
+            return _NoRowsResult()
+
+        def add(self, obj):
+            self.added.append(obj)
+
+    from datetime import UTC, datetime
+
+    session = _RecordingSession()
+    offers = [SimpleNamespace(offer_url="", platform="EBAY")]
+    count = await scrape_daily._upsert_offers(session, SimpleNamespace(id=1), offers, datetime.now(UTC))
+
+    assert count == 0
+    assert session.added == []
+
+
+@pytest.mark.asyncio
 async def test_kleinanzeigen_lane_upserts_offers_per_watched_set(monkeypatch):
     import httpx  # noqa: F401 — ensures parity with abort test imports
 
