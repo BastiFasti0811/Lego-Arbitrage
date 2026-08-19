@@ -12,6 +12,14 @@ logger = structlog.get_logger()
 BASE_URL = "https://www.brickmerge.de"
 
 
+def _parse_de_price(text: str) -> float | None:
+    """Parse German-format prices like '1.234,56 €' or '234,56€'."""
+    match = re.search(r"(\d{1,3}(?:\.\d{3})*,\d{2})\s*€", text)
+    if match:
+        return float(match.group(1).replace(".", "").replace(",", "."))
+    return None
+
+
 class BrickMergeScraper(BaseScraper):
     """Scrapes BrickMerge.de for German retail LEGO prices.
 
@@ -20,8 +28,15 @@ class BrickMergeScraper(BaseScraper):
     """
 
     async def _fetch_detail_page(self, set_number: str) -> str:
-        """Fetch BrickMerge detail page using ?find= redirect (avoids compression issues)."""
+        """Fetch a BrickMerge detail page via the ?find= redirect.
+
+        Canonical fetch for ALL BrickMerge pages: the shared client receives
+        the body undecoded (compression mismatch), so this client forces
+        Accept-Encoding: identity.
+        """
         import httpx
+
+        await self._delay()
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept-Encoding": "identity",
@@ -102,31 +117,39 @@ class BrickMergeScraper(BaseScraper):
     async def get_price(self, set_number: str) -> ScrapedPrice | None:
         """Get lowest current retail price from BrickMerge."""
         try:
-            html = await self._fetch(f"{BASE_URL}/?sn={set_number}")
+            html = await self._fetch_detail_page(set_number)
             soup = BeautifulSoup(html, "lxml")
 
-            # Find price elements — BrickMerge shows shop prices
-            prices = []
-            # Look for price patterns in the page
-            price_elements = soup.find_all(string=re.compile(r"\d+[.,]\d{2}\s*€"))
-            for el in price_elements:
-                match = re.search(r"(\d+[.,]\d{2})\s*€", el)
-                if match:
-                    price = float(match.group(1).replace(",", "."))
-                    if 5.0 < price < 5000.0:  # Sanity check
-                        prices.append(price)
+            # Primary: BrickMerge's own best price ("ab X,XX €" in the title).
+            lowest = None
+            title_el = soup.select_one("title")
+            if title_el:
+                ab_match = re.search(r"ab\s+(\d{1,3}(?:\.\d{3})*,\d{2})\s*€", title_el.get_text())
+                if ab_match:
+                    lowest = _parse_de_price(ab_match.group(0))
 
-            if not prices:
+            if lowest is None:
+                prices = []
+                for el in soup.find_all(string=re.compile(r"\d+[.,]\d{2}\s*€")):
+                    context = el.strip()
+                    # Savings amounts, UVP and "(x% unter UVP)" asides are not offer prices.
+                    if re.search(r"UVP|gespart|Ersparnis", context, re.I) or re.search(r"€\s*\(", context):
+                        continue
+                    price = _parse_de_price(context)
+                    if price is not None and 5.0 < price < 5000.0:
+                        prices.append(price)
+                if prices:
+                    lowest = min(prices)
+
+            if lowest is None:
                 logger.warning("brickmerge.no_prices", set_number=set_number)
                 return None
-
-            lowest = min(prices)
 
             return ScrapedPrice(
                 source="BRICKMERGE",
                 price_eur=lowest,
-                source_url=f"{BASE_URL}/?sn={set_number}",
-                notes=f"Lowest of {len(prices)} shop prices",
+                source_url=f"{BASE_URL}/?find={set_number}",
+                notes="BrickMerge Bestpreis (ab-Preis der Detailseite)",
             )
         except Exception as e:
             logger.error("brickmerge.price_failed", set_number=set_number, error=str(e))
@@ -136,7 +159,7 @@ class BrickMergeScraper(BaseScraper):
         """Get all shop offers from BrickMerge for a set."""
         offers = []
         try:
-            html = await self._fetch(f"{BASE_URL}/?sn={set_number}")
+            html = await self._fetch_detail_page(set_number)
             soup = BeautifulSoup(html, "lxml")
 
             # Find shop offer rows/cards
@@ -184,7 +207,7 @@ class BrickMergeScraper(BaseScraper):
     async def get_price_history(self, set_number: str) -> list[dict] | None:
         """Get historical price data from BrickMerge for trend analysis."""
         try:
-            html = await self._fetch(f"{BASE_URL}/?sn={set_number}")
+            html = await self._fetch_detail_page(set_number)
             soup = BeautifulSoup(html, "lxml")
 
             history = []
