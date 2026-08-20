@@ -62,17 +62,29 @@ fi
 exit 0
 STUB
 
-  chmod +x "${SANDBOX}/bin/git" "${SANDBOX}/bin/docker"
+  # The flock stub makes the lock path testable on systems without a real
+  # flock (e.g. Git Bash); FLOCK_BUSY=1 simulates a lock held by another run.
+  cat > "${SANDBOX}/bin/flock" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${FLOCK_BUSY:-0}" == "1" ]]; then
+  exit 1
+fi
+exit 0
+STUB
+
+  chmod +x "${SANDBOX}/bin/git" "${SANDBOX}/bin/docker" "${SANDBOX}/bin/flock"
 }
 
-run_deploy() { # usage: run_deploy [migration_fail] [build_fail]
-  local migration_fail="${1:-0}" build_fail="${2:-0}"
+run_deploy() { # usage: run_deploy [migration_fail] [build_fail] [flock_busy]
+  local migration_fail="${1:-0}" build_fail="${2:-0}" flock_busy="${3:-0}"
   DEPLOY_RC=0
   (
     cd "${SANDBOX}/repo"
     export PATH="${SANDBOX}/bin:${PATH}"
     export CALL_LOG
     export MIGRATION_FAIL="${migration_fail}" BUILD_FAIL="${build_fail}"
+    export FLOCK_BUSY="${flock_busy}"
+    export LOCK_FILE="${SANDBOX}/deploy.lock"
     bash scripts/deploy-prod.sh
   ) > "${SANDBOX}/stdout.log" 2> "${SANDBOX}/stderr.log" || DEPLOY_RC=$?
 }
@@ -159,6 +171,22 @@ assert_called "${BUILD_CALL}"
 assert_not_called "alembic upgrade head"
 assert_not_called " up -d"
 assert_not_called "docker exec lego-api-prod"
+
+# --- Test 4: held deploy lock aborts before any action ----------------------
+
+CURRENT_TEST="failure: held deploy lock aborts before any git/docker call"
+make_sandbox t4
+run_deploy 0 0 1
+
+if [[ "${DEPLOY_RC}" -eq 0 ]]; then
+  fail "expected non-zero exit when the deploy lock is held"
+fi
+if [[ -s "${CALL_LOG}" ]]; then
+  fail "expected no git/docker calls, got: $(tr '\n' '; ' < "${CALL_LOG}")"
+fi
+if ! grep -qi "another deploy" "${SANDBOX}/stderr.log"; then
+  fail "expected an 'another deploy' message on stderr"
+fi
 
 # --- Result -----------------------------------------------------------------
 
