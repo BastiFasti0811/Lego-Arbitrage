@@ -101,3 +101,42 @@ def test_unreliable_source_is_included_but_flags_the_consensus():
     assert "EBAY_ACTIVE" in result.source_prices
     assert result.num_sources == 2
     assert result.is_reliable is False
+
+
+@pytest.mark.asyncio
+async def test_two_source_consensus_is_persisted_even_if_one_source_is_soft(monkeypatch):
+    # Produktionsbefund: mit BRICKMERGE + EBAY_ACTIVE (unsicher) wurde NIE ein
+    # Marktpreis geschrieben — die Sperre auf is_reliable war zu grob und haette
+    # current_market_price dauerhaft leer gelassen.
+    from types import SimpleNamespace
+
+    lego_set = SimpleNamespace(id=1, set_number="42143", uvp_eur=None, current_market_price=None,
+                               market_price_updated_at=None)
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def execute(self, _q):
+            return SimpleNamespace(scalar_one_or_none=lambda: lego_set)
+
+        def add(self, _obj):
+            pass
+
+        async def commit(self):
+            pass
+
+    reliable = ScrapedPrice(source="BRICKMERGE", price_eur=376.99)
+    soft = ScrapedPrice(source="EBAY_ACTIVE", price_eur=390.0, is_reliable=False)
+
+    monkeypatch.setattr(scrape_daily, "async_session", lambda: _Session())
+    monkeypatch.setattr(scrape_daily, "PRICE_SCRAPERS", [lambda: _Scraper(reliable), lambda: _Scraper(soft)])
+    monkeypatch.setattr(scrape_daily, "METADATA_SCRAPERS", [])
+    monkeypatch.setattr(scrape_daily, "OFFER_SCRAPERS", [])
+
+    await scrape_daily._scrape_set_prices_async("42143")
+
+    assert lego_set.current_market_price is not None

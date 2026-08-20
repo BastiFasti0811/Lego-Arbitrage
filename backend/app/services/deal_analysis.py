@@ -227,7 +227,8 @@ class SqlAlchemyAnalysisRepository:
         # Nur belastbare Konsenswerte werden zum gespeicherten Marktpreis —
         # dieselbe Regel wie im Scrape-Pfad, sonst schreibt der Deal-Checker
         # einen Ein-Quellen-Schaetzwert als Fakt in die Stammdaten.
-        if analysis.market_consensus.consensus_price > 0 and analysis.market_consensus.is_reliable:
+        consensus = analysis.market_consensus
+        if consensus.consensus_price > 0 and consensus.num_sources >= 2 and consensus.divergence_percent <= 0.30:
             from datetime import UTC, datetime
 
             lego_set.current_market_price = analysis.market_consensus.consensus_price

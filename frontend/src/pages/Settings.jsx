@@ -81,7 +81,27 @@ function isTruthy(value) {
   return String(value).toLowerCase() === "true";
 }
 
-function SettingsField({ field, sectionEnabled, values, dirtyValues, onChange }) {
+function EyeIcon({ open }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4"
+      aria-hidden="true"
+    >
+      <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" />
+      <circle cx="12" cy="12" r="3" />
+      {!open && <line x1="4" y1="20" x2="20" y2="4" />}
+    </svg>
+  );
+}
+
+function SettingsField({ field, sectionEnabled, values, dirtyValues, onChange, revealed, onToggleReveal }) {
   const currentValue =
     dirtyValues[field.key] !== undefined ? dirtyValues[field.key] : values[field.key] ?? "";
 
@@ -121,25 +141,50 @@ function SettingsField({ field, sectionEnabled, values, dirtyValues, onChange })
     );
   }
 
+  const isSecret = field.type === "password";
+
   return (
     <div>
       <label className="block text-sm font-medium text-text-secondary mb-1.5">{field.label}</label>
-      <input
-        type={field.type}
-        disabled={!sectionEnabled}
-        value={currentValue}
-        onChange={(event) => onChange(field.key, event.target.value)}
-        placeholder={!sectionEnabled ? "Deaktiviert" : ""}
-        className={`w-full px-3 py-2 rounded-lg border text-sm transition-colors
-          bg-bg-primary border-border text-text-primary placeholder-text-muted
-          focus:outline-none focus:ring-2 focus:ring-lego-yellow/50 focus:border-lego-yellow
-          ${!sectionEnabled ? "opacity-50 cursor-not-allowed" : ""}`}
-      />
+      <div className="relative">
+        <input
+          type={isSecret && !revealed ? "password" : "text"}
+          disabled={!sectionEnabled}
+          value={currentValue}
+          onChange={(event) => onChange(field.key, event.target.value)}
+          placeholder={!sectionEnabled ? "Deaktiviert" : ""}
+          className={`w-full px-3 py-2 rounded-lg border text-sm transition-colors
+            bg-bg-primary border-border text-text-primary placeholder-text-muted
+            focus:outline-none focus:ring-2 focus:ring-lego-yellow/50 focus:border-lego-yellow
+            ${isSecret ? "pr-11" : ""}
+            ${!sectionEnabled ? "opacity-50 cursor-not-allowed" : ""}`}
+        />
+        {isSecret && (
+          <button
+            type="button"
+            onClick={() => onToggleReveal(field.key)}
+            disabled={!sectionEnabled}
+            aria-label={revealed ? `${field.label} verbergen` : `${field.label} anzeigen`}
+            title={revealed ? "Verbergen" : "Anzeigen"}
+            className={`absolute inset-y-0 right-0 flex items-center px-3 text-text-muted
+              hover:text-text-primary transition-colors
+              ${!sectionEnabled ? "opacity-50 cursor-not-allowed" : ""}`}
+          >
+            <EyeIcon open={revealed} />
+          </button>
+        )}
+      </div>
+      {isSecret && revealed && currentValue ? (
+        <p className="mt-1 text-xs text-text-muted">
+          {currentValue.length} Zeichen
+          {/\s/.test(currentValue) ? " — enthaelt Leerzeichen!" : ""}
+        </p>
+      ) : null}
     </div>
   );
 }
 
-function SettingsCard({ section, values, dirtyValues, onChange }) {
+function SettingsCard({ section, values, dirtyValues, onChange, revealedKeys, onToggleReveal }) {
   return (
     <div className="bg-bg-card rounded-xl border border-border p-6">
       <div className="flex items-center gap-3 mb-4">
@@ -160,6 +205,8 @@ function SettingsCard({ section, values, dirtyValues, onChange }) {
             values={values}
             dirtyValues={dirtyValues}
             onChange={onChange}
+            revealed={Boolean(revealedKeys[field.key])}
+            onToggleReveal={onToggleReveal}
           />
         ))}
       </div>
@@ -171,6 +218,10 @@ export default function Settings() {
   const queryClient = useQueryClient();
   const [dirtyValues, setDirtyValues] = useState({});
   const [telegramStatus, setTelegramStatus] = useState(null);
+  const [revealedKeys, setRevealedKeys] = useState({});
+
+  const handleToggleReveal = (key) =>
+    setRevealedKeys((previous) => ({ ...previous, [key]: !previous[key] }));
 
   const { data: settings, isLoading } = useQuery({
     queryKey: ["settings"],
@@ -251,6 +302,8 @@ export default function Settings() {
               values={values}
               dirtyValues={dirtyValues}
               onChange={handleChange}
+              revealedKeys={revealedKeys}
+              onToggleReveal={handleToggleReveal}
             />
 
             {section.category === "telegram" && (

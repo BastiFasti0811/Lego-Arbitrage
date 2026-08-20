@@ -19,6 +19,15 @@ from app.tasks.celery_app import celery_app
 logger = structlog.get_logger()
 
 
+def _is_persistable(consensus) -> bool:
+    """Whether a consensus is solid enough to store as the set's market price.
+
+    Two independent sources that broadly agree. A single source is a guess,
+    and extreme divergence means we do not know which source to believe.
+    """
+    return consensus.num_sources >= 2 and consensus.divergence_percent <= 0.30
+
+
 def _apply_set_info(lego_set: LegoSet, info, *, overwrite_uvp: bool = False) -> bool:
     """Merge scraped metadata into a set record."""
     changed = False
@@ -143,11 +152,12 @@ async def _scrape_set_prices_async(set_number: str) -> dict:
 
         if scraped_prices:
             consensus = calculate_consensus(scraped_prices)
-            # Ein Konsens aus einer Quelle ist ausdruecklich als unsicher
-            # markiert. Gespeichert wuerde er zum gesicherten Marktpreis, an
-            # dem ROI und Bestandsbewertung rechnen — lieber kein Wert als ein
-            # scheingenauer.
-            if consensus.consensus_price > 0 and consensus.is_reliable:
+            # Gespeichert wird nur ein Konsens, der von mehr als einer Quelle
+            # getragen wird und deren Spanne nicht auseinanderlaeuft. Auf
+            # is_reliable zu sperren war zu grob: der EBAY_ACTIVE-Fallback
+            # markiert jeden Konsens als unsicher, wodurch ueberhaupt kein
+            # Marktpreis mehr geschrieben wurde.
+            if consensus.consensus_price > 0 and _is_persistable(consensus):
                 lego_set.current_market_price = consensus.consensus_price
                 lego_set.market_price_updated_at = now
             elif consensus.consensus_price > 0:

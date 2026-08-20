@@ -102,7 +102,7 @@ async def _update_valuations_async() -> dict:
                 consensus = calculate_consensus(prices)
                 if consensus.consensus_price <= 0:
                     continue
-                if not consensus.is_reliable:
+                if consensus.num_sources < 2 or consensus.divergence_percent > 0.30:
                     # Ein Ein-Quellen-Schaetzwert wuerde hier zu unrealized_profit
                     # und Verkaufssignalen des gehaltenen Bestands gerinnen.
                     logger.info(
