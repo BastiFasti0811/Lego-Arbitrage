@@ -81,6 +81,30 @@ function isTruthy(value) {
   return String(value).toLowerCase() === "true";
 }
 
+// Gespeicherte Secrets kommen maskiert vom Server — Laenge, unsichtbare Zeichen
+// und die letzten vier Stellen liefert er als Metadaten mit, damit man einen
+// falsch eingefuegten Token erkennt, ohne ihn uebertragen zu muessen.
+const INVISIBLE_RE = /[\s\u200b-\u200d\u00ad\ufeff]/;
+
+function describeValue({ field, isDirty, currentValue, meta }) {
+  if (isDirty) {
+    if (!currentValue) return null;
+    const bad = INVISIBLE_RE.test(currentValue);
+    return {
+      text: `${currentValue.length} Zeichen${bad ? " — enthaelt Leer-/Sonderzeichen!" : ""}`,
+      warn: bad,
+    };
+  }
+  if (!meta || !meta.value_length) return null;
+  const tail = field.type === "password" && meta.value_tail ? `, endet auf …${meta.value_tail}` : "";
+  return {
+    text: `gespeichert: ${meta.value_length} Zeichen${tail}${
+      meta.has_whitespace ? " — enthaelt Leer-/Sonderzeichen!" : ""
+    }`,
+    warn: Boolean(meta.has_whitespace),
+  };
+}
+
 function EyeIcon({ open }) {
   return (
     <svg
@@ -101,7 +125,7 @@ function EyeIcon({ open }) {
   );
 }
 
-function SettingsField({ field, sectionEnabled, values, dirtyValues, onChange, revealed, onToggleReveal }) {
+function SettingsField({ field, sectionEnabled, values, dirtyValues, onChange, revealed, onToggleReveal, meta }) {
   const currentValue =
     dirtyValues[field.key] !== undefined ? dirtyValues[field.key] : values[field.key] ?? "";
 
@@ -142,6 +166,8 @@ function SettingsField({ field, sectionEnabled, values, dirtyValues, onChange, r
   }
 
   const isSecret = field.type === "password";
+  const isDirty = dirtyValues[field.key] !== undefined;
+  const hint = describeValue({ field, isDirty, currentValue, meta });
 
   return (
     <div>
@@ -153,6 +179,11 @@ function SettingsField({ field, sectionEnabled, values, dirtyValues, onChange, r
           value={currentValue}
           onChange={(event) => onChange(field.key, event.target.value)}
           placeholder={!sectionEnabled ? "Deaktiviert" : ""}
+          autoComplete="off"
+          spellCheck={false}
+          autoCorrect="off"
+          autoCapitalize="off"
+          aria-describedby={hint ? `${field.key}-hint` : undefined}
           className={`w-full px-3 py-2 rounded-lg border text-sm transition-colors
             bg-bg-primary border-border text-text-primary placeholder-text-muted
             focus:outline-none focus:ring-2 focus:ring-lego-yellow/50 focus:border-lego-yellow
@@ -165,6 +196,7 @@ function SettingsField({ field, sectionEnabled, values, dirtyValues, onChange, r
             onClick={() => onToggleReveal(field.key)}
             disabled={!sectionEnabled}
             aria-label={revealed ? `${field.label} verbergen` : `${field.label} anzeigen`}
+            aria-pressed={revealed}
             title={revealed ? "Verbergen" : "Anzeigen"}
             className={`absolute inset-y-0 right-0 flex items-center px-3 text-text-muted
               hover:text-text-primary transition-colors
@@ -174,17 +206,19 @@ function SettingsField({ field, sectionEnabled, values, dirtyValues, onChange, r
           </button>
         )}
       </div>
-      {isSecret && revealed && currentValue ? (
-        <p className="mt-1 text-xs text-text-muted">
-          {currentValue.length} Zeichen
-          {/\s/.test(currentValue) ? " — enthaelt Leerzeichen!" : ""}
+      {hint ? (
+        <p
+          id={`${field.key}-hint`}
+          className={`mt-1 text-xs ${hint.warn ? "text-lego-red" : "text-text-muted"}`}
+        >
+          {hint.text}
         </p>
       ) : null}
     </div>
   );
 }
 
-function SettingsCard({ section, values, dirtyValues, onChange, revealedKeys, onToggleReveal }) {
+function SettingsCard({ section, values, dirtyValues, onChange, revealedKeys, onToggleReveal, metaByKey }) {
   return (
     <div className="bg-bg-card rounded-xl border border-border p-6">
       <div className="flex items-center gap-3 mb-4">
@@ -207,6 +241,7 @@ function SettingsCard({ section, values, dirtyValues, onChange, revealedKeys, on
             onChange={onChange}
             revealed={Boolean(revealedKeys[field.key])}
             onToggleReveal={onToggleReveal}
+            meta={metaByKey[field.key]}
           />
         ))}
       </div>
@@ -230,9 +265,11 @@ export default function Settings() {
   });
 
   const values = {};
+  const metaByKey = {};
   if (settings) {
     for (const setting of settings) {
       values[setting.key] = setting.value;
+      metaByKey[setting.key] = setting;
     }
   }
 
@@ -241,6 +278,7 @@ export default function Settings() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["settings"] });
       setDirtyValues({});
+      setRevealedKeys({});
     },
   });
 
@@ -304,6 +342,7 @@ export default function Settings() {
               onChange={handleChange}
               revealedKeys={revealedKeys}
               onToggleReveal={handleToggleReveal}
+              metaByKey={metaByKey}
             />
 
             {section.category === "telegram" && (

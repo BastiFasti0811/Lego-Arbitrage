@@ -1,5 +1,7 @@
 """Settings API for DB-backed runtime configuration."""
 
+import re
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -16,6 +18,24 @@ DEFAULT_USER_AGENT = (
 )
 
 
+# Whitespace plus the invisible characters that come along when a token is
+# copied out of a rendered page or a chat client.
+_INVISIBLE_RE = re.compile(r"[\s​-‍­﻿]")
+
+
+def describe_stored_value(value: str | None) -> tuple[int, bool, str]:
+    """Describe a secret without transporting it: length, whitespace, last four.
+
+    Secrets are masked on the way out, so the UI cannot tell a 46-character
+    token from a pasted bot name — the stored Telegram credentials were wrong
+    in exactly that invisible way. These three facts identify a value without
+    sending it over an unencrypted connection.
+    """
+    if not value:
+        return 0, False, ""
+    return len(value), bool(_INVISIBLE_RE.search(value)), value[-4:]
+
+
 class SettingResponse(BaseModel):
     key: str
     value: str | None
@@ -23,6 +43,9 @@ class SettingResponse(BaseModel):
     category: str
     label: str | None
     description: str | None
+    value_length: int = 0
+    has_whitespace: bool = False
+    value_tail: str = ""
 
     model_config = {"from_attributes": True}
 
@@ -197,8 +220,12 @@ async def list_settings(category: str | None = None, session: AsyncSession = Dep
         if category and setting.category != category:
             continue
         setting_response = SettingResponse.model_validate(setting)
+        length, has_whitespace, tail = describe_stored_value(setting.value)
+        setting_response.value_length = length
+        setting_response.has_whitespace = has_whitespace
         if setting.is_secret and setting.value:
             setting_response.value = SECRET_MASK
+            setting_response.value_tail = tail
         response.append(setting_response)
 
     return response

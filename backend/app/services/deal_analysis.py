@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Protocol
 
 import structlog
@@ -11,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.metadata import merge_set_info, needs_metadata_retry
 from app.domain.platforms import detect_source_platform
 from app.engine.decision_engine import AnalysisResult, analyze_deal
+from app.engine.market_consensus import is_persistable_consensus
 from app.models import DealFeedback, LegoSet
 from app.scrapers import (
     METADATA_SCRAPERS,
@@ -200,8 +202,11 @@ class SqlAlchemyAnalysisRepository:
                 eol_status=eol_status,
                 current_market_price=(
                     analysis.market_consensus.consensus_price
-                    if analysis.market_consensus.consensus_price > 0
+                    if is_persistable_consensus(analysis.market_consensus)
                     else None
+                ),
+                market_price_updated_at=(
+                    datetime.now(UTC) if is_persistable_consensus(analysis.market_consensus) else None
                 ),
             )
             if lego_set.release_year:
@@ -227,10 +232,7 @@ class SqlAlchemyAnalysisRepository:
         # Nur belastbare Konsenswerte werden zum gespeicherten Marktpreis —
         # dieselbe Regel wie im Scrape-Pfad, sonst schreibt der Deal-Checker
         # einen Ein-Quellen-Schaetzwert als Fakt in die Stammdaten.
-        consensus = analysis.market_consensus
-        if consensus.consensus_price > 0 and consensus.num_sources >= 2 and consensus.divergence_percent <= 0.30:
-            from datetime import UTC, datetime
-
+        if is_persistable_consensus(analysis.market_consensus):
             lego_set.current_market_price = analysis.market_consensus.consensus_price
             lego_set.market_price_updated_at = datetime.now(UTC)
         if lego_set.release_year:
