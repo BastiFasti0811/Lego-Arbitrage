@@ -5,28 +5,33 @@ import re
 import structlog
 from bs4 import BeautifulSoup
 
-from app.scrapers.base import MIN_PLAUSIBLE_SET_PRICE, BaseScraper, ScrapedPrice, ScrapedSetInfo, parse_de_price
+from app.scrapers.base import MIN_PLAUSIBLE_SET_PRICE, BaseScraper, ScrapedPrice, ScrapedSetInfo
 
 logger = structlog.get_logger()
 
 BASE_URL = "https://www.lego.com/de-de"
 
 
-def _extract_uvp(page_text: str) -> float | None:
-    """Pick the set's UVP out of a LEGO.com product page.
+def _extract_uvp(html: str) -> float | None:
+    """Read the set's UVP from LEGO.com structured product data.
 
-    Taking the first price-like match wrote shipping costs and per-piece
-    figures into the database as UVP (0,40 € / 0,11 €), which then anchored
-    ROI calculations. Only amounts that can be a set price qualify; of those
-    the largest wins, since accessories and add-ons are always cheaper than
-    the set itself.
+    Guessing from page text is not safe in either direction: the first
+    price-like match wrote shipping costs into the database as UVP (0,40 EUR),
+    and picking the largest instead would adopt cross-sell or gift-card
+    amounts — a UVP that is too high blocks every correct price for that set
+    via the plausibility guard, and nothing ever heals it. Structured markup
+    or nothing; BrickMerge still supplies a UVP independently.
     """
-    candidates = [
-        value
-        for match in re.finditer(r"(?<![\d.])(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{2})?\s*€", page_text)
-        if (value := parse_de_price(match.group(0))) is not None and value >= MIN_PLAUSIBLE_SET_PRICE
-    ]
-    return max(candidates) if candidates else None
+    for pattern in (
+        r'(?:product:price:amount|itemprop=["\']price["\'][^>]*content)["\']?\s*(?:content=)?["\'](\d+(?:\.\d{1,2})?)["\']',
+        r'"price"\s*:\s*"?(\d+(?:\.\d{1,2})?)"?',
+    ):
+        match = re.search(pattern, html, re.IGNORECASE)
+        if match:
+            value = float(match.group(1))
+            if value >= MIN_PLAUSIBLE_SET_PRICE:
+                return value
+    return None
 
 
 class LegoComScraper(BaseScraper):
@@ -91,7 +96,7 @@ class LegoComScraper(BaseScraper):
                 info.eol_status = "UNKNOWN"
 
             # Price from LEGO.com
-            info.uvp_eur = _extract_uvp(page_text)
+            info.uvp_eur = _extract_uvp(html)
 
             # Piece count
             pieces_match = re.search(r"(\d[\d.]*)\s*(?:Teile|pieces|pcs)", page_text, re.I)

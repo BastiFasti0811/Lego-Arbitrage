@@ -18,7 +18,6 @@ from app.scrapers import (
     BrickEconomyScraper,
     BrickMergeScraper,
     EbaySoldScraper,
-    IdealoScraper,
     LegoComScraper,
 )
 from app.scrapers.base import ScrapedPrice
@@ -103,8 +102,7 @@ class ScraperMarketContextProvider:
             BrickEconomyScraper,
             BrickMergeScraper,
             EbaySoldScraper,
-            IdealoScraper,
-            AmazonScraper,
+                    AmazonScraper,
             LegoComScraper,
         ]
         results = await asyncio.gather(

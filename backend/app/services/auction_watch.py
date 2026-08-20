@@ -16,7 +16,6 @@ from app.scrapers import (
     BrickEconomyScraper,
     BrickMergeScraper,
     EbaySoldScraper,
-    IdealoScraper,
     LegoComScraper,
 )
 from app.scrapers.base import ScrapedPrice
@@ -173,8 +172,7 @@ async def gather_market_context(
         BrickEconomyScraper,
         BrickMergeScraper,
         EbaySoldScraper,
-        IdealoScraper,
-        AmazonScraper,
+            AmazonScraper,
         LegoComScraper,
     ]
 

@@ -1,6 +1,7 @@
 """BrickMerge.de scraper — German retail prices, shop availability, discounts vs UVP."""
 
 import re
+from html import unescape
 
 import structlog
 from bs4 import BeautifulSoup
@@ -22,6 +23,25 @@ BASE_URL = "https://www.brickmerge.de"
 # Single shared implementation — three divergent copies of German price
 # parsing is exactly how the mid-number bug survived this long.
 _parse_de_price = parse_de_price
+
+
+def extract_uvp_from_title(html: str) -> float | None:
+    """Read the UVP from the page title only.
+
+    The raw HTML carries related-product blocks with their own "UVP ... EUR"
+    labels; the first match in the document was one of those. The title always
+    describes the set the page is about.
+    """
+    match = re.search(r"<title>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return None
+    uvp_match = re.search(r"UVP\s*[:.]?\s*[\d.,]+\s*€", unescape(match.group(1)))
+    if not uvp_match:
+        return None
+    candidate = parse_de_price(uvp_match.group(0))
+    if candidate is not None and candidate >= MIN_PLAUSIBLE_SET_PRICE:
+        return candidate
+    return None
 
 
 class BrickMergeScraper(BaseScraper):
@@ -88,12 +108,7 @@ class BrickMergeScraper(BaseScraper):
                         theme = theme or h1_match.group(1).strip()
                         set_name = h1_match.group(2).strip()
 
-            # UVP extraction from page text (keyword-anchored, robust parsing)
-            uvp_match = re.search(r"UVP\s*[:.]?\s*[\d.,]+\s*€", html)
-            if uvp_match:
-                candidate = _parse_de_price(uvp_match.group(0))
-                if candidate is not None and candidate >= MIN_PLAUSIBLE_SET_PRICE:
-                    uvp = candidate
+            uvp = extract_uvp_from_title(html)
 
             # EOL status
             eol_status = None
