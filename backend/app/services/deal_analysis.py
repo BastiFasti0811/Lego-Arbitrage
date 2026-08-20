@@ -224,7 +224,10 @@ class SqlAlchemyAnalysisRepository:
             lego_set.uvp_eur = analysis.uvp
         if eol_status and eol_status != "UNKNOWN":
             lego_set.eol_status = eol_status
-        if analysis.market_consensus.consensus_price > 0:
+        # Nur belastbare Konsenswerte werden zum gespeicherten Marktpreis —
+        # dieselbe Regel wie im Scrape-Pfad, sonst schreibt der Deal-Checker
+        # einen Ein-Quellen-Schaetzwert als Fakt in die Stammdaten.
+        if analysis.market_consensus.consensus_price > 0 and analysis.market_consensus.is_reliable:
             from datetime import UTC, datetime
 
             lego_set.current_market_price = analysis.market_consensus.consensus_price

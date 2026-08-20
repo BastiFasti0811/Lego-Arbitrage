@@ -101,8 +101,14 @@ def calculate_consensus(prices: list[ScrapedPrice]) -> MarketConsensus:
     """Calculate weighted consensus price from multiple sources."""
     source_weights = _source_weights()
     raw_prices: dict[str, float] = {}
+    unreliable_sources: list[str] = []
     for scraped_price in prices:
-        if scraped_price.source in source_weights and scraped_price.is_reliable and scraped_price.price_eur > 0:
+        # is_reliable ist ein Qualitaetsmerkmal, kein Ausschlusskriterium: der
+        # EBAY_ACTIVE-Fallback ist per Definition unsicher und waere sonst
+        # trotz eigenem Gewicht nie im Konsens gelandet.
+        if scraped_price.source in source_weights and scraped_price.price_eur > 0:
+            if not scraped_price.is_reliable:
+                unreliable_sources.append(scraped_price.source)
             price = (
                 scraped_price.median_price
                 if scraped_price.median_price and scraped_price.source == "EBAY_SOLD"
@@ -120,6 +126,12 @@ def calculate_consensus(prices: list[ScrapedPrice]) -> MarketConsensus:
         outliers_removed=outliers,
         warnings=warnings,
     )
+
+    if unreliable_sources:
+        result.is_reliable = False
+        result.warnings.append(
+            "Unsichere Quelle(n) im Konsens: " + ", ".join(sorted(set(unreliable_sources)))
+        )
 
     if not market_prices:
         result.is_reliable = False

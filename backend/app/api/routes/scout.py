@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.identity import is_set_offer
 from app.engine.decision_engine import analyze_deal
 from app.models import LegoSet, Offer, get_session
 from app.scrapers import OFFER_SCRAPERS, PRICE_SCRAPERS
@@ -146,8 +147,21 @@ async def scout_deals(request: ScoutRequest, session: AsyncSession = Depends(get
 
         total_offers += len(offers)
 
+        reference_price = (lego_set.current_market_price or lego_set.uvp_eur) if lego_set else None
+
         for offer in offers:
             if request.max_budget and offer.price_eur > request.max_budget:
+                continue
+
+            # Gleicher Zubehoerschutz wie im Scrape-Pfad — sonst meldet der
+            # Live-Scout weiterhin Wandhalterungen als Deals.
+            if not is_set_offer(
+                offer.offer_title,
+                set_number,
+                price_eur=offer.price_eur,
+                reference_price=reference_price,
+                set_name=lego_set.set_name if lego_set else None,
+            ):
                 continue
 
             analysis = analyze_deal(

@@ -102,6 +102,15 @@ async def _update_valuations_async() -> dict:
                 consensus = calculate_consensus(prices)
                 if consensus.consensus_price <= 0:
                     continue
+                if not consensus.is_reliable:
+                    # Ein Ein-Quellen-Schaetzwert wuerde hier zu unrealized_profit
+                    # und Verkaufssignalen des gehaltenen Bestands gerinnen.
+                    logger.info(
+                        "inventory.consensus_unreliable",
+                        set_number=item.set_number,
+                        sources=consensus.num_sources,
+                    )
+                    continue
 
                 total_invested = item.buy_price + (item.buy_shipping or 0)
 

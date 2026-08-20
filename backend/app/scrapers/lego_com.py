@@ -1,5 +1,6 @@
 """LEGO.com EOL checker — checks if sets are still available or retired."""
 
+import json
 import re
 
 import structlog
@@ -12,6 +13,35 @@ logger = structlog.get_logger()
 BASE_URL = "https://www.lego.com/de-de"
 
 
+def _price_from_jsonld(html: str) -> float | None:
+    """Read the product price from JSON-LD, ignoring recommendation blocks."""
+    soup = BeautifulSoup(html, "lxml")
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        try:
+            data = json.loads(script.string or "")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for node in data if isinstance(data, list) else [data]:
+            if not isinstance(node, dict):
+                continue
+            if str(node.get("@type", "")).lower() != "product":
+                continue
+            offers = node.get("offers")
+            for offer in offers if isinstance(offers, list) else [offers]:
+                if not isinstance(offer, dict):
+                    continue
+                raw = offer.get("price")
+                if raw is None:
+                    continue
+                try:
+                    value = float(str(raw).replace(",", "."))
+                except ValueError:
+                    continue
+                if value >= MIN_PLAUSIBLE_SET_PRICE:
+                    return value
+    return None
+
+
 def _extract_uvp(html: str) -> float | None:
     """Read the set's UVP from LEGO.com structured product data.
 
@@ -21,17 +51,23 @@ def _extract_uvp(html: str) -> float | None:
     amounts — a UVP that is too high blocks every correct price for that set
     via the plausibility guard, and nothing ever heals it. Structured markup
     or nothing; BrickMerge still supplies a UVP independently.
+
+    The markup is read as markup, not scanned with a regex: a plain search for
+    "price" finds the recommendation carousel before the product itself.
     """
-    for pattern in (
-        r'(?:product:price:amount|itemprop=["\']price["\'][^>]*content)["\']?\s*(?:content=)?["\'](\d+(?:\.\d{1,2})?)["\']',
-        r'"price"\s*:\s*"?(\d+(?:\.\d{1,2})?)"?',
-    ):
-        match = re.search(pattern, html, re.IGNORECASE)
-        if match:
-            value = float(match.group(1))
-            if value >= MIN_PLAUSIBLE_SET_PRICE:
-                return value
-    return None
+    soup = BeautifulSoup(html, "lxml")
+    meta = soup.find("meta", attrs={"property": "product:price:amount"}) or soup.find(
+        "meta", attrs={"itemprop": "price"}
+    )
+    if meta and meta.get("content"):
+        try:
+            value = float(str(meta["content"]).replace(",", "."))
+        except ValueError:
+            value = 0.0
+        if value >= MIN_PLAUSIBLE_SET_PRICE:
+            return value
+
+    return _price_from_jsonld(html)
 
 
 class LegoComScraper(BaseScraper):

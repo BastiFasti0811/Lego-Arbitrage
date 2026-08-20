@@ -230,6 +230,7 @@ async def _upsert_offers(session, lego_set: LegoSet, offers, now: datetime) -> i
             lego_set.set_number,
             price_eur=offer.price_eur,
             reference_price=reference_price,
+            set_name=getattr(lego_set, "set_name", None),
         ):
             logger.info(
                 "scrape.offer_rejected_not_set",

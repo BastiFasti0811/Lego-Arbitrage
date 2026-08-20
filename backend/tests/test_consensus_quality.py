@@ -91,3 +91,13 @@ async def test_unreliable_consensus_is_not_persisted_as_market_price(monkeypatch
     await scrape_daily._scrape_set_prices_async("42143")
 
     assert lego_set.current_market_price is None
+
+
+def test_unreliable_source_is_included_but_flags_the_consensus():
+    # Review-Finding M1: EBAY_ACTIVE traegt is_reliable=False und wurde
+    # deshalb vor der Gewichtung aussortiert — das Gewicht war wirkungslos.
+    active = ScrapedPrice(source="EBAY_ACTIVE", price_eur=380.0, is_reliable=False)
+    result = calculate_consensus([active, _price("BRICKECONOMY", 420.0)])
+    assert "EBAY_ACTIVE" in result.source_prices
+    assert result.num_sources == 2
+    assert result.is_reliable is False

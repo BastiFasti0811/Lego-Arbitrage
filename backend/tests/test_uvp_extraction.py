@@ -56,3 +56,20 @@ def test_plausibility_guard_ignores_implausible_uvp_anchors(bad_uvp):
     # Zirkularitaetsschutz: eine kaputte UVP darf niemals korrekte Preise
     # verwerfen — sie wird als Anker verworfen, nicht der Preis.
     assert _is_plausible_price(69.99, uvp_eur=bad_uvp) is True
+
+
+def test_lego_com_uvp_ignores_recommendation_carousel():
+    # Review-Finding: eine Regex-Suche nach "price" trifft den Empfehlungs-
+    # Block vor dem Produkt — derselbe First-Match-Fehler eine Ebene tiefer.
+    html = (
+        '<html><script type="application/ld+json">'
+        '{"@type":"ItemList","itemListElement":[{"price":19.99}]}</script>'
+        '<script type="application/ld+json">'
+        '{"@type":"Product","offers":{"price":"449.99"}}</script></html>'
+    )
+    assert _extract_uvp(html) == 449.99
+
+
+def test_lego_com_uvp_reads_itemprop_meta():
+    html = '<html><head><meta itemprop="price" content="449.99"></head></html>'
+    assert _extract_uvp(html) == 449.99
