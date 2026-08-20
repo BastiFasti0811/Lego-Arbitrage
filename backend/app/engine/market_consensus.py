@@ -11,6 +11,22 @@ from app.scrapers.base import ScrapedPrice
 logger = structlog.get_logger()
 
 
+def is_persistable_consensus(consensus: "MarketConsensus") -> bool:
+    """Whether a consensus is solid enough to store as a set's market price.
+
+    Two independent sources that broadly agree. A single source is a guess,
+    and extreme divergence means we do not know which source to believe.
+
+    Note on the bound: divergence is (high - low) / mean, so 0.30 admits two
+    sources up to a factor of ~1.35 apart, not 1.30.
+    """
+    return (
+        consensus.consensus_price > 0
+        and consensus.num_sources >= 2
+        and consensus.divergence_percent <= 0.30
+    )
+
+
 def _median(values: list[float]) -> float:
     """True median. Taking the upper of two values drifted every two-source
     consensus upwards — and with three price sources that is the common case.

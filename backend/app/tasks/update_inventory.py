@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app.domain.classification import categorize_release_year
 from app.domain.identity import is_plausible_price
-from app.engine.market_consensus import calculate_consensus
+from app.engine.market_consensus import calculate_consensus, is_persistable_consensus
 from app.models.base import async_session
 from app.models.inventory import InventoryItem, InventoryStatus
 from app.models.set import LegoSet, SetCategory
@@ -102,7 +102,7 @@ async def _update_valuations_async() -> dict:
                 consensus = calculate_consensus(prices)
                 if consensus.consensus_price <= 0:
                     continue
-                if not consensus.is_reliable:
+                if not is_persistable_consensus(consensus):
                     # Ein Ein-Quellen-Schaetzwert wuerde hier zu unrealized_profit
                     # und Verkaufssignalen des gehaltenen Bestands gerinnen.
                     logger.info(

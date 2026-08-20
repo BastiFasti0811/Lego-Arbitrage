@@ -81,7 +81,51 @@ function isTruthy(value) {
   return String(value).toLowerCase() === "true";
 }
 
-function SettingsField({ field, sectionEnabled, values, dirtyValues, onChange }) {
+// Gespeicherte Secrets kommen maskiert vom Server — Laenge, unsichtbare Zeichen
+// und die letzten vier Stellen liefert er als Metadaten mit, damit man einen
+// falsch eingefuegten Token erkennt, ohne ihn uebertragen zu muessen.
+const INVISIBLE_RE = /[\s\u200b-\u200d\u00ad\ufeff]/;
+
+function describeValue({ field, isDirty, currentValue, meta }) {
+  if (isDirty) {
+    if (!currentValue) return null;
+    const bad = INVISIBLE_RE.test(currentValue);
+    return {
+      text: `${currentValue.length} Zeichen${bad ? " — enthaelt Leer-/Sonderzeichen!" : ""}`,
+      warn: bad,
+    };
+  }
+  if (!meta || !meta.value_length) return null;
+  const tail = field.type === "password" && meta.value_tail ? `, endet auf …${meta.value_tail}` : "";
+  return {
+    text: `gespeichert: ${meta.value_length} Zeichen${tail}${
+      meta.has_whitespace ? " — enthaelt Leer-/Sonderzeichen!" : ""
+    }`,
+    warn: Boolean(meta.has_whitespace),
+  };
+}
+
+function EyeIcon({ open }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4"
+      aria-hidden="true"
+    >
+      <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" />
+      <circle cx="12" cy="12" r="3" />
+      {!open && <line x1="4" y1="20" x2="20" y2="4" />}
+    </svg>
+  );
+}
+
+function SettingsField({ field, sectionEnabled, values, dirtyValues, onChange, revealed, onToggleReveal, meta }) {
   const currentValue =
     dirtyValues[field.key] !== undefined ? dirtyValues[field.key] : values[field.key] ?? "";
 
@@ -121,25 +165,60 @@ function SettingsField({ field, sectionEnabled, values, dirtyValues, onChange })
     );
   }
 
+  const isSecret = field.type === "password";
+  const isDirty = dirtyValues[field.key] !== undefined;
+  const hint = describeValue({ field, isDirty, currentValue, meta });
+
   return (
     <div>
       <label className="block text-sm font-medium text-text-secondary mb-1.5">{field.label}</label>
-      <input
-        type={field.type}
-        disabled={!sectionEnabled}
-        value={currentValue}
-        onChange={(event) => onChange(field.key, event.target.value)}
-        placeholder={!sectionEnabled ? "Deaktiviert" : ""}
-        className={`w-full px-3 py-2 rounded-lg border text-sm transition-colors
-          bg-bg-primary border-border text-text-primary placeholder-text-muted
-          focus:outline-none focus:ring-2 focus:ring-lego-yellow/50 focus:border-lego-yellow
-          ${!sectionEnabled ? "opacity-50 cursor-not-allowed" : ""}`}
-      />
+      <div className="relative">
+        <input
+          type={isSecret && !revealed ? "password" : "text"}
+          disabled={!sectionEnabled}
+          value={currentValue}
+          onChange={(event) => onChange(field.key, event.target.value)}
+          placeholder={!sectionEnabled ? "Deaktiviert" : ""}
+          autoComplete="off"
+          spellCheck={false}
+          autoCorrect="off"
+          autoCapitalize="off"
+          aria-describedby={hint ? `${field.key}-hint` : undefined}
+          className={`w-full px-3 py-2 rounded-lg border text-sm transition-colors
+            bg-bg-primary border-border text-text-primary placeholder-text-muted
+            focus:outline-none focus:ring-2 focus:ring-lego-yellow/50 focus:border-lego-yellow
+            ${isSecret ? "pr-11" : ""}
+            ${!sectionEnabled ? "opacity-50 cursor-not-allowed" : ""}`}
+        />
+        {isSecret && (
+          <button
+            type="button"
+            onClick={() => onToggleReveal(field.key)}
+            disabled={!sectionEnabled}
+            aria-label={revealed ? `${field.label} verbergen` : `${field.label} anzeigen`}
+            aria-pressed={revealed}
+            title={revealed ? "Verbergen" : "Anzeigen"}
+            className={`absolute inset-y-0 right-0 flex items-center px-3 text-text-muted
+              hover:text-text-primary transition-colors
+              ${!sectionEnabled ? "opacity-50 cursor-not-allowed" : ""}`}
+          >
+            <EyeIcon open={revealed} />
+          </button>
+        )}
+      </div>
+      {hint ? (
+        <p
+          id={`${field.key}-hint`}
+          className={`mt-1 text-xs ${hint.warn ? "text-lego-red" : "text-text-muted"}`}
+        >
+          {hint.text}
+        </p>
+      ) : null}
     </div>
   );
 }
 
-function SettingsCard({ section, values, dirtyValues, onChange }) {
+function SettingsCard({ section, values, dirtyValues, onChange, revealedKeys, onToggleReveal, metaByKey }) {
   return (
     <div className="bg-bg-card rounded-xl border border-border p-6">
       <div className="flex items-center gap-3 mb-4">
@@ -160,6 +239,9 @@ function SettingsCard({ section, values, dirtyValues, onChange }) {
             values={values}
             dirtyValues={dirtyValues}
             onChange={onChange}
+            revealed={Boolean(revealedKeys[field.key])}
+            onToggleReveal={onToggleReveal}
+            meta={metaByKey[field.key]}
           />
         ))}
       </div>
@@ -171,6 +253,10 @@ export default function Settings() {
   const queryClient = useQueryClient();
   const [dirtyValues, setDirtyValues] = useState({});
   const [telegramStatus, setTelegramStatus] = useState(null);
+  const [revealedKeys, setRevealedKeys] = useState({});
+
+  const handleToggleReveal = (key) =>
+    setRevealedKeys((previous) => ({ ...previous, [key]: !previous[key] }));
 
   const { data: settings, isLoading } = useQuery({
     queryKey: ["settings"],
@@ -179,9 +265,11 @@ export default function Settings() {
   });
 
   const values = {};
+  const metaByKey = {};
   if (settings) {
     for (const setting of settings) {
       values[setting.key] = setting.value;
+      metaByKey[setting.key] = setting;
     }
   }
 
@@ -190,6 +278,7 @@ export default function Settings() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["settings"] });
       setDirtyValues({});
+      setRevealedKeys({});
     },
   });
 
@@ -251,6 +340,9 @@ export default function Settings() {
               values={values}
               dirtyValues={dirtyValues}
               onChange={handleChange}
+              revealedKeys={revealedKeys}
+              onToggleReveal={handleToggleReveal}
+              metaByKey={metaByKey}
             />
 
             {section.category === "telegram" && (
