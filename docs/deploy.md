@@ -115,9 +115,11 @@ bash scripts/deploy-prod.sh
 ```
 
 The script first takes a non-blocking lock on
-`/tmp/lego-arbitrage-deploy.lock`, so a manual run cannot interleave with a
-CI deploy — the second run aborts immediately. It then performs these steps
-in order:
+`/tmp/lego-arbitrage-deploy.lock` (path overridable via `LOCK_FILE`), so a
+manual run cannot interleave with a CI deploy — the second run aborts
+immediately. Always deploy as the same user: a lock file once created via
+`sudo` makes later deploys fail with a permission error until root removes
+it. The script then performs these steps in order:
 
 1. `git pull --ff-only`
 2. `docker compose ... build` — build the new images while the old containers

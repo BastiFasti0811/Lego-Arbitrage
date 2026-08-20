@@ -19,6 +19,8 @@ if command -v flock > /dev/null 2>&1; then
     echo "Another deploy is already running (lock: ${LOCK_FILE}). Aborting." >&2
     exit 1
   fi
+else
+  echo "flock not found — proceeding without the deploy lock." >&2
 fi
 
 if [[ ! -f "${ENV_FILE}" ]]; then
