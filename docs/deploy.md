@@ -83,6 +83,11 @@ Optional GitHub repository variables:
 - `PROD_APP_DIR`: defaults to `/srv/lego-arbitrage`
 - `PROD_URL`: optional environment URL shown in GitHub
 
+The `verify` job also runs on pull requests against `main`, so broken changes
+surface before the merge; the `deploy` job runs only on pushes to `main` and
+manual dispatches (on PRs it shows as skipped). PR runs use their own
+concurrency group and never queue behind a production deploy.
+
 Recommended GitHub environment setup:
 
 - Create an environment named `production`
@@ -109,7 +114,12 @@ root on the server:
 bash scripts/deploy-prod.sh
 ```
 
-The script performs these steps in order:
+The script first takes a non-blocking lock on
+`/tmp/lego-arbitrage-deploy.lock` (path overridable via `LOCK_FILE`), so a
+manual run cannot interleave with a CI deploy — the second run aborts
+immediately. Always deploy as the same user: a lock file once created via
+`sudo` makes later deploys fail with a permission error until root removes
+it. The script then performs these steps in order:
 
 1. `git pull --ff-only`
 2. `docker compose ... build` — build the new images while the old containers

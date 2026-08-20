@@ -9,6 +9,20 @@ COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
 
 cd "${REPO_DIR}"
 
+# Serialize deploys on this host: the Actions concurrency group only covers
+# CI runs, a manual deploy could still interleave with one. Systems without
+# flock (Git Bash, macOS) skip the lock; the prod host always has it.
+LOCK_FILE="${LOCK_FILE:-/tmp/lego-arbitrage-deploy.lock}"
+if command -v flock > /dev/null 2>&1; then
+  exec 9> "${LOCK_FILE}"
+  if ! flock -n 9; then
+    echo "Another deploy is already running (lock: ${LOCK_FILE}). Aborting." >&2
+    exit 1
+  fi
+else
+  echo "flock not found — proceeding without the deploy lock." >&2
+fi
+
 if [[ ! -f "${ENV_FILE}" ]]; then
   echo "Missing ${ENV_FILE} in ${REPO_DIR}" >&2
   exit 1
