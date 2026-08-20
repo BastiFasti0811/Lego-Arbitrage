@@ -1,5 +1,6 @@
 """Market Consensus Engine - aggregates prices from multiple sources."""
 
+
 from dataclasses import dataclass, field
 
 import structlog
@@ -8,6 +9,20 @@ from app.config import settings
 from app.scrapers.base import ScrapedPrice
 
 logger = structlog.get_logger()
+
+
+def _median(values: list[float]) -> float:
+    """True median. Taking the upper of two values drifted every two-source
+    consensus upwards — and with three price sources that is the common case.
+    """
+    ordered = sorted(values)
+    count = len(ordered)
+    if not count:
+        return 0.0
+    middle = count // 2
+    if count % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2
 
 ZERO_WEIGHT_SOURCES = {
     "AMAZON": 0.0,
@@ -36,6 +51,7 @@ def _source_weights() -> dict[str, float]:
     """Return runtime-configurable consensus source weights."""
     return {
         "EBAY_SOLD": settings.weight_ebay_sold,
+        "EBAY_ACTIVE": settings.weight_ebay_active,
         "BRICKECONOMY": settings.weight_brickeconomy,
         "IDEALO": settings.weight_idealo,
         "BRICKMERGE": settings.weight_brickmerge,
@@ -64,7 +80,7 @@ def _remove_outliers(
         return cleaned, outliers
 
     prices_list = sorted(cleaned.values())
-    median = prices_list[len(prices_list) // 2]
+    median = _median(prices_list)
 
     if len(cleaned) >= 3:
         outlier_threshold = 0.60
@@ -85,8 +101,14 @@ def calculate_consensus(prices: list[ScrapedPrice]) -> MarketConsensus:
     """Calculate weighted consensus price from multiple sources."""
     source_weights = _source_weights()
     raw_prices: dict[str, float] = {}
+    unreliable_sources: list[str] = []
     for scraped_price in prices:
-        if scraped_price.source in source_weights and scraped_price.is_reliable and scraped_price.price_eur > 0:
+        # is_reliable ist ein Qualitaetsmerkmal, kein Ausschlusskriterium: der
+        # EBAY_ACTIVE-Fallback ist per Definition unsicher und waere sonst
+        # trotz eigenem Gewicht nie im Konsens gelandet.
+        if scraped_price.source in source_weights and scraped_price.price_eur > 0:
+            if not scraped_price.is_reliable:
+                unreliable_sources.append(scraped_price.source)
             price = (
                 scraped_price.median_price
                 if scraped_price.median_price and scraped_price.source == "EBAY_SOLD"
@@ -104,6 +126,12 @@ def calculate_consensus(prices: list[ScrapedPrice]) -> MarketConsensus:
         outliers_removed=outliers,
         warnings=warnings,
     )
+
+    if unreliable_sources:
+        result.is_reliable = False
+        result.warnings.append(
+            "Unsichere Quelle(n) im Konsens: " + ", ".join(sorted(set(unreliable_sources)))
+        )
 
     if not market_prices:
         result.is_reliable = False
@@ -126,7 +154,7 @@ def calculate_consensus(prices: list[ScrapedPrice]) -> MarketConsensus:
         result.warnings.append(f"Nur 1 Datenquelle ({source}) - unsichere Datenlage!")
         return result
 
-    median = sorted(prices_list)[len(prices_list) // 2]
+    median = _median(prices_list)
     if result.divergence_percent <= 0.10:
         result.consensus_price = median
         return result

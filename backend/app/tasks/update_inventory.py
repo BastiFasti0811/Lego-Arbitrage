@@ -6,6 +6,7 @@ import structlog
 from sqlalchemy import select
 
 from app.domain.classification import categorize_release_year
+from app.domain.identity import is_plausible_price
 from app.engine.market_consensus import calculate_consensus
 from app.models.base import async_session
 from app.models.inventory import InventoryItem, InventoryStatus
@@ -60,8 +61,12 @@ async def _update_valuations_async() -> dict:
     now = datetime.utcnow()  # naive datetime to match current DB column setup
 
     async with async_session() as session:
-        set_result = await session.execute(select(LegoSet.set_number, LegoSet.release_year))
-        release_year_by_set = {set_number: release_year for set_number, release_year in set_result.all()}
+        set_result = await session.execute(
+            select(LegoSet.set_number, LegoSet.release_year, LegoSet.uvp_eur)
+        )
+        set_rows = set_result.all()
+        release_year_by_set = {row.set_number: row.release_year for row in set_rows}
+        uvp_by_set = {row.set_number: row.uvp_eur for row in set_rows}
 
         result = await session.execute(
             select(InventoryItem).where(InventoryItem.status == InventoryStatus.HOLDING.value)
@@ -75,6 +80,17 @@ async def _update_valuations_async() -> dict:
                     try:
                         async with scraper_cls() as scraper:
                             price = await scraper.get_price(item.set_number)
+                            # Gleiche Absicherung wie im Scrape-Pfad: ein
+                            # Fremdprodukt-Preis schriebe hier direkt in die
+                            # Geldzahlen des gehaltenen Bestands.
+                            if price and not is_plausible_price(price.price_eur, uvp_by_set.get(item.set_number)):
+                                logger.warning(
+                                    "inventory.implausible_price",
+                                    set_number=item.set_number,
+                                    source=price.source,
+                                    price=price.price_eur,
+                                )
+                                price = None
                             if price:
                                 prices.append(price)
                     except Exception:
@@ -85,6 +101,15 @@ async def _update_valuations_async() -> dict:
 
                 consensus = calculate_consensus(prices)
                 if consensus.consensus_price <= 0:
+                    continue
+                if not consensus.is_reliable:
+                    # Ein Ein-Quellen-Schaetzwert wuerde hier zu unrealized_profit
+                    # und Verkaufssignalen des gehaltenen Bestands gerinnen.
+                    logger.info(
+                        "inventory.consensus_unreliable",
+                        set_number=item.set_number,
+                        sources=consensus.num_sources,
+                    )
                     continue
 
                 total_invested = item.buy_price + (item.buy_shipping or 0)

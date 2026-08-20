@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     weight_brickeconomy: float = 0.30
     weight_idealo: float = 0.20
     weight_brickmerge: float = 0.10
+    # Fallback bei blockierter Sold-Suche: Angebotspreise, kein Verkaufsbeleg
+    weight_ebay_active: float = 0.15
     # Price divergence warning threshold
     price_divergence_warning: float = 0.20  # 20%
 

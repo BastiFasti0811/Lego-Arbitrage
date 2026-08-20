@@ -1,15 +1,73 @@
 """LEGO.com EOL checker — checks if sets are still available or retired."""
 
+import json
 import re
 
 import structlog
 from bs4 import BeautifulSoup
 
-from app.scrapers.base import BaseScraper, ScrapedPrice, ScrapedSetInfo
+from app.scrapers.base import MIN_PLAUSIBLE_SET_PRICE, BaseScraper, ScrapedPrice, ScrapedSetInfo
 
 logger = structlog.get_logger()
 
 BASE_URL = "https://www.lego.com/de-de"
+
+
+def _price_from_jsonld(html: str) -> float | None:
+    """Read the product price from JSON-LD, ignoring recommendation blocks."""
+    soup = BeautifulSoup(html, "lxml")
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        try:
+            data = json.loads(script.string or "")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for node in data if isinstance(data, list) else [data]:
+            if not isinstance(node, dict):
+                continue
+            if str(node.get("@type", "")).lower() != "product":
+                continue
+            offers = node.get("offers")
+            for offer in offers if isinstance(offers, list) else [offers]:
+                if not isinstance(offer, dict):
+                    continue
+                raw = offer.get("price")
+                if raw is None:
+                    continue
+                try:
+                    value = float(str(raw).replace(",", "."))
+                except ValueError:
+                    continue
+                if value >= MIN_PLAUSIBLE_SET_PRICE:
+                    return value
+    return None
+
+
+def _extract_uvp(html: str) -> float | None:
+    """Read the set's UVP from LEGO.com structured product data.
+
+    Guessing from page text is not safe in either direction: the first
+    price-like match wrote shipping costs into the database as UVP (0,40 EUR),
+    and picking the largest instead would adopt cross-sell or gift-card
+    amounts — a UVP that is too high blocks every correct price for that set
+    via the plausibility guard, and nothing ever heals it. Structured markup
+    or nothing; BrickMerge still supplies a UVP independently.
+
+    The markup is read as markup, not scanned with a regex: a plain search for
+    "price" finds the recommendation carousel before the product itself.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    meta = soup.find("meta", attrs={"property": "product:price:amount"}) or soup.find(
+        "meta", attrs={"itemprop": "price"}
+    )
+    if meta and meta.get("content"):
+        try:
+            value = float(str(meta["content"]).replace(",", "."))
+        except ValueError:
+            value = 0.0
+        if value >= MIN_PLAUSIBLE_SET_PRICE:
+            return value
+
+    return _price_from_jsonld(html)
 
 
 class LegoComScraper(BaseScraper):
@@ -74,9 +132,7 @@ class LegoComScraper(BaseScraper):
                 info.eol_status = "UNKNOWN"
 
             # Price from LEGO.com
-            price_match = re.search(r"(\d+[.,]\d{2})\s*€", page_text)
-            if price_match:
-                info.uvp_eur = float(price_match.group(1).replace(",", "."))
+            info.uvp_eur = _extract_uvp(html)
 
             # Piece count
             pieces_match = re.search(r"(\d[\d.]*)\s*(?:Teile|pieces|pcs)", page_text, re.I)

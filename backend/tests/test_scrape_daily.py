@@ -182,3 +182,65 @@ async def test_kleinanzeigen_lane_aborts_run_on_block_status(monkeypatch):
     assert result["aborted"] is True
     assert _FakeKleinanzeigenScraper.calls == ["75300"]
     assert result["offers"] == 0
+
+
+@pytest.mark.asyncio
+async def test_upsert_rejects_accessory_listings():
+    # Zubehoer mit Setnummer im Titel darf gar nicht erst in offers landen —
+    # sonst bewertet analyze_new es gegen den Setpreis (869 % Phantom-ROI).
+    class _NoRowsResult:
+        def scalars(self):
+            return _FakeScalars([])
+
+    class _RecordingSession:
+        def __init__(self):
+            self.added = []
+
+        async def execute(self, _query):
+            return _NoRowsResult()
+
+        def add(self, obj):
+            self.added.append(obj)
+
+    from datetime import UTC, datetime
+
+    session = _RecordingSession()
+    lego_set = SimpleNamespace(id=1, set_number="42143", current_market_price=400.0, uvp_eur=449.99)
+    offers = [
+        SimpleNamespace(
+            offer_url="https://amazon.de/dp/1",
+            platform="AMAZON",
+            offer_title="Wandhalterung Haken für Lego Ferrari Daytona SP3 42143",
+            price_eur=9.99,
+            shipping_eur=None,
+            condition="UNKNOWN",
+            box_damage=False,
+            sealed=False,
+            seller_name=None,
+            seller_rating=None,
+            seller_location=None,
+            is_auction=False,
+            auction_end=None,
+        ),
+        SimpleNamespace(
+            offer_url="https://kleinanzeigen.de/s-anzeige/2",
+            platform="KLEINANZEIGEN",
+            offer_title="LEGO Technic 42143 Ferrari Daytona SP3 - neu und original verpackt",
+            price_eur=320.0,
+            shipping_eur=None,
+            condition="NEW_SEALED",
+            box_damage=False,
+            sealed=True,
+            seller_name=None,
+            seller_rating=None,
+            seller_location=None,
+            is_auction=False,
+            auction_end=None,
+        ),
+    ]
+
+    count = await scrape_daily._upsert_offers(session, lego_set, offers, datetime.now(UTC))
+
+    assert count == 1
+    assert len(session.added) == 1
+    assert "Wandhalterung" not in session.added[0].offer_title

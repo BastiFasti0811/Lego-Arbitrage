@@ -1,26 +1,46 @@
 """BrickMerge.de scraper — German retail prices, shop availability, discounts vs UVP."""
 
 import re
+from html import unescape
 
 import structlog
 from bs4 import BeautifulSoup
 
-from app.scrapers.base import BaseScraper, ScrapedOffer, ScrapedPrice, ScrapedSetInfo
+from app.scrapers.base import (
+    MIN_PLAUSIBLE_SET_PRICE,
+    BaseScraper,
+    ScrapedOffer,
+    ScrapedPrice,
+    ScrapedSetInfo,
+    parse_de_price,
+)
 
 logger = structlog.get_logger()
 
 BASE_URL = "https://www.brickmerge.de"
 
 
-def _parse_de_price(text: str) -> float | None:
-    """Parse German-format prices like '1.234,56 €', '1499,99 €' or '234,56€'.
+# Single shared implementation — three divergent copies of German price
+# parsing is exactly how the mid-number bug survived this long.
+_parse_de_price = parse_de_price
 
-    The lookbehind keeps the match from starting mid-number ('1499,99' must
-    never parse as 499.99).
+
+def extract_uvp_from_title(html: str) -> float | None:
+    """Read the UVP from the page title only.
+
+    The raw HTML carries related-product blocks with their own "UVP ... EUR"
+    labels; the first match in the document was one of those. The title always
+    describes the set the page is about.
     """
-    match = re.search(r"(?<![\d.])(\d{1,3}(?:\.\d{3})+|\d+),(\d{2})\s*€", text)
-    if match:
-        return float(f"{match.group(1).replace('.', '')}.{match.group(2)}")
+    match = re.search(r"<title>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return None
+    uvp_match = re.search(r"UVP\s*[:.]?\s*[\d.,]+\s*€", unescape(match.group(1)))
+    if not uvp_match:
+        return None
+    candidate = parse_de_price(uvp_match.group(0))
+    if candidate is not None and candidate >= MIN_PLAUSIBLE_SET_PRICE:
+        return candidate
     return None
 
 
@@ -88,10 +108,7 @@ class BrickMergeScraper(BaseScraper):
                         theme = theme or h1_match.group(1).strip()
                         set_name = h1_match.group(2).strip()
 
-            # UVP extraction from page text
-            uvp_match = re.search(r"UVP\s*[:.]?\s*(\d+[.,]\d{2})\s*€", html)
-            if uvp_match:
-                uvp = float(uvp_match.group(1).replace(",", "."))
+            uvp = extract_uvp_from_title(html)
 
             # EOL status
             eol_status = None
@@ -124,7 +141,11 @@ class BrickMergeScraper(BaseScraper):
             html = await self._fetch_detail_page(set_number)
             soup = BeautifulSoup(html, "lxml")
 
-            # Primary: BrickMerge's own best price ("ab X,XX €" in the title).
+            # BrickMerge's own aggregated best price ("ab X,XX €" in the title)
+            # is the ONLY trustworthy number here. Scanning the page for any
+            # price picks up UVP, price history and related-product prices —
+            # an EOL set without offers yielded a 69,99 accessory as its
+            # "market price". No offers means no price.
             lowest = None
             title_el = soup.select_one("title")
             if title_el:
@@ -133,20 +154,7 @@ class BrickMergeScraper(BaseScraper):
                     lowest = _parse_de_price(ab_match.group(0))
 
             if lowest is None:
-                prices = []
-                for el in soup.find_all(string=re.compile(r"\d+[.,]\d{2}\s*€")):
-                    context = el.strip()
-                    # Savings amounts, UVP and "(x% unter UVP)" asides are not offer prices.
-                    if re.search(r"UVP|gespart|Ersparnis", context, re.I) or re.search(r"€\s*\(", context):
-                        continue
-                    price = _parse_de_price(context)
-                    if price is not None and 5.0 < price < 5000.0:
-                        prices.append(price)
-                if prices:
-                    lowest = min(prices)
-
-            if lowest is None:
-                logger.warning("brickmerge.no_prices", set_number=set_number)
+                logger.info("brickmerge.no_current_offers", set_number=set_number)
                 return None
 
             return ScrapedPrice(

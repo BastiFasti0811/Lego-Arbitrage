@@ -1,30 +1,19 @@
 """Kleinanzeigen.de scraper — private offers, often cheaper than retail."""
 
-import re
 
 import httpx
 import structlog
 from bs4 import BeautifulSoup
 
-from app.scrapers.base import BaseScraper, ScrapedOffer, ScrapedPrice, ScrapedSetInfo
+from app.scrapers.base import BaseScraper, ScrapedOffer, ScrapedPrice, ScrapedSetInfo, parse_de_price
 
 logger = structlog.get_logger()
 
 BASE_URL = "https://www.kleinanzeigen.de"
 
 
-def _parse_ka_price(text: str) -> float | None:
-    """Parse Kleinanzeigen prices: '850 €', '1.200 € VB', '129,99 €'.
-
-    German format only — comma is the decimal separator, dot the thousands
-    separator. The lookbehind stops matches from starting mid-number.
-    """
-    match = re.search(r"(?<![\d.])(\d{1,3}(?:\.\d{3})+|\d+)(?:,(\d{2}))?\s*€", text)
-    if not match:
-        return None
-    euros = match.group(1).replace(".", "")
-    cents = match.group(2) or "00"
-    return float(f"{euros}.{cents}")
+# Shared German price parser — '850 €', '1.200 € VB', '129,99 €'.
+_parse_ka_price = parse_de_price
 
 
 class KleinanzeigenScraper(BaseScraper):

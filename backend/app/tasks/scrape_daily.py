@@ -6,6 +6,8 @@ import httpx
 import structlog
 from sqlalchemy import select
 
+from app.domain.identity import is_plausible_price as _is_plausible_price
+from app.domain.identity import is_set_offer
 from app.engine.market_consensus import calculate_consensus
 from app.models import LegoSet, Offer, PriceRecord, WatchlistItem
 from app.models.base import async_session
@@ -86,6 +88,15 @@ async def _scrape_set_prices_async(set_number: str) -> dict:
             try:
                 async with scraper_cls() as scraper:
                     price = await scraper.get_price(set_number)
+                    if price and not _is_plausible_price(price.price_eur, lego_set.uvp_eur):
+                        logger.warning(
+                            "scrape.implausible_price",
+                            set_number=set_number,
+                            source=price.source,
+                            price=price.price_eur,
+                            uvp=lego_set.uvp_eur,
+                        )
+                        price = None
                     if price:
                         scraped_prices.append(price)
                         session.add(
@@ -132,9 +143,20 @@ async def _scrape_set_prices_async(set_number: str) -> dict:
 
         if scraped_prices:
             consensus = calculate_consensus(scraped_prices)
-            if consensus.consensus_price > 0:
+            # Ein Konsens aus einer Quelle ist ausdruecklich als unsicher
+            # markiert. Gespeichert wuerde er zum gesicherten Marktpreis, an
+            # dem ROI und Bestandsbewertung rechnen — lieber kein Wert als ein
+            # scheingenauer.
+            if consensus.consensus_price > 0 and consensus.is_reliable:
                 lego_set.current_market_price = consensus.consensus_price
                 lego_set.market_price_updated_at = now
+            elif consensus.consensus_price > 0:
+                logger.info(
+                    "scrape.consensus_unreliable",
+                    set_number=set_number,
+                    sources=consensus.num_sources,
+                    price=consensus.consensus_price,
+                )
 
         await session.commit()
 
@@ -192,11 +214,30 @@ async def _upsert_offers(session, lego_set: LegoSet, offers, now: datetime) -> i
             for existing in existing_offer_result.scalars().all()
         }
 
+    reference_price = getattr(lego_set, "current_market_price", None) or getattr(lego_set, "uvp_eur", None)
+
     count = 0
     for offer in offers:
         # Ohne URL gibt es keinen stabilen Upsert-Key — solche Zeilen würden
         # jede Runde neu inseriert und nie wieder aktualisiert.
         if not offer.offer_url:
+            continue
+
+        # Zubehör trägt die Setnummer im Titel und würde sonst gegen den
+        # Setpreis bewertet (9,99-EUR-Wandhalterung -> 869 % Phantom-ROI).
+        if not is_set_offer(
+            offer.offer_title,
+            lego_set.set_number,
+            price_eur=offer.price_eur,
+            reference_price=reference_price,
+            set_name=getattr(lego_set, "set_name", None),
+        ):
+            logger.info(
+                "scrape.offer_rejected_not_set",
+                set_number=lego_set.set_number,
+                title=(offer.offer_title or "")[:80],
+                price=offer.price_eur,
+            )
             continue
         existing_offer = existing_by_key.get((offer.platform, offer.offer_url))
 

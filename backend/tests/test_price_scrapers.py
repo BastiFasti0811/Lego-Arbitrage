@@ -47,6 +47,33 @@ async def test_brickmerge_price_uses_detail_page_and_ignores_savings(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_brickmerge_returns_none_when_set_has_no_current_offers(monkeypatch):
+    # EOL-Sets haben keinen "ab"-Preis. Der frühere Ganzseiten-Scan griff sich
+    # dann Zubehör-/Fremdpreise (76417: 69,99 statt ~430) und verfälschte den
+    # Konsens. Kein Angebot heißt: kein Preis.
+    detail = _load("brickmerge_no_offers_76417.html")
+
+    async def fake_detail(self, set_number):
+        return detail
+
+    monkeypatch.setattr(BrickMergeScraper, "_fetch_detail_page", fake_detail)
+
+    async with BrickMergeScraper() as scraper:
+        price = await scraper.get_price("76417")
+
+    assert price is None
+
+
+def test_idealo_is_not_a_price_source():
+    # Idealo antwortet vom Server dauerhaft mit 403; sein Ganzseiten-Fallback
+    # lieferte dabei Phantompreise (6,99 für ein 850-EUR-Set).
+    from app.scrapers import PRICE_SCRAPERS
+    from app.scrapers.idealo import IdealoScraper
+
+    assert IdealoScraper not in PRICE_SCRAPERS
+
+
+@pytest.mark.asyncio
 async def test_ebay_offers_parse_current_s_card_layout(monkeypatch):
     active = _load("ebay_active_75192.html")
 
