@@ -13,6 +13,7 @@ from fake_useragent import UserAgent
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from app.config import settings
+from app.domain.offer_url import canonical_offer_url
 from app.security.url_policy import validate_url_for_scraper
 
 logger = structlog.get_logger()
@@ -72,6 +73,12 @@ class ScrapedOffer:
     is_auction: bool = False
     auction_end: datetime | None = None
     discovered_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def __post_init__(self) -> None:
+        # Search-result hrefs carry per-request tracking tokens. Stripping them
+        # here keeps every scraper on the same stable identity, so the offer
+        # upsert recognises a listing it has already seen.
+        self.offer_url = canonical_offer_url(self.offer_url)
 
 
 @dataclass

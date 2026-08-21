@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.domain.identity import is_plausible_price as _is_plausible_price
 from app.domain.identity import is_set_offer
+from app.domain.offer_url import canonical_offer_url
 from app.engine.market_consensus import calculate_consensus
 from app.models import LegoSet, Offer, PriceRecord, WatchlistItem
 from app.models.base import async_session
@@ -209,20 +210,17 @@ async def _scrape_all_watched_async() -> dict:
 
 
 async def _upsert_offers(session, lego_set: LegoSet, offers, now: datetime) -> int:
-    """Insert new offers / refresh known ones, keyed by (platform, offer_url)."""
-    offer_urls = list({offer.offer_url for offer in offers if offer.offer_url})
+    """Insert new offers / refresh known ones, keyed by (platform, canonical URL).
+
+    Every stored offer of the set is loaded, not just the URLs seen in this run:
+    rows written before URL canonicalisation still carry their tracking tokens,
+    and matching them on the canonical form heals them instead of adding yet
+    another copy of the same listing.
+    """
+    existing_offer_result = await session.execute(select(Offer).where(Offer.set_id == lego_set.id))
     existing_by_key: dict[tuple[str, str], Offer] = {}
-    if offer_urls:
-        existing_offer_result = await session.execute(
-            select(Offer).where(
-                Offer.set_id == lego_set.id,
-                Offer.offer_url.in_(offer_urls),
-            )
-        )
-        existing_by_key = {
-            (existing.platform, existing.offer_url): existing
-            for existing in existing_offer_result.scalars().all()
-        }
+    for existing in existing_offer_result.scalars().all():
+        existing_by_key.setdefault((existing.platform, canonical_offer_url(existing.offer_url)), existing)
 
     reference_price = getattr(lego_set, "current_market_price", None) or getattr(lego_set, "uvp_eur", None)
 
@@ -230,7 +228,8 @@ async def _upsert_offers(session, lego_set: LegoSet, offers, now: datetime) -> i
     for offer in offers:
         # Ohne URL gibt es keinen stabilen Upsert-Key — solche Zeilen würden
         # jede Runde neu inseriert und nie wieder aktualisiert.
-        if not offer.offer_url:
+        offer_url = canonical_offer_url(offer.offer_url)
+        if not offer_url:
             continue
 
         # Zubehör trägt die Setnummer im Titel und würde sonst gegen den
@@ -249,9 +248,11 @@ async def _upsert_offers(session, lego_set: LegoSet, offers, now: datetime) -> i
                 price=offer.price_eur,
             )
             continue
-        existing_offer = existing_by_key.get((offer.platform, offer.offer_url))
+        existing_offer = existing_by_key.get((offer.platform, offer_url))
 
         if existing_offer:
+            # Rewrites a legacy tracking URL to its canonical form on first touch.
+            existing_offer.offer_url = offer_url
             existing_offer.offer_title = offer.offer_title
             existing_offer.price_eur = offer.price_eur
             existing_offer.shipping_eur = offer.shipping_eur
@@ -267,28 +268,30 @@ async def _upsert_offers(session, lego_set: LegoSet, offers, now: datetime) -> i
             existing_offer.is_auction = offer.is_auction
             existing_offer.auction_end = offer.auction_end
         else:
-            session.add(
-                Offer(
-                    set_id=lego_set.id,
-                    platform=offer.platform,
-                    offer_url=offer.offer_url,
-                    offer_title=offer.offer_title,
-                    price_eur=offer.price_eur,
-                    shipping_eur=offer.shipping_eur,
-                    total_price_eur=offer.price_eur + (offer.shipping_eur or 0),
-                    condition=offer.condition,
-                    box_damage=offer.box_damage,
-                    sealed=offer.sealed,
-                    seller_name=offer.seller_name,
-                    seller_rating=offer.seller_rating,
-                    seller_location=offer.seller_location,
-                    status="ACTIVE",
-                    discovered_at=now,
-                    last_seen_at=now,
-                    is_auction=offer.is_auction,
-                    auction_end=offer.auction_end,
-                )
+            new_offer = Offer(
+                set_id=lego_set.id,
+                platform=offer.platform,
+                offer_url=offer_url,
+                offer_title=offer.offer_title,
+                price_eur=offer.price_eur,
+                shipping_eur=offer.shipping_eur,
+                total_price_eur=offer.price_eur + (offer.shipping_eur or 0),
+                condition=offer.condition,
+                box_damage=offer.box_damage,
+                sealed=offer.sealed,
+                seller_name=offer.seller_name,
+                seller_rating=offer.seller_rating,
+                seller_location=offer.seller_location,
+                status="ACTIVE",
+                discovered_at=now,
+                last_seen_at=now,
+                is_auction=offer.is_auction,
+                auction_end=offer.auction_end,
             )
+            session.add(new_offer)
+            # Derselbe Artikel kann in einer Trefferliste mehrfach auftauchen —
+            # ohne diesen Eintrag legte die zweite Fundstelle eine zweite Zeile an.
+            existing_by_key[(offer.platform, offer_url)] = new_offer
 
         count += 1
     return count

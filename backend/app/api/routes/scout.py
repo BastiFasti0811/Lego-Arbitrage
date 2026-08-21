@@ -1,6 +1,7 @@
 """Scout API for on-demand and cached deal discovery."""
 
 import asyncio
+from datetime import datetime
 
 import structlog
 from fastapi import APIRouter, Depends, Query
@@ -9,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.identity import is_set_offer
+from app.domain.offer_url import offer_identity
 from app.engine.decision_engine import analyze_deal
 from app.models import LegoSet, Offer, get_session
 from app.scrapers import OFFER_SCRAPERS, PRICE_SCRAPERS
@@ -44,6 +46,11 @@ class DealResult(BaseModel):
     opportunity_score: float
     set_name: str | None = None
     theme: str | None = None
+    # Ohne Zustand und Alter ist eine Karte nicht bewertbar: derselbe Preis
+    # bedeutet bei "neu versiegelt" etwas anderes als bei "gebraucht", und ein
+    # zwei Wochen alter Fund ist meistens längst weg.
+    condition: str | None = None
+    last_seen_at: datetime | None = None
 
 
 class ScoutResponse(BaseModel):
@@ -74,6 +81,8 @@ def _build_deal_result(offer: Offer, lego_set: LegoSet) -> DealResult:
         recommendation=offer.recommendation or "CHECK",
         reason=offer.analysis_notes or "Analyse noch ausstehend",
         opportunity_score=opportunity_score,
+        condition=offer.condition,
+        last_seen_at=offer.last_seen_at,
     )
 
 
@@ -98,8 +107,24 @@ async def _cached_scout_deals(request: ScoutRequest, session: AsyncSession) -> S
         if (offer.estimated_roi or 0.0) < request.min_roi:
             continue
 
+        # Zeilen aus der Zeit vor dem Zubehoerfilter liegen weiter in der DB.
+        # Ungeprueft fuellen sie den Feed mit 9,99-EUR-Wandhalterungen, die
+        # gegen den Setpreis bewertet als +2973 % erscheinen.
+        if not is_set_offer(
+            offer.offer_title,
+            lego_set.set_number,
+            price_eur=offer.price_eur,
+            reference_price=lego_set.current_market_price or lego_set.uvp_eur,
+            set_name=lego_set.set_name,
+        ):
+            continue
+
         total_scanned += 1
-        dedupe_key = f"{offer.platform}:{offer.offer_url}"
+        # Rows written before URL canonicalisation still hold their tracking
+        # tokens, so the raw URL would show one listing several times — each
+        # copy with the ROI and score of the run that stored it. Ordered by
+        # last_seen_at, the first hit is the freshest analysis.
+        dedupe_key = offer_identity(offer.platform, offer.offer_url)
         if dedupe_key in seen_urls:
             continue
         seen_urls.add(dedupe_key)
@@ -116,6 +141,7 @@ async def scout_deals(request: ScoutRequest, session: AsyncSession = Depends(get
         return await _cached_scout_deals(request, session)
 
     all_deals: list[DealResult] = []
+    seen_identities: set[str] = set()
     total_offers = 0
 
     for set_number in request.set_numbers:
@@ -179,6 +205,13 @@ async def scout_deals(request: ScoutRequest, session: AsyncSession = Depends(get
             )
 
             if analysis.roi.roi_percent >= request.min_roi:
+                # Zwei Scraper (und ein doppelter Watchlist-Eintrag) liefern
+                # dieselbe Anzeige — im Feed ist sie trotzdem ein Deal.
+                identity = offer_identity(offer.platform, offer.offer_url)
+                if identity in seen_identities:
+                    continue
+                seen_identities.add(identity)
+
                 all_deals.append(
                     DealResult(
                         set_number=set_number,
@@ -195,6 +228,7 @@ async def scout_deals(request: ScoutRequest, session: AsyncSession = Depends(get
                         recommendation=analysis.recommendation,
                         reason=analysis.reason,
                         opportunity_score=analysis.opportunity_score,
+                        condition=offer.condition,
                     )
                 )
 
