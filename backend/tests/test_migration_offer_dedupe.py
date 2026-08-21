@@ -13,6 +13,14 @@ from pathlib import Path
 import pytest
 from sqlalchemy import create_engine, text
 
+from app.models.feedback import DealFeedback
+
+# Taken from the model, not typed by hand: the first version of this migration
+# said "feedback" because that is the module name, while the table is
+# deal_feedback. CI never caught it — its database is empty, so the branch that
+# touches the table is only reached when duplicates actually exist.
+FEEDBACK_TABLE = DealFeedback.__tablename__
+
 MIGRATION = (
     Path(__file__).resolve().parents[1]
     / "alembic"
@@ -44,7 +52,9 @@ def connection():
                 "offer_url TEXT, last_seen_at TIMESTAMP)"
             )
         )
-        conn.execute(text("CREATE TABLE feedback (id INTEGER PRIMARY KEY, offer_id INTEGER)"))
+        conn.execute(
+            text(f"CREATE TABLE {FEEDBACK_TABLE} (id INTEGER PRIMARY KEY, offer_id INTEGER)")
+        )
         yield conn
 
 
@@ -99,11 +109,15 @@ def test_same_url_under_two_sets_survives_twice(connection):
 def test_feedback_follows_the_surviving_row(connection):
     _insert(connection, 1, RUN_1, age_hours=6)
     _insert(connection, 2, RUN_2, age_hours=1)
-    connection.execute(text("INSERT INTO feedback (id, offer_id) VALUES (10, 1), (11, 2)"))
+    connection.execute(
+        text(f"INSERT INTO {FEEDBACK_TABLE} (id, offer_id) VALUES (10, 1), (11, 2)")
+    )
 
     _load_migration().collapse_duplicates(connection)
 
-    remaining = connection.execute(text("SELECT id, offer_id FROM feedback ORDER BY id")).all()
+    remaining = connection.execute(
+        text(f"SELECT id, offer_id FROM {FEEDBACK_TABLE} ORDER BY id")
+    ).all()
     assert remaining == [(10, 2), (11, 2)], "the rating for the dropped copy points at the survivor"
 
 

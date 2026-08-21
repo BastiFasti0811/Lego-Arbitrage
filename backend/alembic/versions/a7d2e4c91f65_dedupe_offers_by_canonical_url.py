@@ -6,7 +6,7 @@ the same listing again. This rewrites the stored URLs to their canonical form,
 keeps the freshest row per listing, and adds the unique constraint that stops
 the problem from coming back.
 
-Feedback rows point at offers with ON DELETE SET NULL, so their offer_id is
+deal_feedback points at offers with ON DELETE SET NULL, so its offer_id is
 moved to the surviving row before the duplicates go — losing which offer a
 rating belonged to would quietly degrade the training data.
 
@@ -45,9 +45,9 @@ def collapse_duplicates(connection) -> None:
     for group in plan_duplicate_cleanup(rows):
         if group.drop_ids:
             connection.execute(
-                sa.text("UPDATE feedback SET offer_id = :keep WHERE offer_id IN :drop").bindparams(
-                    sa.bindparam("drop", expanding=True)
-                ),
+                sa.text(
+                    "UPDATE deal_feedback SET offer_id = :keep WHERE offer_id IN :drop"
+                ).bindparams(sa.bindparam("drop", expanding=True)),
                 {"keep": group.keep_id, "drop": list(group.drop_ids)},
             )
             connection.execute(
@@ -87,7 +87,7 @@ def collapse_duplicates(connection) -> None:
 
 def _drop_offer(connection, offer_id: int) -> None:
     connection.execute(
-        sa.text("UPDATE feedback SET offer_id = NULL WHERE offer_id = :id"), {"id": offer_id}
+        sa.text("UPDATE deal_feedback SET offer_id = NULL WHERE offer_id = :id"), {"id": offer_id}
     )
     connection.execute(sa.text("DELETE FROM offers WHERE id = :id"), {"id": offer_id})
 
