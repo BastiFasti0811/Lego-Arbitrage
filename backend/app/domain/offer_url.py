@@ -17,6 +17,8 @@ eBay, the ad path for Kleinanzeigen. That is what this module extracts.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
+from dataclasses import dataclass
 from urllib.parse import parse_qs, unquote, urlsplit
 
 # Hosts that answer under both apex and www; pinning one form keeps a listing
@@ -98,3 +100,47 @@ def canonical_offer_url(url: str | None) -> str:
 def offer_identity(platform: str | None, url: str | None) -> str:
     """Dedupe key for an offer — same listing, same platform, one entry."""
     return f"{(platform or '').upper()}:{canonical_offer_url(url)}"
+
+
+@dataclass(frozen=True)
+class CleanupGroup:
+    """One real listing and the duplicate rows that accumulated for it."""
+
+    keep_id: int
+    canonical_url: str
+    drop_ids: tuple[int, ...]
+
+
+def plan_duplicate_cleanup(rows: Iterable[tuple]) -> list[CleanupGroup]:
+    """Decide which stored offer row survives per listing.
+
+    Takes `(id, set_id, platform, offer_url, last_seen_at)` tuples and groups
+    them by the listing they point at. The freshest row wins, because it holds
+    the most recent analysis; ties go to the highest id, the one written last.
+
+    Rows without a URL have no identity to group on and are left untouched —
+    a cleanup must not delete what it cannot identify.
+    """
+    groups: dict[tuple[int, str, str], list[tuple]] = {}
+    for row in rows:
+        offer_id, set_id, platform, offer_url, last_seen_at = row
+        canonical = canonical_offer_url(offer_url)
+        if not canonical:
+            continue
+        groups.setdefault((set_id, (platform or "").upper(), canonical), []).append(
+            (offer_id, last_seen_at)
+        )
+
+    plan: list[CleanupGroup] = []
+    for (_set_id, _platform, canonical), members in groups.items():
+        # datetime and None do not compare, so absent timestamps sort oldest.
+        members.sort(key=lambda item: (item[1] is not None, item[1], item[0]), reverse=True)
+        keep_id = members[0][0]
+        plan.append(
+            CleanupGroup(
+                keep_id=keep_id,
+                canonical_url=canonical,
+                drop_ids=tuple(member[0] for member in members[1:]),
+            )
+        )
+    return plan

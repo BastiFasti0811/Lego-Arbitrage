@@ -3,7 +3,7 @@
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -52,6 +52,9 @@ class Offer(Base):
         Index("ix_offers_set_platform", "set_id", "platform"),
         Index("ix_offers_status", "status"),
         Index("ix_offers_discovered", "discovered_at"),
+        # One listing, one row. The upsert key alone relied on every writer
+        # canonicalising its URL first; this makes it a property of the table.
+        UniqueConstraint("set_id", "platform", "offer_url", name="uq_offers_set_platform_url"),
     )
 
     # ── Foreign Key ──────────────────────────────────────
