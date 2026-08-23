@@ -9,6 +9,9 @@ const CONDITION_LABELS = {
   NEW_OPEN_BOX: "Neu, geöffnet",
   USED_COMPLETE: "Gebraucht, komplett",
   USED_INCOMPLETE: "Gebraucht, unvollständig",
+  // Ohne Eintrag verschwand das Badge — und mit ihm der einzige Hinweis
+  // darauf, warum der erwartete Erlös 30 % unter dem Marktpreis liegt.
+  UNKNOWN: "Zustand unbekannt",
 };
 
 const money = (value) =>
@@ -49,6 +52,19 @@ export default function DealCard({ deal, onClick }) {
 
   const price = money(deal.price ?? deal.offer_price);
   const marketPrice = money(deal.market_price);
+  // Gegen die Basis vergleichen, auf der der Erlös gerechnet wurde, nicht
+  // gegen market_price: im Live-Pfad ist das der Konsens, die Erlösrechnung
+  // läuft aber gegen die Referenz. Der alte Vergleich blendete die Zeile
+  // ausgerechnet dann aus, wenn die beiden auseinanderliefen.
+  const priceBasis = deal.reference_price ?? deal.market_price;
+  // Nur zeigen, wenn der Zustand den Erlös tatsächlich drückt — bei
+  // versiegelter Ware wäre die zweite Zahl identisch und damit Rauschen.
+  const expectedPrice =
+    typeof deal.expected_sale_price === "number" &&
+    typeof priceBasis === "number" &&
+    deal.expected_sale_price < priceBasis
+      ? money(deal.expected_sale_price)
+      : null;
   const shipping = deal.shipping;
   const shippingLabel =
     typeof shipping === "number" ? (shipping > 0 ? `zzgl. ${money(shipping)} Versand` : "Versand frei") : null;
@@ -84,6 +100,12 @@ export default function DealCard({ deal, onClick }) {
             <div className="text-text-muted text-xs">
               {"Markt "}
               {marketPrice}
+            </div>
+          )}
+          {expectedPrice && (
+            <div className="text-check text-xs" title="Erwarteter Erlös in diesem Zustand">
+              {"Erlös "}
+              {expectedPrice}
             </div>
           )}
           <div className={`font-[family-name:var(--font-mono)] text-sm font-bold ${roiColor}`}>

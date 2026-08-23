@@ -6,6 +6,7 @@ import httpx
 import structlog
 from sqlalchemy import select
 
+from app.config import settings
 from app.domain.identity import is_plausible_price as _is_plausible_price
 from app.domain.identity import is_set_offer
 from app.domain.offer_url import canonical_offer_url
@@ -82,7 +83,7 @@ def scrape_set_prices(set_number: str) -> dict:
 
 async def _scrape_set_prices_async(set_number: str) -> dict:
     """Async implementation of price scraping."""
-    results = {"set_number": set_number, "prices": 0, "offers": 0, "errors": []}
+    results = {"set_number": set_number, "prices": 0, "offers": 0, "errors": [], "blocked": False}
 
     async with async_session() as session:
         result = await session.execute(select(LegoSet).where(LegoSet.set_number == set_number))
@@ -128,6 +129,19 @@ async def _scrape_set_prices_async(set_number: str) -> dict:
                             )
                         )
                         results["prices"] += 1
+            except httpx.HTTPStatusError as exc:
+                results["errors"].append(f"{scraper_cls.__name__}: HTTP {exc.response.status_code}")
+                if exc.response.status_code in (403, 429):
+                    results["blocked"] = True
+                    logger.warning(
+                        "scrape.price_blocked", scraper=scraper_cls.__name__, status=exc.response.status_code
+                    )
+                else:
+                    # Ohne diesen Zweig ist ein 502 nur noch im Rueckgabewert
+                    # sichtbar — vorher lief er in den generischen Handler.
+                    logger.error(
+                        "scrape.price_failed", scraper=scraper_cls.__name__, status=exc.response.status_code
+                    )
             except Exception as exc:
                 results["errors"].append(f"{scraper_cls.__name__}: {exc}")
                 logger.error("scrape.price_failed", scraper=scraper_cls.__name__, error=str(exc))
@@ -138,6 +152,17 @@ async def _scrape_set_prices_async(set_number: str) -> dict:
                     info = await scraper.get_set_info(set_number)
                     if info:
                         _apply_set_info(lego_set, info, overwrite_uvp=True)
+            except httpx.HTTPStatusError as exc:
+                results["errors"].append(f"{scraper_cls.__name__} metadata: HTTP {exc.response.status_code}")
+                if exc.response.status_code in (403, 429):
+                    results["blocked"] = True
+                    logger.warning(
+                        "scrape.metadata_blocked", scraper=scraper_cls.__name__, status=exc.response.status_code
+                    )
+                else:
+                    logger.error(
+                        "scrape.metadata_failed", scraper=scraper_cls.__name__, status=exc.response.status_code
+                    )
             except Exception as exc:
                 results["errors"].append(f"{scraper_cls.__name__} metadata: {exc}")
                 logger.error("scrape.metadata_failed", scraper=scraper_cls.__name__, error=str(exc))
@@ -145,8 +170,30 @@ async def _scrape_set_prices_async(set_number: str) -> dict:
         for scraper_cls in OFFER_SCRAPERS:
             try:
                 async with scraper_cls() as scraper:
+                    # Bewusst ohne _enrich_offer_details: KleinanzeigenScraper
+                    # steht auch in OFFER_SCRAPERS, und die 2h-Lane holt
+                    # dieselben Detailseiten. Beide anzureichern verdreifachte
+                    # den Fussabdruck, ohne eine einzige Zusatzinfo zu liefern.
                     offers = await scraper.get_offers(set_number)
                 results["offers"] += await _upsert_offers(session, lego_set, offers, now)
+            except httpx.HTTPStatusError as exc:
+                results["errors"].append(f"{scraper_cls.__name__} offers: HTTP {exc.response.status_code}")
+                if exc.response.status_code in (403, 429):
+                    # Ohne dieses Flag verschluckt das generische except den
+                    # Rate-Limit-Hinweis, und der Watchlist-Lauf haemmert
+                    # ueber alle restlichen Sets weiter.
+                    results["blocked"] = True
+                    logger.warning(
+                        "scrape.offers_blocked",
+                        scraper=scraper_cls.__name__,
+                        status=exc.response.status_code,
+                    )
+                else:
+                    logger.error(
+                        "scrape.offers_failed",
+                        scraper=scraper_cls.__name__,
+                        status=exc.response.status_code,
+                    )
             except Exception as exc:
                 results["errors"].append(f"{scraper_cls.__name__} offers: {exc}")
                 logger.error("scrape.offers_failed", scraper=scraper_cls.__name__, error=str(exc))
@@ -183,7 +230,7 @@ def scrape_all_watched_sets() -> dict:
 
 async def _scrape_all_watched_async() -> dict:
     """Async implementation of full watchlist scraping."""
-    summary = {"total_sets": 0, "success": 0, "errors": 0}
+    summary = {"total_sets": 0, "success": 0, "errors": 0, "aborted": False}
 
     async with async_session() as session:
         result = await session.execute(
@@ -201,12 +248,79 @@ async def _scrape_all_watched_async() -> dict:
                 summary["errors"] += 1
             else:
                 summary["success"] += 1
+            if result.get("blocked"):
+                summary["aborted"] = True
+                logger.warning("scrape.all_aborted_blocked", set_number=set_number)
+                break
         except Exception as exc:
             summary["errors"] += 1
             logger.error("scrape.set_failed", set_number=set_number, error=str(exc))
 
     logger.info("scrape.all_complete", **summary)
     return summary
+
+
+async def _enrich_offer_details(scraper, lego_set: LegoSet, offers) -> int:
+    """Read condition off the listing page — only for plausible set offers.
+
+    The result list never carries the condition, so it used to be guessed from
+    title keywords: "Lego Eisvogel 10331" gave no hint that the set comes
+    without box or instructions, and a 10 EUR listing was valued against the
+    37,89 EUR a complete one fetches.
+
+    The detail page costs one request per listing, so it is fetched only for
+    offers that passed the identity filter and would actually reach the feed —
+    and only for the `scraper_detail_max_per_set` cheapest of those. Cheapest
+    first because that is where the condition decides GO/NO-GO: a listing far
+    under market is either the find or a wreck, and only the detail page tells
+    them apart. Scrapers without the capability are skipped.
+    """
+    if not hasattr(scraper, "fetch_offer_details"):
+        return 0
+
+    reference_price = getattr(lego_set, "current_market_price", None) or getattr(lego_set, "uvp_eur", None)
+    candidates = [
+        offer
+        for offer in offers
+        if offer.offer_url
+        and is_set_offer(
+            offer.offer_title,
+            lego_set.set_number,
+            price_eur=offer.price_eur,
+            reference_price=reference_price,
+            set_name=getattr(lego_set, "set_name", None),
+        )
+    ]
+    # Ein fehlender Preis ist unbekannt, nicht teuer — er gehoert nach vorne,
+    # statt hinten aus dem Budget zu fallen.
+    candidates.sort(key=lambda o: (o.price_eur is not None, o.price_eur or 0.0))
+
+    cap = settings.scraper_detail_max_per_set
+    if 0 < cap < len(candidates):
+        # Kein stiller Schnitt: was hier wegfaellt, steht im Log. Ein Deckel,
+        # den niemand sieht, liest sich spaeter wie vollstaendige Abdeckung.
+        logger.info(
+            "scrape.details_capped",
+            set_number=lego_set.set_number,
+            scraper=type(scraper).__name__,
+            candidates=len(candidates),
+            cap=cap,
+        )
+        candidates = candidates[:cap]
+
+    enriched = 0
+    for offer in candidates:
+        details = await scraper.fetch_offer_details(offer.offer_url)
+        if not details:
+            continue
+
+        offer.condition = details.condition
+        offer.box_damage = details.box_damage
+        offer.sealed = details.condition == "NEW_SEALED"
+        offer.details_verified = True
+        enriched += 1
+
+    return enriched
 
 
 async def _upsert_offers(session, lego_set: LegoSet, offers, now: datetime) -> int:
@@ -257,9 +371,15 @@ async def _upsert_offers(session, lego_set: LegoSet, offers, now: datetime) -> i
             existing_offer.price_eur = offer.price_eur
             existing_offer.shipping_eur = offer.shipping_eur
             existing_offer.total_price_eur = offer.price_eur + (offer.shipping_eur or 0)
-            existing_offer.condition = offer.condition
-            existing_offer.box_damage = offer.box_damage
-            existing_offer.sealed = offer.sealed
+            # Nur ein gelesener Zustand darf einen gelesenen ersetzen. Faellt ein
+            # Angebot beim naechsten Lauf aus dem Detail-Cap, liefert die Liste
+            # wieder "UNKNOWN" — das duerfte sonst ein geprueftes
+            # USED_INCOMPLETE ueberschreiben und den erwarteten Erloes um 40 %
+            # nach oben luegen.
+            if getattr(offer, "details_verified", False):
+                existing_offer.condition = offer.condition
+                existing_offer.box_damage = offer.box_damage
+                existing_offer.sealed = offer.sealed
             existing_offer.seller_name = offer.seller_name
             existing_offer.seller_rating = offer.seller_rating
             existing_offer.seller_location = offer.seller_location
@@ -322,10 +442,35 @@ async def _scrape_kleinanzeigen_async() -> dict:
 
         now = datetime.now(UTC)
         for lego_set in lego_sets:
+            blocked_during_enrich = False
             try:
                 async with KleinanzeigenScraper() as scraper:
                     offers = await scraper.get_offers(lego_set.set_number)
+                    try:
+                        await _enrich_offer_details(scraper, lego_set, offers)
+                    except httpx.HTTPStatusError as exc:
+                        if exc.response.status_code not in (403, 429):
+                            raise
+                        # Die Trefferliste steht schon — sie faellt nicht mit
+                        # dem Block zusammen. Erst speichern, dann aufhoeren.
+                        blocked_during_enrich = True
+                        results["errors"].append(
+                            f"{lego_set.set_number}: HTTP {exc.response.status_code} (Anreicherung)"
+                        )
+                        logger.warning(
+                            "scrape.kleinanzeigen_blocked",
+                            set_number=lego_set.set_number,
+                            status=exc.response.status_code,
+                            stage="enrich",
+                        )
                 results["offers"] += await _upsert_offers(session, lego_set, offers, now)
+                # Pro Set committen: bei 11 Requests je Set reisst der Lauf ab
+                # ~14 Sets ins Celery-Softlimit (540 s), und ein Commit erst am
+                # Ende haette dann den ganzen Durchlauf verworfen.
+                await session.commit()
+                if blocked_during_enrich:
+                    results["aborted"] = True
+                    break
             except httpx.HTTPStatusError as exc:
                 results["errors"].append(f"{lego_set.set_number}: HTTP {exc.response.status_code}")
                 if exc.response.status_code in (403, 429):
@@ -334,6 +479,7 @@ async def _scrape_kleinanzeigen_async() -> dict:
                         "scrape.kleinanzeigen_blocked",
                         set_number=lego_set.set_number,
                         status=exc.response.status_code,
+                        stage="list",
                     )
                     break
             except Exception as exc:

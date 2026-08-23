@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.condition import classify_listing_condition
 from app.domain.platforms import detect_source_platform as infer_source_platform
 from app.models import AnalysisHistoryEntry, async_session, get_session
 from app.scrapers.kleinanzeigen import _parse_ka_price
@@ -65,7 +66,9 @@ class ParseUrlResponse(BaseModel):
     price: float | None = None
     shipping: float | None = None
     title: str | None = None
-    condition: str = "NEW_SEALED"
+    # Wie die lokale Variable in parse_listing_url: nicht erkannt heisst
+    # unbekannt, nicht versiegelt.
+    condition: str = "UNKNOWN"
     platform: str = "UNKNOWN"
     url: str = ""
     seller_url: str | None = None
@@ -197,6 +200,9 @@ class AnalysisResponse(BaseModel):
     market_price: float
     reference_price: float | None = None
     reference_label: str | None = None
+    # Der ROI wird gegen diesen Wert gerechnet, nicht gegen reference_price.
+    # Fehlt er in der Antwort, ist die Zahl fuer den Nutzer nicht nachrechenbar.
+    expected_sale_price: float | None = None
     still_in_retail: bool = False
     eol_status: str | None = None
     calibration_roi_delta: float | None = None
@@ -443,6 +449,7 @@ async def analyze_offer(
         market_price=analysis.market_consensus.consensus_price,
         reference_price=analysis.reference_price,
         reference_label=analysis.reference_label,
+        expected_sale_price=analysis.expected_sale_price,
         still_in_retail=context.still_in_retail,
         eol_status=context.eol_status,
         num_sources=analysis.market_consensus.num_sources,
@@ -676,7 +683,11 @@ async def parse_listing_url(request: ParseUrlRequest):
     price = None
     shipping = None
     set_number = None
-    condition = "NEW_SEALED"
+    # Nicht NEW_SEALED: was wir nicht aus dem Titel lesen, wissen wir nicht —
+    # und "unbekannt" kostet 30 % Erloes statt den vollen Marktpreis zu
+    # unterstellen. Sonst haette der Default jede Nicht-Erkennung auf 1.0
+    # gehoben und die Titel-Lesung unten wirkungslos gemacht.
+    condition = "UNKNOWN"
 
     if platform == "KLEINANZEIGEN":
         # Extract title
@@ -743,14 +754,13 @@ async def parse_listing_url(request: ParseUrlRequest):
         if title_set_numbers:
             set_number = title_set_numbers[0]
 
-        # Detect condition from title
-        title_lower = title.lower()
-        if any(kw in title_lower for kw in ["versiegelt", "sealed", "misb", "ovp", "neu"]):
-            condition = "NEW_SEALED"
-        elif any(kw in title_lower for kw in ["geöffnet", "open", "aufgebaut"]):
-            condition = "NEW_OPEN"
-        elif any(kw in title_lower for kw in ["gebraucht", "used", "bespielt"]):
-            condition = "USED_COMPLETE"
+        # Zustand aus dem Titel — dieselbe Lesung wie im Scraper. Die fruehere
+        # Substring-Suche machte aus "neuwertig" und "Neupreis 899" ein
+        # NEW_SEALED und kostete damit seit der Zustandsbewertung nicht mehr
+        # nur 2 Risikopunkte, sondern den vollen Faktor 1.0.
+        detected, _box_damage = classify_listing_condition(None, title)
+        if detected != "UNKNOWN":
+            condition = detected
 
     # Merge set numbers from title and URL, deduplicate preserving order
     all_set_numbers = list(dict.fromkeys(title_set_numbers + url_set_numbers))

@@ -1,6 +1,6 @@
 import pytest
 
-from app.domain.identity import is_set_offer
+from app.domain.identity import is_set_offer, mentions_other_set_numbers
 
 SET = "42143"
 REFERENCE = 400.0
@@ -99,3 +99,167 @@ def test_listing_without_set_number_matches_via_set_name():
 
 def test_multi_set_lot_is_not_valued_as_one_set():
     assert is_set_offer("LEGO Konvolut 42143 + 42115 Sammlung", SET, price_eur=700.0) is False
+
+
+# ── Feldbefunde 2026-08-21: drei Angebote, die als Deal im Feed standen ──
+
+
+class TestPartOfSetIsNotTheSet:
+    """Ein Teil aus dem Set traegt dessen Nummer, ist aber nicht das Set."""
+
+    def test_single_minifigure_from_the_set_is_rejected(self):
+        # Amazon, 21,81 EUR gegen 169,99 EUR Marktpreis: der Anbieter verkauft
+        # nur Grogu aus 75292, mit der Setnummer im Titel.
+        assert is_set_offer(
+            "LEGO Star Wars The Mandalorian Minifigure - The Child (Grogu) Baby Yoda 75292",
+            "75292",
+            price_eur=21.81,
+            reference_price=169.99,
+            set_name="The Mandalorian Transporter des Kopfgeldjaegers",
+        ) is False
+
+    def test_german_minifigure_wording_is_rejected(self):
+        assert is_set_offer(
+            "Lego 75292 Minifigur Kopfgeldjaeger einzeln", "75292", price_eur=15.0, reference_price=169.99
+        ) is False
+
+    def test_set_advertising_its_minifigures_stays_a_set(self):
+        # Der Marker darf ein echtes Set nicht ausschliessen, nur weil es mit
+        # seinen Minifiguren wirbt — der Preis entscheidet.
+        assert is_set_offer(
+            "LEGO Star Wars 75292 Transporter des Kopfgeldjaegers mit 4 Minifiguren, OVP",
+            "75292",
+            price_eur=155.0,
+            reference_price=169.99,
+        ) is True
+
+
+class TestCustomPartsAreNotTheSet:
+    """MOC-Teile werden fuer ein Set verkauft, sind aber nicht von LEGO."""
+
+    def test_moc_extension_floors_are_rejected(self):
+        # Kleinanzeigen, 89 EUR gegen 270,99 EUR: Zusatzetagen fuer vier Sets.
+        assert is_set_offer(
+            "LEGO MOC Zusatzetagen für 10326, 10350, 10297, 76294 NEU&OVP",
+            "10326",
+            price_eur=89.0,
+            reference_price=270.99,
+            set_name="Natural History Museum",
+        ) is False
+
+    def test_accessory_advertised_for_a_set_number_is_rejected(self):
+        assert is_set_offer(
+            "Beleuchtung für 10326 Naturkundemuseum", "10326", price_eur=39.0, reference_price=270.99
+        ) is False
+
+
+class TestSeveralSetNumbersMakeThePriceAmbiguous:
+    """Nennt ein Titel mehrere Sets, gehoert der Preis nicht einem davon."""
+
+    def test_listing_naming_four_sets_is_rejected(self):
+        assert is_set_offer(
+            "Verkaufe LEGO 10326, 10350, 10297 und 76294 neuwertig",
+            "10326",
+            price_eur=89.0,
+            reference_price=270.99,
+        ) is False
+
+    def test_release_year_is_not_mistaken_for_a_set_number(self):
+        assert is_set_offer(
+            "LEGO Icons 10326 Naturkundemuseum von 2023, neu und versiegelt",
+            "10326",
+            price_eur=240.0,
+            reference_price=270.99,
+        ) is True
+
+    def test_piece_count_is_not_mistaken_for_a_set_number(self):
+        assert is_set_offer(
+            "LEGO 10326 Naturkundemuseum, 4014 Teile, komplett", "10326", price_eur=240.0, reference_price=270.99
+        ) is True
+
+
+class TestPostcodesAreNotSetNumbers:
+    """Fuenfstellige Zahlen im Titel sind auf Kleinanzeigen meist die PLZ.
+
+    Solche Angebote wurden nicht nur aus dem Feed gehalten, sondern in
+    _upsert_offers gar nicht erst gespeichert.
+    """
+
+    def test_a_pickup_postcode_does_not_disqualify(self):
+        for title in (
+            "Lego Eisvogel 10331 Abholung 40233 Duesseldorf",
+            "LEGO 10331 Eisvogel - Selbstabholung 22307 Hamburg",
+            "LEGO 10331 Eisvogel, Versand 5 EUR oder Abholung 80331",
+        ):
+            assert mentions_other_set_numbers(title, "10331") is False, title
+
+    def test_a_phone_number_does_not_disqualify(self):
+        assert mentions_other_set_numbers("LEGO 10331 Eisvogel, Tel 0176 12345678", "10331") is False
+
+    def test_a_negotiable_price_is_a_price_not_a_set(self):
+        assert mentions_other_set_numbers("LEGO 75192 Millennium Falcon fuer 1000 VB", "75192") is False
+
+    def test_a_real_bundle_is_still_caught(self):
+        assert mentions_other_set_numbers("LEGO Konvolut 10326, 10350, 10297, 76294", "10326") is True
+        assert mentions_other_set_numbers("LEGO 10331 und 10326 zusammen", "10331") is True
+
+
+class TestPriceInTheTitleIsNotASetNumber:
+    """Vierstellige Preise treffen die Klasse, in der Arbitrage lohnt.
+
+    Das abschliessende \\b galt fuer die ganze Alternation und verlangte damit
+    auch hinter "€" ein Wortzeichen — "1500 € VB" galt als zweite Setnummer
+    und das Angebot wurde gar nicht erst gespeichert.
+    """
+
+    def test_a_euro_sign_is_a_unit(self):
+        for title in (
+            "LEGO 10326 Rathaus, 1500 € VB",
+            "LEGO 10326 Rathaus, 1500€ VB",
+            "LEGO 10326 Rathaus, 1500 EUR VB",
+        ):
+            assert mentions_other_set_numbers(title, "10326") is False, title
+
+    def test_a_price_keyword_in_front_of_the_number(self):
+        assert mentions_other_set_numbers("LEGO 10326 Rathaus, Festpreis 1500", "10326") is False
+
+    def test_a_real_second_set_is_still_caught(self):
+        assert mentions_other_set_numbers("LEGO 10326 Rathaus und 75192 Falcon", "10326") is True
+
+
+class TestGermanPriceNotation:
+    """"1500,- VB" ist die Normalschreibweise; jedes Trennzeichen zwischen
+    Ziffern und Einheit brach den Match, und das Angebot wurde nie gespeichert."""
+
+    def test_decimal_and_dash_notations(self):
+        for suffix in ("1500,- VB", "1500.-", "1500,00 €", "1500,00", "1.500 €"):
+            title = f"LEGO Icons 10326 Notre Dame {suffix}"
+            assert mentions_other_set_numbers(title, "10326") is False, suffix
+
+    def test_price_words_without_a_currency(self):
+        for suffix in ("1500 verhandelbar", "1500 Fixpreis", "1500 VB"):
+            title = f"LEGO Icons 10326 Notre Dame {suffix}"
+            assert mentions_other_set_numbers(title, "10326") is False, suffix
+
+    def test_a_price_after_fuer_is_not_an_accessory_reference(self):
+        # "fuer 1200 VB" ist ein Preis; das Zubehoer-Muster verwarf es hart.
+        for suffix in ("für 1200 VB", "für 1200,-", "für 1400 Festpreis", "für 1200,00 €"):
+            title = f"LEGO Icons 10326 Notre Dame {suffix}"
+            assert is_set_offer(title, "10326", price_eur=1200.0, reference_price=1300.0) is True, suffix
+
+    def test_real_accessories_are_still_rejected(self):
+        for title in ("Wandhalterung für Lego 10326", "LocoLee Led Licht Set für Lego 10326"):
+            assert is_set_offer(title, "10326", price_eur=25.0, reference_price=800.0) is False, title
+
+
+class TestSetNumbersWithoutASpaceBetweenThem:
+    def test_a_comma_list_is_not_a_decimal_price(self):
+        # Ohne (?!\\d) frisst die Dezimalnotation die ersten zwei Ziffern der
+        # zweiten Setnummer — und das Konvolut wird zum Einzelset-Schnaeppchen.
+        for title in ("LEGO 10326,10350 zu verkaufen", "LEGO 10326.10350"):
+            assert mentions_other_set_numbers(title, "10350") is True, title
+
+    def test_real_decimal_prices_are_still_prices(self):
+        for suffix in ("1500,00", "1500,- VB", "1.500 €"):
+            title = f"LEGO Icons 10326 Notre Dame {suffix}"
+            assert mentions_other_set_numbers(title, "10326") is False, suffix

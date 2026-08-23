@@ -35,6 +35,10 @@ class AuctionFeeProfile:
 class AuctionBidResult:
     platform: str
     target_roi_percent: float
+    # ACHTUNG: nicht dasselbe wie AnalysisResult.expected_sale_price. Hier steht
+    # der unkorrigierte Referenzpreis, dort der um den Zustand geminderte
+    # Erloes. Folgenlos nur, solange analyze_deal hier ohne condition laeuft —
+    # wer das aendert, muss auch diese Zeile anfassen.
     expected_sale_price: float
     net_sale_revenue: float
     purchase_shipping: float

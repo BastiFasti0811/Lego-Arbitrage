@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 from app.config import settings
 from app.domain.classification import categorize_release_year, current_year
+from app.domain.condition import condition_value_factor
 from app.engine.market_consensus import MarketConsensus, calculate_consensus
 from app.engine.risk_scorer import RiskBreakdown, calculate_risk_score
 from app.engine.roi_calculator import ROIResult, calculate_roi
@@ -40,6 +41,8 @@ class AnalysisResult:
     market_consensus: MarketConsensus
     reference_price: float
     reference_label: str
+    # Was das Exemplar in seinem Zustand erloest — Basis der ROI-Rechnung.
+    expected_sale_price: float
     offer_price: float
     discount_vs_uvp: float | None  # Percentage
 
@@ -163,9 +166,14 @@ def analyze_deal(
         offer_price=offer_price,
         still_in_retail=still_in_retail,
     )
+    # Der Marktpreis gilt fuer vollstaendige Ware. Was ein gebrauchtes oder
+    # unvollstaendiges Exemplar davon erloest, entscheidet ueber den ROI —
+    # bisher wirkte der Zustand nur auf den Risk-Score.
+    expected_sale_price = round(reference_price * condition_value_factor(condition, box_damage), 2)
+
     roi = calculate_roi(
         purchase_price=offer_price,
-        market_price=reference_price,
+        market_price=expected_sale_price,
         purchase_shipping=purchase_shipping,
         holding_months=holding_months,
         uvp=uvp,
@@ -235,6 +243,7 @@ def analyze_deal(
         market_consensus=consensus,
         reference_price=reference_price,
         reference_label=reference_label,
+        expected_sale_price=expected_sale_price,
         offer_price=offer_price,
         discount_vs_uvp=discount_vs_uvp,
         roi=roi,

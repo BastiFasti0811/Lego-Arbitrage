@@ -5,7 +5,15 @@ import httpx
 import structlog
 from bs4 import BeautifulSoup
 
-from app.scrapers.base import BaseScraper, ScrapedOffer, ScrapedPrice, ScrapedSetInfo, parse_de_price
+from app.domain.condition import classify_listing_condition
+from app.scrapers.base import (
+    BaseScraper,
+    OfferDetails,
+    ScrapedOffer,
+    ScrapedPrice,
+    ScrapedSetInfo,
+    parse_de_price,
+)
 
 logger = structlog.get_logger()
 
@@ -28,6 +36,55 @@ class KleinanzeigenScraper(BaseScraper):
     IMPORTANT: Kleinanzeigen has Captcha and bot detection.
     Production use requires Playwright with stealth mode.
     """
+
+    async def fetch_offer_details(self, offer_url: str) -> OfferDetails | None:
+        """Read condition and description from a single listing's page.
+
+        The result list carries neither, so the scraper used to guess the
+        condition from title keywords — a listing titled "Lego Eisvogel 10331"
+        gave no hint that it comes without box or instructions.
+
+        A 403/429 is re-raised: that is the host asking us to stop, and the
+        caller reduces pressure instead of working through the remaining
+        listings. Any other failure just leaves the offer unenriched.
+        """
+        try:
+            html = await self._fetch(offer_url)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (403, 429):
+                raise
+            logger.warning("kleinanzeigen.details_failed", url=offer_url, status=exc.response.status_code)
+            return None
+        except Exception as exc:
+            logger.warning("kleinanzeigen.details_failed", url=offer_url, error=str(exc))
+            return None
+
+        soup = BeautifulSoup(html, "lxml")
+
+        label = None
+        details = soup.select(".addetailslist--detail")
+        for detail in details:
+            if detail.get_text(" ", strip=True).lower().startswith("zustand"):
+                value_el = detail.select_one(".addetailslist--detail--value")
+                label = value_el.get_text(strip=True) if value_el else None
+                break
+
+        description_el = soup.select_one("#viewad-description-text")
+        description = description_el.get_text("\n", strip=True) if description_el else None
+
+        if not details and description_el is None:
+            # Weder Detailliste noch Beschreibung: das ist keine Anzeige ohne
+            # Zustandsangabe, sondern eine Seite, die wir nicht gelesen haben
+            # (Selektor-Drift, Captcha, Login-Wall). Stumm "UNKNOWN" zu melden
+            # liesse den Cap-Log "10 Angebote geprueft" behaupten.
+            logger.warning("kleinanzeigen.detail_page_unreadable", url=offer_url)
+            return None
+
+        title_el = soup.select_one("#viewad-title")
+        title = title_el.get_text(" ", strip=True) if title_el else ""
+        # Manche Anzeigen fuehren "ohne OVP" nur im Titel.
+        condition, box_damage = classify_listing_condition(label, f"{title}\n{description or ''}")
+        return OfferDetails(condition=condition, box_damage=box_damage, description=description)
 
     def _build_search_url(self, set_number: str) -> str:
         """Build Kleinanzeigen search URL."""
@@ -160,9 +217,12 @@ class KleinanzeigenScraper(BaseScraper):
                     )
                     location = location_el.get_text(strip=True) if location_el else None
 
-                    # Condition from title analysis
-                    sealed = any(kw in title.lower() for kw in ["versiegelt", "sealed", "neu", "ovp", "misb"])
-                    box_damage = any(kw in title.lower() for kw in ["beschädigt", "dellen", "damage"])
+                    # Der Titel darf nur zaehlen, wenn er den Zustand
+                    # ausspricht. Die alte Substring-Suche machte aus "neuwertig"
+                    # und "Neupreis" ein NEW_SEALED — womit ein ungeprueftes
+                    # Angebot besser dastand als ein geprueftes.
+                    condition, box_damage = classify_listing_condition(None, title)
+                    sealed = condition == "NEW_SEALED"
 
                     offers.append(ScrapedOffer(
                         platform="KLEINANZEIGEN",
@@ -172,7 +232,7 @@ class KleinanzeigenScraper(BaseScraper):
                         seller_location=location,
                         sealed=sealed,
                         box_damage=box_damage,
-                        condition="NEW_SEALED" if sealed else "UNKNOWN",
+                        condition=condition,
                     ))
                 except Exception:
                     continue

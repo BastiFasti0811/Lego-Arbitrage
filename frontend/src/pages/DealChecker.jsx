@@ -820,9 +820,12 @@ export default function DealChecker() {
                       className="w-full bg-bg-card border border-border rounded-lg px-2 py-1.5 text-text-primary text-sm"
                     >
                       <option value="NEW_SEALED">Neu &amp; Versiegelt</option>
-                      <option value="NEW_OPEN">{"Neu & Ge\u00f6ffnet"}</option>
+                      {/* Kanonischer Wert: der Parser liefert NEW_OPEN_BOX, und
+                          mit "NEW_OPEN" traf die Vorauswahl keine Option. */}
+                      <option value="NEW_OPEN_BOX">{"Neu & Ge\u00f6ffnet"}</option>
                       <option value="USED_COMPLETE">Gebraucht (komplett)</option>
                       <option value="USED_INCOMPLETE">{"Gebraucht (unvollst\u00e4ndig)"}</option>
+                      <option value="UNKNOWN">Zustand unbekannt</option>
                     </select>
                   </div>
                   <div>
@@ -1269,6 +1272,19 @@ export default function DealChecker() {
                 <span className="text-text-muted">Gesamtkosten (Kauf)</span>
                 <span className="text-text-primary font-[family-name:var(--font-mono)]">{formatMoney(result.total_purchase_cost)}</span>
               </div>
+              {/* Der ROI wird gegen diesen Wert gerechnet, nicht gegen den
+                  Referenzpreis darüber. Ohne die Zeile klafft zwischen der
+                  angezeigten Basis und dem Netto-Gewinn genau der
+                  Zustandsabschlag, und die Rechnung geht auf dem Schirm nicht
+                  auf. Nur zeigen, wenn der Zustand tatsächlich drückt. */}
+              {typeof result.expected_sale_price === "number" &&
+                typeof result.reference_price === "number" &&
+                result.expected_sale_price < result.reference_price && (
+                <div className="flex justify-between">
+                  <span className="text-text-muted">{"Erwarteter Erl\u00f6s (Zustand)"}</span>
+                  <span className="text-text-primary font-[family-name:var(--font-mono)]">{formatMoney(result.expected_sale_price)}</span>
+                </div>
+              )}
               {result.calibration_roi_delta != null && (
                 <div className="flex justify-between">
                   <span className="text-text-muted">Lern-Korrektur</span>

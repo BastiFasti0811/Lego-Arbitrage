@@ -356,6 +356,7 @@ class EbaySoldScraper(BaseScraper):
                         shipping_eur=shipping,
                         seller_name=seller_name,
                         is_auction=is_auction,
+                        sealed=True,
                         condition="NEW_SEALED",
                     ))
                 except Exception:

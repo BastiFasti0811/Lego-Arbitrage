@@ -71,7 +71,8 @@ class Offer(Base):
     # ── Condition ────────────────────────────────────────
     condition: Mapped[str] = mapped_column(String(20), default=OfferCondition.UNKNOWN.value)
     box_damage: Mapped[bool] = mapped_column(default=False)
-    sealed: Mapped[bool] = mapped_column(default=True)
+    # Wie ScrapedOffer.sealed: ein unbekannter Zustand ist nicht versiegelt.
+    sealed: Mapped[bool] = mapped_column(default=False)
 
     # ── Seller Info ──────────────────────────────────────
     seller_name: Mapped[str | None] = mapped_column(String(200))

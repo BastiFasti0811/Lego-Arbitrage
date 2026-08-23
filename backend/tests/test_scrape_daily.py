@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from app.tasks import scrape_daily
@@ -43,7 +44,7 @@ async def test_scrape_set_prices_survives_utc_timestamp_setup(monkeypatch):
 
     results = await scrape_daily._scrape_set_prices_async("10300")
 
-    assert results == {"set_number": "10300", "prices": 0, "offers": 0, "errors": []}
+    assert results == {"set_number": "10300", "prices": 0, "offers": 0, "errors": [], "blocked": False}
     assert session.committed is True
 
 
@@ -244,3 +245,128 @@ async def test_upsert_rejects_accessory_listings():
     assert count == 1
     assert len(session.added) == 1
     assert "Wandhalterung" not in session.added[0].offer_title
+
+
+# ── Rate-Limit muss den Lauf anhalten, nicht nur eine Zeile fuellen ──
+
+
+def _blocked_error(status):
+    request = httpx.Request("GET", "https://www.kleinanzeigen.de/s-lego/k0")
+    return httpx.HTTPStatusError(
+        "blocked", request=request, response=httpx.Response(status, request=request)
+    )
+
+
+class _AllRowsResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
+class _WatchlistSession:
+    def __init__(self, set_numbers):
+        self._rows = [(n,) for n in set_numbers]
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+    async def execute(self, _query):
+        return _AllRowsResult(self._rows)
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_offer_scraper_marks_the_run(monkeypatch):
+    # Vorher schluckte das generische "except Exception" den 403, und der
+    # Watchlist-Lauf haemmerte ueber alle restlichen Sets weiter.
+    class _BlockedScraper:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def get_offers(self, _set_number):
+            raise _blocked_error(429)
+
+    session = _FakeSession(SimpleNamespace(id=1, set_number="10300", uvp_eur=None))
+    monkeypatch.setattr(scrape_daily, "async_session", lambda: session)
+    monkeypatch.setattr(scrape_daily, "PRICE_SCRAPERS", [])
+    monkeypatch.setattr(scrape_daily, "METADATA_SCRAPERS", [])
+    monkeypatch.setattr(scrape_daily, "OFFER_SCRAPERS", [_BlockedScraper])
+
+    results = await scrape_daily._scrape_set_prices_async("10300")
+
+    assert results["blocked"] is True
+    assert results["errors"] == ["_BlockedScraper offers: HTTP 429"]
+
+
+@pytest.mark.asyncio
+async def test_the_watchlist_run_stops_at_the_blocked_set(monkeypatch):
+    session = _WatchlistSession(["10300", "10331", "42143"])
+    monkeypatch.setattr(scrape_daily, "async_session", lambda: session)
+
+    visited = []
+
+    async def _fake_scrape(set_number):
+        visited.append(set_number)
+        return {"errors": [], "blocked": set_number == "10331"}
+
+    monkeypatch.setattr(scrape_daily, "_scrape_set_prices_async", _fake_scrape)
+
+    summary = await scrape_daily._scrape_all_watched_async()
+
+    assert visited == ["10300", "10331"], "42143 haette den blockenden Host weiter belastet"
+    assert summary["aborted"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_price_scraper_marks_the_run(monkeypatch):
+    # Derselbe Fehler wie in der Offer-Schleife, eine Schleife weiter oben:
+    # nur dort gab es einen HTTPStatusError-Zweig.
+    class _BlockedPriceScraper:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def get_price(self, _set_number):
+            raise _blocked_error(403)
+
+    session = _FakeSession(SimpleNamespace(id=1, set_number="10300", uvp_eur=None))
+    monkeypatch.setattr(scrape_daily, "async_session", lambda: session)
+    monkeypatch.setattr(scrape_daily, "PRICE_SCRAPERS", [_BlockedPriceScraper])
+    monkeypatch.setattr(scrape_daily, "METADATA_SCRAPERS", [])
+    monkeypatch.setattr(scrape_daily, "OFFER_SCRAPERS", [])
+
+    results = await scrape_daily._scrape_set_prices_async("10300")
+
+    assert results["blocked"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_metadata_scraper_marks_the_run(monkeypatch):
+    class _BlockedMetadataScraper:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def get_set_info(self, _set_number):
+            raise _blocked_error(429)
+
+    session = _FakeSession(SimpleNamespace(id=1, set_number="10300", uvp_eur=None))
+    monkeypatch.setattr(scrape_daily, "async_session", lambda: session)
+    monkeypatch.setattr(scrape_daily, "PRICE_SCRAPERS", [])
+    monkeypatch.setattr(scrape_daily, "METADATA_SCRAPERS", [_BlockedMetadataScraper])
+    monkeypatch.setattr(scrape_daily, "OFFER_SCRAPERS", [])
+
+    results = await scrape_daily._scrape_set_prices_async("10300")
+
+    assert results["blocked"] is True

@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     scraper_timeout: int = 30  # seconds
     proxy_url: str | None = None  # e.g. http://user:pass@proxy:port
     use_stealth_mode: bool = True
+    # Detailseiten pro Set und Quelle. Die Angebotsliste kostet einen
+    # Request, jede Detailseite einen weiteren — bei einem gaengigen Set
+    # sind das schnell dutzende, alle 6 h, mal Watchlist. 0 hebt den
+    # Deckel auf (Notausstieg, nicht der Normalfall).
+    scraper_detail_max_per_set: int = 10
 
     # ── eBay Settings ────────────────────────────────────
     ebay_sold_lookback_days: int = 60

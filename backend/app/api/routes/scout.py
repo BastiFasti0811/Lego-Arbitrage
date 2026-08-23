@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.condition import condition_value_factor
 from app.domain.identity import is_set_offer
 from app.domain.offer_url import offer_identity
 from app.engine.decision_engine import analyze_deal
@@ -51,6 +52,14 @@ class DealResult(BaseModel):
     # zwei Wochen alter Fund ist meistens längst weg.
     condition: str | None = None
     last_seen_at: datetime | None = None
+    # Was das Exemplar in seinem Zustand erloest. Weicht es vom Marktpreis
+    # ab, waere der ROI ohne diese Zahl nicht nachvollziehbar.
+    expected_sale_price: float | None = None
+    # Die Basis, auf die sich expected_sale_price bezieht. market_price ist im
+    # Live-Pfad der Konsens, die Erloesrechnung laeuft aber gegen die Referenz
+    # (bei Ware im Handel die UVP) — ohne dieses Feld stuenden auf der Karte
+    # zwei Zahlen ohne gemeinsamen Nenner.
+    reference_price: float | None = None
 
 
 class ScoutResponse(BaseModel):
@@ -66,6 +75,17 @@ def _build_deal_result(offer: Offer, lego_set: LegoSet) -> DealResult:
     risk_score = offer.risk_score or 10
     opportunity_score = round(max(0.0, estimated_roi) * max(0, 10 - risk_score), 1)
 
+    # Ohne Marktpreis und ohne UVP gibt es keine Basis: auf den Angebotspreis
+    # zurueckzufallen erzeugte "Marktpreis 10,00 EUR / Erloes 7,00 EUR" neben
+    # einem positiven ROI. Dann lieber keine Erloeszeile als eine erfundene.
+    reference_price = lego_set.current_market_price or lego_set.uvp_eur
+    market_price = reference_price or offer.price_eur
+    expected_sale_price = (
+        round(reference_price * condition_value_factor(offer.condition, offer.box_damage), 2)
+        if reference_price
+        else None
+    )
+
     return DealResult(
         set_number=lego_set.set_number,
         set_name=lego_set.set_name,
@@ -75,7 +95,7 @@ def _build_deal_result(offer: Offer, lego_set: LegoSet) -> DealResult:
         offer_url=offer.offer_url,
         price=offer.price_eur,
         shipping=offer.shipping_eur,
-        market_price=lego_set.current_market_price or lego_set.uvp_eur or offer.price_eur,
+        market_price=market_price,
         estimated_roi=estimated_roi,
         risk_score=risk_score,
         recommendation=offer.recommendation or "CHECK",
@@ -83,6 +103,8 @@ def _build_deal_result(offer: Offer, lego_set: LegoSet) -> DealResult:
         opportunity_score=opportunity_score,
         condition=offer.condition,
         last_seen_at=offer.last_seen_at,
+        expected_sale_price=expected_sale_price,
+        reference_price=reference_price,
     )
 
 
@@ -222,13 +244,19 @@ async def scout_deals(request: ScoutRequest, session: AsyncSession = Depends(get
                         offer_url=offer.offer_url,
                         price=offer.price_eur,
                         shipping=offer.shipping_eur,
-                        market_price=analysis.market_consensus.consensus_price,
+                        # Dieselbe Basis wie expected_sale_price, sonst stehen
+                        # auf der Karte zwei Zahlen ohne gemeinsamen Nenner: bei
+                        # Ware im Handel ist die Referenz die UVP, nicht der
+                        # Konsens ("Markt 60,00 / Erloes 89,99").
+                        market_price=analysis.reference_price,
                         estimated_roi=analysis.roi.roi_percent,
                         risk_score=analysis.risk.total,
                         recommendation=analysis.recommendation,
                         reason=analysis.reason,
                         opportunity_score=analysis.opportunity_score,
                         condition=offer.condition,
+                        expected_sale_price=analysis.expected_sale_price,
+                        reference_price=analysis.reference_price,
                     )
                 )
 

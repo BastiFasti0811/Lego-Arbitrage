@@ -7,6 +7,7 @@ data quality, theme popularity.
 
 from dataclasses import dataclass
 
+from app.domain.condition import normalize_condition
 from app.models.set import EOLStatus
 
 # Theme classification for risk scoring
@@ -79,12 +80,15 @@ def calculate_risk_score(
         eol_risk = 1  # Unknown EOL timing
 
     # ── 3. Condition (0-2 points) ────────────────────────
-    condition_upper = condition.upper()
-    if condition_upper in ("NEW_SEALED", "NEU", "MISB"):
+    # Dieselbe Normalisierung wie die Wertseite: die beiden Module fuehrten
+    # getrennte Alias-Listen und waren sich uneinig — "NEW_OPEN" kostete hier
+    # 2 Risikopunkte und dort still 30 % Wert.
+    normalized = normalize_condition(condition)
+    if normalized == "NEW_SEALED":
         condition_risk = 0
-    elif condition_upper in ("NEW_OPEN_BOX", "OVP", "UNGEÖFFNET"):
+    elif normalized == "NEW_OPEN_BOX":
         condition_risk = 1
-    else:  # Used, opened, incomplete
+    else:  # Used, opened, incomplete, unknown
         condition_risk = 2
 
     # ── 4. Box Damage (0-1 point) ────────────────────────

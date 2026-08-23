@@ -66,12 +66,18 @@ class ScrapedOffer:
     shipping_eur: float | None = None
     condition: str = "UNKNOWN"
     box_damage: bool = False
-    sealed: bool = True
+    # Passend zum condition-Default: ein unbekannter Zustand ist nicht
+    # versiegelt. Die Kombination "UNKNOWN, aber sealed" landete sonst so in
+    # der Datenbank und widersprach sich selbst.
+    sealed: bool = False
     seller_name: str | None = None
     seller_rating: float | None = None
     seller_location: str | None = None
     is_auction: bool = False
     auction_end: datetime | None = None
+    # True only once the listing page itself was read. The result list can only
+    # ever guess the condition, and a guess must not overwrite a reading.
+    details_verified: bool = False
     discovered_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
@@ -79,6 +85,19 @@ class ScrapedOffer:
         # here keeps every scraper on the same stable identity, so the offer
         # upsert recognises a listing it has already seen.
         self.offer_url = canonical_offer_url(self.offer_url)
+
+
+@dataclass
+class OfferDetails:
+    """What a listing's own page says, beyond what the result list showed.
+
+    Fetched only for offers that survived the identity filter — the detail page
+    costs one request per listing at a host that rate-limits.
+    """
+
+    condition: str
+    box_damage: bool
+    description: str | None = None
 
 
 @dataclass

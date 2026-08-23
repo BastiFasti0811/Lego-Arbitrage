@@ -206,6 +206,7 @@ class BrickMergeScraper(BaseScraper):
                         offer_title=f"{shop_name} — LEGO {set_number}",
                         price_eur=price,
                         seller_name=shop_name,
+                        sealed=True,
                         condition="NEW_SEALED",
                     ))
                 except Exception:
