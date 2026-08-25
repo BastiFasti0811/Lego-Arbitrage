@@ -1,5 +1,5 @@
 import VerdictBadge from "./VerdictBadge";
-import { exactMoment, relativeAge } from "../lib/datetime";
+import { exactMoment, money, relativeAge } from "../lib/datetime";
 
 // Sonderzeichen stehen hier direkt als UTF-8 (die Datei ist UTF-8, index.html
 // deklariert es). In der Preiszeile stand vorher die Escape-Sequenz fuer das
@@ -14,11 +14,6 @@ const CONDITION_LABELS = {
   // darauf, warum der erwartete Erlös 30 % unter dem Marktpreis liegt.
   UNKNOWN: "Zustand unbekannt",
 };
-
-const money = (value) =>
-  typeof value === "number" && Number.isFinite(value)
-    ? value.toLocaleString("de-DE", { style: "currency", currency: "EUR" })
-    : null;
 
 const percent = (value) =>
   typeof value === "number" && Number.isFinite(value)
@@ -137,7 +132,7 @@ export default function DealCard({ deal, onClick, onDismiss }) {
   );
 
   const className =
-    "block bg-bg-card border border-border rounded-xl p-4 hover:border-lego-blue/50 transition-all group";
+    "block h-full bg-bg-card border border-border rounded-xl p-4 hover:border-lego-blue/50 transition-all group";
 
   const card = !deal.offer_url ? (
     <div onClick={onClick} className={className}>
@@ -155,22 +150,28 @@ export default function DealCard({ deal, onClick, onDismiss }) {
     </a>
   );
 
-  if (!onDismiss) return card;
+  // Ohne offer_url weist die Route die Abwahl mit 422 ab — dann gehoert da
+  // auch kein Knopf hin, der nichts tun kann.
+  if (!onDismiss || !deal.offer_url) return card;
 
   // Der Knopf liegt NEBEN dem Anker, nicht darin: ein <button> im <a> ist
   // ungueltiges HTML, und ein Klick darauf oeffnete trotzdem das Angebot. Die
   // negativen Offsets setzen ihn auf die Kartenecke, wo er weder den Preis
   // noch die Fusszeile verdeckt. Sichtbar bleibt er auch ohne Hover, sonst
   // waere er auf dem Handy nicht erreichbar.
+  // text-text-secondary statt text-text-muted und opacity-90 statt 60: bei
+  // 60 % kam der Knopf auf 1,6:1 gegen den Kartengrund — unlesbar, und auf
+  // dem Handy hebt ihn kein Hover an.
+  const label = deal.set_name || deal.offer_title || `Set ${deal.set_number}`;
   return (
-    <div className="relative">
+    <div className="relative h-full">
       {card}
       <button
         type="button"
         onClick={() => onDismiss(deal)}
         title="Nicht mehr im Feed zeigen"
-        aria-label={`${deal.set_name || deal.offer_title} nicht mehr im Feed zeigen`}
-        className="absolute -top-2 -right-2 z-10 flex h-6 w-6 items-center justify-center rounded-full border border-border bg-bg-hover text-text-muted text-xs opacity-60 transition-opacity hover:opacity-100 hover:text-no-go focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-lego-blue"
+        aria-label={`${label} nicht mehr im Feed zeigen`}
+        className="absolute -top-2 -right-2 z-10 flex h-6 w-6 items-center justify-center rounded-full border border-border bg-bg-hover text-text-secondary text-xs opacity-90 transition-opacity hover:opacity-100 hover:text-no-go focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-lego-blue"
       >
         {"✕"}
       </button>

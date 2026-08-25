@@ -2,6 +2,13 @@
 // beantwortet "wann genau?" — im Feed stehen beide nebeneinander, weil die
 // eine Frage ohne die andere regelmäßig zur Rückfrage führte.
 
+// Ab diesem Alter trägt die Jahreszahl etwas bei. Bewusst eine Altersgrenze
+// und nicht das Kalenderjahr: mit dem Kalenderjahr bekäme am 2. Januar ein
+// zwei Wochen alter Eintrag eine Jahreszahl, während am 31. Dezember ein fast
+// zwölf Monate alter keine bekäme. Das Jahr erschiene dann danach, wo Silvester
+// liegt, statt danach, wie alt der Eintrag ist.
+const YEAR_RELEVANT_AFTER_DAYS = 90;
+
 export function relativeAge(value) {
   const seen = toDate(value);
   if (!seen) return null;
@@ -15,20 +22,29 @@ export function relativeAge(value) {
   return days === 1 ? "vor 1 Tag" : `vor ${days} Tagen`;
 }
 
-// "23.08., 14:20" — mit Jahreszahl nur außerhalb des laufenden Jahres, sonst
-// trägt sie in einer ohnehin dichten Zeile nichts bei.
+// "23.08., 14:20" — mit Jahreszahl erst, wenn der Eintrag alt genug ist, dass
+// sie etwas beiträgt.
 export function exactMoment(value) {
   const seen = toDate(value);
   if (!seen) return null;
 
-  const sameYear = seen.getFullYear() === new Date().getFullYear();
+  const ageInDays = Math.abs(Date.now() - seen.getTime()) / 86_400_000;
+  const withYear = ageInDays > YEAR_RELEVANT_AFTER_DAYS;
   return seen.toLocaleString("de-DE", {
     day: "2-digit",
     month: "2-digit",
-    ...(sameYear ? {} : { year: "numeric" }),
+    ...(withYear ? { year: "numeric" } : {}),
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+// Eine Definition für den ganzen Feed: Karten und die Liste der Ausgeblendeten
+// stehen auf demselben Bildschirm, zwei Formatierer liefen dort auseinander.
+export function money(value) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value.toLocaleString("de-DE", { style: "currency", currency: "EUR" })
+    : null;
 }
 
 function toDate(value) {

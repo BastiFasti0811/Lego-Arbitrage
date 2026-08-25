@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from app.models.heartbeat import TaskHeartbeat
 from app.services.heartbeat import (
     MONITORED_TASKS,
+    SCAN_TASKS,
     TaskHealth,
     evaluate_health,
     filter_unthrottled,
@@ -114,7 +115,7 @@ class TestLatestScanSuccess:
     trennt "lief, nichts gefunden" von "läuft seit Tagen nicht mehr".
     """
 
-    def test_der_juengste_erfolgreiche_scraper_lauf_gewinnt(self):
+    def test_the_newest_successful_scraper_run_wins(self):
         heartbeats = [
             _hb("app.tasks.scrape_daily.scrape_all_watched_sets", success_age_h=5),
             _hb("app.tasks.scrape_daily.scrape_kleinanzeigen_watched", success_age_h=1),
@@ -122,10 +123,10 @@ class TestLatestScanSuccess:
 
         assert latest_scan_success(heartbeats) == NOW - timedelta(hours=1)
 
-    def test_ohne_heartbeats_gibt_es_kein_datum(self):
+    def test_without_heartbeats_there_is_no_date(self):
         assert latest_scan_success([]) is None
 
-    def test_tasks_die_keine_angebote_holen_zaehlen_nicht(self):
+    def test_tasks_that_fetch_no_offers_do_not_count(self):
         # Der Wochenreport lief gerade, der Scraper vor 5 Stunden. Angezeigt
         # gehört der Scraper — sonst meldet der Header Frische, die es für
         # Angebote nicht gibt.
@@ -136,14 +137,14 @@ class TestLatestScanSuccess:
 
         assert latest_scan_success(heartbeats) == NOW - timedelta(hours=5)
 
-    def test_ein_fehlgeschlagener_lauf_ist_kein_scan(self):
+    def test_a_failed_run_is_not_a_scan(self):
         # last_run_at ist gesetzt, last_success_at nicht: der Lauf ist
         # gestartet und abgebrochen. Angebote hat er keine geholt.
         hb = _hb("app.tasks.scrape_daily.scrape_all_watched_sets", success_age_h=None, status="error", run_age_h=0.5)
 
         assert latest_scan_success([hb]) is None
 
-    def test_der_letzte_erfolg_zaehlt_auch_wenn_der_lauf_danach_scheiterte(self):
+    def test_an_earlier_success_still_counts_after_a_later_failure(self):
         # Die Angebote von vor drei Stunden liegen weiter in der DB. Dass der
         # Lauf danach kaputtging, macht sie nicht jünger, aber auch nicht weg.
         hb = _hb(
@@ -154,3 +155,15 @@ class TestLatestScanSuccess:
         )
 
         assert latest_scan_success([hb]) == NOW - timedelta(hours=3)
+
+
+def test_scan_tasks_are_monitored_tasks():
+    """Sonst driftet die eine Liste von der anderen weg, lautlos.
+
+    SCAN_TASKS tippt zwei Namen nach, die 15 Zeilen weiter oben schon in
+    MONITORED_TASKS stehen. Wird ein Scraper-Task umbenannt, faengt
+    evaluate_health das ab (es iteriert MONITORED_TASKS), latest_scan_success
+    aber nicht: es faende nichts mehr und der Feed meldete auf Dauer "Noch
+    kein Scan" — bei gruener Suite.
+    """
+    assert SCAN_TASKS <= MONITORED_TASKS.keys()

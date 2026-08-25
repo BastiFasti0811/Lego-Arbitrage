@@ -39,18 +39,37 @@ def migrated():
         yield conn
 
 
-def test_die_tabelle_heisst_wie_im_modell(migrated):
+def test_the_table_is_named_like_the_model(migrated):
     assert DismissedOffer.__tablename__ in inspect(migrated).get_table_names()
 
 
-def test_alle_spalten_des_modells_existieren(migrated):
+def test_every_model_column_exists(migrated):
     created = {column["name"] for column in inspect(migrated).get_columns(DismissedOffer.__tablename__)}
     expected = {column.name for column in DismissedOffer.__table__.columns}
 
     assert expected - created == set(), "Spalten fehlen in der Migration"
+    assert created - expected == set(), "die Migration legt Spalten an, die das Modell nicht kennt"
 
 
-def test_die_identitaet_ist_eindeutig(migrated):
+def test_column_types_and_nullability_match_the_model(migrated):
+    # Nur Namen zu vergleichen liesse eine falsche Laenge oder ein vergessenes
+    # NOT NULL durch — und genau die schlagen erst beim ersten INSERT zu.
+    # SQLite erzwingt VARCHAR-Laengen nicht, der DDL-Text nennt sie aber.
+    created = {column["name"]: column for column in inspect(migrated).get_columns(DismissedOffer.__tablename__)}
+
+    for column in DismissedOffer.__table__.columns:
+        actual = created[column.name]
+        assert str(actual["type"]).upper() == str(column.type).upper(), (
+            f"{column.name}: Migration hat {actual['type']}, Modell erwartet {column.type}"
+        )
+        # Spalten mit server_default sind in der Migration NOT NULL, im Modell
+        # aber ueber den Default befuellt — nur die uebrigen vergleichen.
+        if column.server_default is None:
+            assert actual["nullable"] == column.nullable, f"{column.name}: Nullability weicht ab"
+
+
+
+def test_the_identity_is_unique(migrated):
     # Ohne diesen Index wäre die Abwahl nicht idempotent: `on_conflict_do_nothing`
     # braucht die Unique-Constraint, an der es sich aufhängen kann.
     indexes = inspect(migrated).get_indexes(DismissedOffer.__tablename__)
@@ -61,7 +80,7 @@ def test_die_identitaet_ist_eindeutig(migrated):
     assert identity_indexes[0]["unique"], "der Index auf offer_identity ist nicht unique"
 
 
-def test_downgrade_raeumt_die_tabelle_wieder_ab(migrated):
+def test_downgrade_drops_the_table_again(migrated):
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
 

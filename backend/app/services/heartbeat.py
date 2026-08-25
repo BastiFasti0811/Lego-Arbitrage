@@ -137,6 +137,12 @@ async def record_heartbeat(task_name: str, *, success: bool, detail: object | No
         logger.warning("heartbeat.record_failed", task=task_name, error=str(exc))
 
 
+async def load_scan_heartbeats(session: AsyncSession) -> list[TaskHeartbeat]:
+    """Only the scrape lanes — the live feed polls this every 30 seconds."""
+    result = await session.execute(select(TaskHeartbeat).where(TaskHeartbeat.task_name.in_(SCAN_TASKS)))
+    return list(result.scalars().all())
+
+
 async def load_heartbeats(session: AsyncSession) -> list[TaskHeartbeat]:
     """Load all stored heartbeats using the caller's session."""
     result = await session.execute(select(TaskHeartbeat))
@@ -144,12 +150,22 @@ async def load_heartbeats(session: AsyncSession) -> list[TaskHeartbeat]:
 
 
 def latest_scan_success(heartbeats: Sequence[TaskHeartbeat]) -> datetime | None:
-    """Wann zuletzt ein Angebots-Scan durchgelaufen ist, oder None.
+    """When a scrape task last reported completion, or None.
 
-    Bewusst ``last_success_at`` und nicht ``last_run_at``: ein Lauf, der auf
-    halber Strecke abbricht, hat keine Angebote geholt und darf im Feed nicht
-    als frischer Scan erscheinen. Ein früherer Erfolg zählt weiter — die
-    Angebote von damals liegen ja noch in der DB.
+    Reports that the pipeline RAN, not that it brought anything back. Both
+    scrape tasks catch a 403, set ``aborted`` and return normally, so Celery's
+    ``task_success`` fires and ``last_success_at`` moves forward for a run that
+    fetched zero offers. It is also a max over two independent lanes, so a dead
+    six-hour lane hides behind a live two-hour one, and the analyze task that
+    writes recommendations lags the scrape by up to 30 minutes.
+
+    Three ways to read too fresh, which is why ``ScoutResponse`` carries
+    ``last_offer_seen_at`` beside it — that one is measured on the offers
+    themselves and cannot inherit any of this.
+
+    ``last_success_at`` rather than ``last_run_at`` all the same: an errored run
+    should not push the number forward, and an earlier success still counts —
+    the offers it stored are still in the database.
     """
     successes = [
         hb.last_success_at for hb in heartbeats if hb.task_name in SCAN_TASKS and hb.last_success_at is not None

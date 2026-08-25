@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,10 +15,10 @@ from app.domain.condition import condition_value_factor
 from app.domain.identity import is_set_offer
 from app.domain.offer_url import canonical_offer_url, offer_identity
 from app.engine.decision_engine import analyze_deal
-from app.models import DismissedOffer, LegoSet, Offer, get_session
+from app.models import DismissedOffer, LegoSet, Offer, OfferPlatform, get_session
 from app.scrapers import OFFER_SCRAPERS, PRICE_SCRAPERS
 from app.scrapers.base import ScrapedOffer, ScrapedPrice
-from app.services.heartbeat import latest_scan_success, load_heartbeats
+from app.services.heartbeat import latest_scan_success, load_scan_heartbeats
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -75,20 +75,40 @@ class ScoutResponse(BaseModel):
     deals: list[DealResult]
     total_scanned: int
     sets_analyzed: int
-    # Wann der letzte Angebots-Scan durchlief. Nicht zu verwechseln mit dem
-    # Zeitpunkt dieses Requests: der Feed pollt alle 30 s, gescannt wird alle
-    # zwei bis sechs Stunden. Steht hier None, hat noch nie ein Lauf gemeldet.
+    # Wann zuletzt ein Angebot dieses Feeds als vorhanden bestaetigt wurde.
+    # Aus den Angeboten selbst gerechnet, nicht aus einem Heartbeat — deshalb
+    # die belastbarere der beiden Zahlen. Siehe last_scan_at.
+    last_offer_seen_at: datetime | None = None
+    # Wann der letzte Scrape-Lauf Vollzug gemeldet hat. Sagt NICHT, dass er
+    # Angebote geholt hat: beide Scrape-Tasks fangen einen 403 ab, setzen
+    # `aborted` und kehren normal zurueck, worauf Celery `task_success` feuert.
+    # Faellt last_offer_seen_at dahinter zurueck, laeuft die Pipeline zwar,
+    # bringt aber nichts mehr mit.
     last_scan_at: datetime | None = None
 
 
 class DismissRequest(BaseModel):
-    """Ein Inserat aus dem Feed nehmen."""
+    """Take one listing out of the feed."""
 
     platform: str
     offer_url: str
     offer_title: str | None = None
     set_number: str | None = None
     price_eur: float | None = None
+
+    @field_validator("platform")
+    @classmethod
+    def _known_platform(cls, value: str) -> str:
+        """Reject a platform the feed will never match against.
+
+        Without this a typo stores a dismissal that can never take effect: it
+        shows up in the dismissed list AND the card stays in the feed, with
+        nothing to explain the contradiction.
+        """
+        candidate = (value or "").strip().upper()
+        if candidate not in {platform.value for platform in OfferPlatform}:
+            raise ValueError(f"Unbekannte Plattform: {value!r}")
+        return candidate
 
 
 class DismissedOfferResponse(BaseModel):
@@ -105,22 +125,69 @@ class DismissedOfferResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-def dismissal_values(payload: DismissRequest, now: datetime) -> dict:
-    """Die Zeilenwerte einer Abwahl.
+# Spaltenbreiten aus dem Modell, nicht getippt: eine Abweichung waere sonst
+# erst als StringDataRightTruncation auf Prod aufgefallen.
+_IDENTITY_MAX = DismissedOffer.__table__.c.offer_identity.type.length
+_TITLE_MAX = DismissedOffer.__table__.c.offer_title.type.length
+_SET_NUMBER_MAX = DismissedOffer.__table__.c.set_number.type.length
 
-    Abgewählt wird von einer Karte aus, deren URL den Tracking-Token des Laufs
-    trägt, der sie gefunden hat. Gespeichert wird die kanonische Identität —
-    sonst griffe die Abwahl schon beim nächsten Lauf nicht mehr.
+
+def _clip(value: str | None, limit: int) -> str | None:
+    """Cut a value to what its column holds, deterministically."""
+    if value is None:
+        return None
+    return value[:limit]
+
+
+def dismissal_key(platform: str | None, offer_url: str | None) -> str:
+    """The identity a dismissal is stored under and matched by.
+
+    `offer_identity` is unbounded: `canonical_offer_url` returns unparseable
+    input verbatim and keeps the full path for hosts it has no rule for, so a
+    725-character identity against a 600-character column is reachable. That
+    would make the ✕ answer 500.
+
+    The clipping lives here, in one function both sides call, precisely because
+    clipping only on write would be worse than the crash: the feed would go on
+    computing the full identity, the stored key would never match, and the
+    listing would sit in the dismissed list AND in the feed with nothing to
+    explain it.
+    """
+    return offer_identity(platform, offer_url)[:_IDENTITY_MAX]
+
+
+def dismissal_values(payload: DismissRequest, now: datetime) -> dict:
+    """The row a dismissal writes.
+
+    Dismissing happens from a card whose URL carries the tracking token of the
+    run that found it. What gets stored is the canonical identity — otherwise
+    the dismissal would already miss on the next run.
     """
     return {
-        "offer_identity": offer_identity(payload.platform, payload.offer_url),
-        "platform": (payload.platform or "").upper(),
+        "offer_identity": dismissal_key(payload.platform, payload.offer_url),
+        "platform": payload.platform,
+        # Nicht gekuerzt: die Spalte ist Text, und ein abgeschnittener Link
+        # taugt nicht mehr zum Wiederfinden im Browser.
         "offer_url": canonical_offer_url(payload.offer_url),
-        "offer_title": payload.offer_title,
-        "set_number": payload.set_number,
+        "offer_title": _clip(payload.offer_title, _TITLE_MAX),
+        "set_number": _clip(payload.set_number, _SET_NUMBER_MAX),
         "price_eur": payload.price_eur,
         "dismissed_at": now,
     }
+
+
+def dismissal_statement(payload: DismissRequest, now: datetime):
+    """The upsert a dismissal runs.
+
+    Extracted so a test covers the statement the route actually issues. Asserting
+    on a copy built in the test would keep passing after the route switched to a
+    plain INSERT — and the second click would start answering 500.
+    """
+    return (
+        pg_insert(DismissedOffer)
+        .values(**dismissal_values(payload, now))
+        .on_conflict_do_nothing(index_elements=["offer_identity"])
+    )
 
 
 def _build_deal_result(offer: Offer, lego_set: LegoSet) -> DealResult:
@@ -168,15 +235,19 @@ def build_feed(
     dismissed: Collection[str] = frozenset(),
     last_scan_at: datetime | None = None,
 ) -> ScoutResponse:
-    """Baut den Feed aus gespeicherten Angeboten — ohne I/O.
+    """Build the feed from stored offers — no I/O.
 
-    Die Datenbankzugriffe liegen bewusst beim Aufrufer: Abwahl-Liste und
-    Heartbeats kommen aus eigenen Abfragen, und eine Funktion, die drei
-    Queries absetzt, ließe sich nur noch über eine Fake-Session prüfen.
+    The database work stays with the caller: the dismissal set and the
+    heartbeats come from their own queries, and a function issuing three of
+    them could only be tested through a fake session.
     """
     seen_urls: set[str] = set()
     deals: list[DealResult] = []
     total_scanned = 0
+    # Aus den Zeilen gerechnet, die ohnehin da sind — keine weitere Abfrage.
+    # Abgewaehlte zaehlen mit: gescannt wurden sie, und sonst spraenge die
+    # Frischeanzeige zurueck, nur weil man eine Karte weggeklickt hat.
+    last_offer_seen_at: datetime | None = None
 
     for offer, lego_set in rows:
         if request.set_numbers and lego_set.set_number not in request.set_numbers:
@@ -199,11 +270,13 @@ def build_feed(
             continue
 
         total_scanned += 1
+        if offer.last_seen_at and (last_offer_seen_at is None or offer.last_seen_at > last_offer_seen_at):
+            last_offer_seen_at = offer.last_seen_at
         # Rows written before URL canonicalisation still hold their tracking
         # tokens, so the raw URL would show one listing several times — each
         # copy with the ROI and score of the run that stored it. Ordered by
         # last_seen_at, the first hit is the freshest analysis.
-        dedupe_key = offer_identity(offer.platform, offer.offer_url)
+        dedupe_key = dismissal_key(offer.platform, offer.offer_url)
         # Abgewählt heißt weg — auch wenn der nächste Lauf dieselbe Anzeige
         # unter einer frischen Tracking-URL wiederfindet. Gezählt wurde sie
         # oben trotzdem: geprüft hat der Scan sie ja.
@@ -219,12 +292,13 @@ def build_feed(
         deals=deals[:FEED_LIMIT],
         total_scanned=total_scanned,
         sets_analyzed=len(request.set_numbers),
+        last_offer_seen_at=last_offer_seen_at,
         last_scan_at=last_scan_at,
     )
 
 
 async def load_dismissed_identities(session: AsyncSession) -> set[str]:
-    """Die Identitäten aller abgewählten Inserate."""
+    """Every dismissed listing's identity."""
     result = await session.execute(select(DismissedOffer.offer_identity))
     return set(result.scalars().all())
 
@@ -239,7 +313,7 @@ async def _cached_scout_deals(request: ScoutRequest, session: AsyncSession) -> S
     )
     rows = result.all()
     dismissed = await load_dismissed_identities(session)
-    heartbeats = await load_heartbeats(session)
+    heartbeats = await load_scan_heartbeats(session)
 
     return build_feed(rows, request, dismissed=dismissed, last_scan_at=latest_scan_success(heartbeats))
 
@@ -253,6 +327,10 @@ async def scout_deals(request: ScoutRequest, session: AsyncSession = Depends(get
     all_deals: list[DealResult] = []
     seen_identities: set[str] = set()
     total_offers = 0
+    # Auch hier: abgewaehlt heisst weg. Ohne das galte die Zusage nur fuer
+    # einen der drei Endpunkte, und die erste Seite, die scoutScan oder
+    # scoutQuick verdrahtet, bekaeme die weggeklickten Inserate zurueck.
+    dismissed = await load_dismissed_identities(session)
 
     for set_number in request.set_numbers:
         logger.info("scout.scanning", set_number=set_number)
@@ -317,7 +395,9 @@ async def scout_deals(request: ScoutRequest, session: AsyncSession = Depends(get
             if analysis.roi.roi_percent >= request.min_roi:
                 # Zwei Scraper (und ein doppelter Watchlist-Eintrag) liefern
                 # dieselbe Anzeige — im Feed ist sie trotzdem ein Deal.
-                identity = offer_identity(offer.platform, offer.offer_url)
+                identity = dismissal_key(offer.platform, offer.offer_url)
+                if identity in dismissed:
+                    continue
                 if identity in seen_identities:
                     continue
                 seen_identities.add(identity)
@@ -349,56 +429,65 @@ async def scout_deals(request: ScoutRequest, session: AsyncSession = Depends(get
                 )
 
     all_deals.sort(key=lambda deal: deal.opportunity_score, reverse=True)
+    # Nicht datetime.now(): scrape_price und scrape_offers fangen jede Ausnahme
+    # ab und liefern None bzw. []. Ein Lauf, in dem jeder Scraper geblockt
+    # wurde, haette hier "gerade eben gescannt" gemeldet. Was die gespeicherte
+    # Pipeline zuletzt geschafft hat, weiss der Heartbeat.
+    heartbeats = await load_scan_heartbeats(session)
     return ScoutResponse(
         deals=all_deals[:FEED_LIMIT],
         total_scanned=total_offers,
         sets_analyzed=len(request.set_numbers),
-        # Dieser Pfad hat gerade selbst gescrapt — der Scan ist genau jetzt.
-        last_scan_at=datetime.now(UTC),
+        last_scan_at=latest_scan_success(heartbeats),
     )
 
 
 @router.post("/dismiss", response_model=DismissedOfferResponse)
 async def dismiss_offer(payload: DismissRequest, session: AsyncSession = Depends(get_session)):
-    """Ein Inserat dauerhaft aus dem Feed nehmen.
+    """Take a listing out of the feed for good.
 
-    Idempotent: zweimal abwählen ist kein Fehler, sondern derselbe Zustand.
-    Die bereits gespeicherte Zeile bleibt dabei unangetastet — der Zeitpunkt
-    der ersten Abwahl ist der interessante.
+    Idempotent: dismissing twice is the same state, not an error. The stored
+    row stays untouched — the first dismissal is the interesting timestamp.
     """
     if not payload.offer_url.strip():
         raise HTTPException(status_code=422, detail="Ohne offer_url gibt es nichts abzuwählen")
 
-    values = dismissal_values(payload, datetime.now(UTC))
-    stmt = (
-        pg_insert(DismissedOffer)
-        .values(**values)
-        .on_conflict_do_nothing(index_elements=["offer_identity"])
-    )
-    await session.execute(stmt)
+    now = datetime.now(UTC)
+    identity = dismissal_key(payload.platform, payload.offer_url)
+    await session.execute(dismissal_statement(payload, now))
     await session.commit()
 
-    result = await session.execute(
-        select(DismissedOffer).where(DismissedOffer.offer_identity == values["offer_identity"])
-    )
-    return DismissedOfferResponse.model_validate(result.scalar_one())
+    result = await session.execute(select(DismissedOffer).where(DismissedOffer.offer_identity == identity))
+    stored = result.scalar_one_or_none()
+    if stored is None:
+        # Der Upsert garantiert die Zeile zum Commit, nicht zum SELECT: ein
+        # paralleler Restore aus dem zweiten Tab kann dazwischenfahren. Dann
+        # ist der Wunsch des Aufrufers nicht erfuellt — das gehoert gesagt,
+        # nicht als NoResultFound-500 serviert.
+        raise HTTPException(status_code=409, detail="Abwahl wurde parallel zurückgenommen")
+    return DismissedOfferResponse.model_validate(stored)
 
 
 @router.get("/dismissed", response_model=list[DismissedOfferResponse])
 async def list_dismissed(session: AsyncSession = Depends(get_session)):
-    """Alle ausgeblendeten Inserate, zuletzt abgewähltes zuerst."""
+    """Every dismissed listing, most recently dismissed first."""
     result = await session.execute(select(DismissedOffer).order_by(DismissedOffer.dismissed_at.desc()))
     return [DismissedOfferResponse.model_validate(row) for row in result.scalars().all()]
 
 
 @router.delete("/dismissed/{dismissal_id}")
 async def restore_offer(dismissal_id: int, session: AsyncSession = Depends(get_session)):
-    """Eine Abwahl zurücknehmen — das Inserat taucht im nächsten Feed wieder auf.
+    """Undo a dismissal — the listing returns with the next feed poll.
 
-    Eine unbekannte Id ist kein Fehler: das Ziel ist "nicht mehr abgewählt",
-    und das gilt dann bereits. Antwortet wie die übrigen DELETE-Routen mit
-    einem kleinen Body — der Frontend-Client liest jede Antwort als JSON.
+    404s on an unknown id like every other DELETE route in this API. Answering
+    "restored" to a click that changed nothing would leave the caller unable to
+    tell the two apart, and the other tab already having restored it is exactly
+    when that matters.
     """
+    result = await session.execute(select(DismissedOffer).where(DismissedOffer.id == dismissal_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Abwahl nicht gefunden")
+
     await session.execute(delete(DismissedOffer).where(DismissedOffer.id == dismissal_id))
     await session.commit()
     return {"status": "restored", "id": dismissal_id}
@@ -412,9 +501,7 @@ async def quick_scout(
 ):
     """Quick scout for a single set."""
     response = await scout_deals(ScoutRequest(set_numbers=[set_number]), session=session)
-    return ScoutResponse(
-        deals=response.deals[:max_results],
-        total_scanned=response.total_scanned,
-        sets_analyzed=1,
-        last_scan_at=response.last_scan_at,
-    )
+    # model_copy statt Feld-fuer-Feld: der Nachbau musste bei jedem neuen
+    # Antwortfeld von Hand nachgezogen werden — diese Aenderung hat das
+    # einmal bezahlt, die naechste haette es wieder getan.
+    return response.model_copy(update={"deals": response.deals[:max_results], "sets_analyzed": 1})
