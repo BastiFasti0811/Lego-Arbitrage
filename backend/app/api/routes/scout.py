@@ -391,15 +391,17 @@ async def list_dismissed(session: AsyncSession = Depends(get_session)):
     return [DismissedOfferResponse.model_validate(row) for row in result.scalars().all()]
 
 
-@router.delete("/dismissed/{dismissal_id}", status_code=204)
+@router.delete("/dismissed/{dismissal_id}")
 async def restore_offer(dismissal_id: int, session: AsyncSession = Depends(get_session)):
     """Eine Abwahl zurücknehmen — das Inserat taucht im nächsten Feed wieder auf.
 
-    Ein unbekanntes Id ist kein Fehler: das Ziel ist "nicht mehr abgewählt",
-    und das gilt dann bereits.
+    Eine unbekannte Id ist kein Fehler: das Ziel ist "nicht mehr abgewählt",
+    und das gilt dann bereits. Antwortet wie die übrigen DELETE-Routen mit
+    einem kleinen Body — der Frontend-Client liest jede Antwort als JSON.
     """
     await session.execute(delete(DismissedOffer).where(DismissedOffer.id == dismissal_id))
     await session.commit()
+    return {"status": "restored", "id": dismissal_id}
 
 
 @router.get("/quick/{set_number}")

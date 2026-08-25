@@ -176,3 +176,30 @@ class TestDismissalRecord:
         values = scout.dismissal_values(payload, NOW)
 
         assert values["offer_url"] == CANONICAL
+
+
+class TestDismissalIsIdempotent:
+    """Zweimal abwählen darf kein Fehler sein.
+
+    Der Upsert ist Postgres-spezifisch und läuft in keinem Test gegen eine
+    echte DB — hier wird wenigstens festgehalten, dass er auf dem Unique-Index
+    aufsetzt, den die Migration anlegt. Ohne `ON CONFLICT` liefe der zweite
+    Klick in einen IntegrityError und damit in einen 500er.
+    """
+
+    def test_der_upsert_faengt_den_zweiten_klick_ab(self):
+        from sqlalchemy.dialects import postgresql
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        from app.models import DismissedOffer
+
+        payload = scout.DismissRequest(platform="AMAZON", offer_url=CANONICAL, offer_title=TITLE, price_eur=289.0)
+        statement = (
+            pg_insert(DismissedOffer)
+            .values(**scout.dismissal_values(payload, NOW))
+            .on_conflict_do_nothing(index_elements=["offer_identity"])
+        )
+
+        sql = str(statement.compile(dialect=postgresql.dialect()))
+
+        assert "ON CONFLICT (offer_identity) DO NOTHING" in sql
