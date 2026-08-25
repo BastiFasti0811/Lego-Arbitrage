@@ -37,6 +37,16 @@ MONITORED_TASKS: dict[str, int] = {
     "app.tasks.weekly_report.send_weekly_report_task": 194,       # weekly Sunday 18:00
 }
 
+# Die Tasks, die Angebote in die DB schreiben. Der Live Feed meldet ihren
+# letzten Erfolg als "Letzter Scan" — was ein Wochenreport oder ein
+# Metadaten-Refresh treibt, sagt über die Frische der Angebote nichts.
+SCAN_TASKS: frozenset[str] = frozenset(
+    {
+        "app.tasks.scrape_daily.scrape_all_watched_sets",
+        "app.tasks.scrape_daily.scrape_kleinanzeigen_watched",
+    }
+)
+
 # Nutzarbeit threshold: a full day of 6h scrape cycles plus slack. Past this,
 # a green pipeline that writes no prices counts as dead.
 PRICE_DATA_MAX_AGE_HOURS = 26
@@ -127,10 +137,40 @@ async def record_heartbeat(task_name: str, *, success: bool, detail: object | No
         logger.warning("heartbeat.record_failed", task=task_name, error=str(exc))
 
 
+async def load_scan_heartbeats(session: AsyncSession) -> list[TaskHeartbeat]:
+    """Only the scrape lanes — the live feed polls this every 30 seconds."""
+    result = await session.execute(select(TaskHeartbeat).where(TaskHeartbeat.task_name.in_(SCAN_TASKS)))
+    return list(result.scalars().all())
+
+
 async def load_heartbeats(session: AsyncSession) -> list[TaskHeartbeat]:
     """Load all stored heartbeats using the caller's session."""
     result = await session.execute(select(TaskHeartbeat))
     return list(result.scalars().all())
+
+
+def latest_scan_success(heartbeats: Sequence[TaskHeartbeat]) -> datetime | None:
+    """When a scrape task last reported completion, or None.
+
+    Reports that the pipeline RAN, not that it brought anything back. Both
+    scrape tasks catch a 403, set ``aborted`` and return normally, so Celery's
+    ``task_success`` fires and ``last_success_at`` moves forward for a run that
+    fetched zero offers. It is also a max over two independent lanes, so a dead
+    six-hour lane hides behind a live two-hour one, and the analyze task that
+    writes recommendations lags the scrape by up to 30 minutes.
+
+    Three ways to read too fresh, which is why ``ScoutResponse`` carries
+    ``last_offer_seen_at`` beside it — that one is measured on the offers
+    themselves and cannot inherit any of this.
+
+    ``last_success_at`` rather than ``last_run_at`` all the same: an errored run
+    should not push the number forward, and an earlier success still counts —
+    the offers it stored are still in the database.
+    """
+    successes = [
+        hb.last_success_at for hb in heartbeats if hb.task_name in SCAN_TASKS and hb.last_success_at is not None
+    ]
+    return max(successes) if successes else None
 
 
 def evaluate_health(heartbeats: Sequence[TaskHeartbeat], now: datetime) -> HealthReport:

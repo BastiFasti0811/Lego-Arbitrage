@@ -130,8 +130,7 @@ class TestUpsertKey:
 
 
 class TestFeedDedupe:
-    @pytest.mark.asyncio
-    async def test_legacy_rows_of_one_listing_collapse_to_one_card(self):
+    def test_legacy_rows_of_one_listing_collapse_to_one_card(self):
         # Rows written before canonicalisation still carry raw URLs. The feed has
         # to fold them together, otherwise the fix only helps for future scrapes.
         lego_set = _lego_set()
@@ -157,13 +156,12 @@ class TestFeedDedupe:
         ]
         request = scout.ScoutRequest(set_numbers=[SET_NUMBER], min_roi=0, cached_only=True)
 
-        response = await scout._cached_scout_deals(request, _RecordingSession(rows))
+        response = scout.build_feed(rows, request)
 
         assert len(response.deals) == 1, "same listing, three stored rows, one card"
         assert response.deals[0].estimated_roi == 45.0, "the freshest row wins"
 
-    @pytest.mark.asyncio
-    async def test_distinct_listings_are_kept(self):
+    def test_distinct_listings_are_kept(self):
         lego_set = _lego_set()
         rows = [
             (
@@ -187,7 +185,7 @@ class TestFeedDedupe:
         ]
         request = scout.ScoutRequest(set_numbers=[SET_NUMBER], min_roi=0, cached_only=True)
 
-        response = await scout._cached_scout_deals(request, _RecordingSession(rows))
+        response = scout.build_feed(rows, request)
 
         assert len(response.deals) == 2
 
@@ -219,23 +217,21 @@ class TestFeedRejectsImplausibleLegacyRows:
             lego_set,
         )
 
-    @pytest.mark.asyncio
-    async def test_accessory_priced_row_is_not_shown(self):
+    def test_accessory_priced_row_is_not_shown(self):
         lego_set = _lego_set()
         rows = [self._row("LEGO 42143 Wandhalterung, kompatibel mit Ferrari Daytona", 9.99, lego_set)]
         request = scout.ScoutRequest(set_numbers=[SET_NUMBER], min_roi=0, cached_only=True)
 
-        response = await scout._cached_scout_deals(request, _RecordingSession(rows))
+        response = scout.build_feed(rows, request)
 
         assert response.deals == []
 
-    @pytest.mark.asyncio
-    async def test_genuine_listing_still_passes(self):
+    def test_genuine_listing_still_passes(self):
         lego_set = _lego_set()
         rows = [self._row(TITLE, 289.0, lego_set)]
         request = scout.ScoutRequest(set_numbers=[SET_NUMBER], min_roi=0, cached_only=True)
 
-        response = await scout._cached_scout_deals(request, _RecordingSession(rows))
+        response = scout.build_feed(rows, request)
 
         assert len(response.deals) == 1
 

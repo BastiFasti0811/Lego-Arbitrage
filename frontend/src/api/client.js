@@ -119,6 +119,22 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ set_numbers: setNumbers, min_roi: 0, cached_only: true }),
     }),
+  // Abwahl: das Inserat bleibt aus dem Feed draussen, auch wenn der naechste
+  // Scan es wiederfindet. Titel und Preis wandern mit, damit die Liste der
+  // Ausgeblendeten lesbar bleibt, wenn das Angebot vom Markt ist.
+  dismissOffer: (deal) =>
+    request("/scout/dismiss", {
+      method: "POST",
+      body: JSON.stringify({
+        platform: deal.platform,
+        offer_url: deal.offer_url,
+        offer_title: deal.offer_title,
+        set_number: deal.set_number,
+        price_eur: deal.price,
+      }),
+    }),
+  listDismissed: () => request("/scout/dismissed"),
+  restoreOffer: (id) => request(`/scout/dismissed/${id}`, { method: "DELETE" }),
 
   // Sets
   listSets: (params) => request(`/sets/?${new URLSearchParams(params)}`),

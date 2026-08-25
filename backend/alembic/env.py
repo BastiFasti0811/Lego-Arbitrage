@@ -4,11 +4,14 @@ from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config, pool
 
+# Import all models so Alembic can detect them
+# Das ganze Paket, keine Handliste: DismissedOffer stand nicht darin und
+# landete nur deshalb im Metadata, weil app/models/__init__.py jedes Modell
+# importiert. Wer die Liste je auf Einzelimporte umstellt, laesst `alembic
+# check` das Fehlen einer Tabelle als "drop it" vorschlagen.
+import app.models  # noqa: F401 — registriert jedes Modell an Base.metadata
 from alembic import context
 from app.config import settings
-
-# Import all models so Alembic can detect them
-from app.models import DealFeedback, LegoSet, Offer, PriceRecord, TaskHeartbeat, WatchlistItem  # noqa
 from app.models.base import Base
 
 config = context.config
