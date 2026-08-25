@@ -37,6 +37,16 @@ MONITORED_TASKS: dict[str, int] = {
     "app.tasks.weekly_report.send_weekly_report_task": 194,       # weekly Sunday 18:00
 }
 
+# Die Tasks, die Angebote in die DB schreiben. Der Live Feed meldet ihren
+# letzten Erfolg als "Letzter Scan" — was ein Wochenreport oder ein
+# Metadaten-Refresh treibt, sagt über die Frische der Angebote nichts.
+SCAN_TASKS: frozenset[str] = frozenset(
+    {
+        "app.tasks.scrape_daily.scrape_all_watched_sets",
+        "app.tasks.scrape_daily.scrape_kleinanzeigen_watched",
+    }
+)
+
 # Nutzarbeit threshold: a full day of 6h scrape cycles plus slack. Past this,
 # a green pipeline that writes no prices counts as dead.
 PRICE_DATA_MAX_AGE_HOURS = 26
@@ -131,6 +141,20 @@ async def load_heartbeats(session: AsyncSession) -> list[TaskHeartbeat]:
     """Load all stored heartbeats using the caller's session."""
     result = await session.execute(select(TaskHeartbeat))
     return list(result.scalars().all())
+
+
+def latest_scan_success(heartbeats: Sequence[TaskHeartbeat]) -> datetime | None:
+    """Wann zuletzt ein Angebots-Scan durchgelaufen ist, oder None.
+
+    Bewusst ``last_success_at`` und nicht ``last_run_at``: ein Lauf, der auf
+    halber Strecke abbricht, hat keine Angebote geholt und darf im Feed nicht
+    als frischer Scan erscheinen. Ein früherer Erfolg zählt weiter — die
+    Angebote von damals liegen ja noch in der DB.
+    """
+    successes = [
+        hb.last_success_at for hb in heartbeats if hb.task_name in SCAN_TASKS and hb.last_success_at is not None
+    ]
+    return max(successes) if successes else None
 
 
 def evaluate_health(heartbeats: Sequence[TaskHeartbeat], now: datetime) -> HealthReport:

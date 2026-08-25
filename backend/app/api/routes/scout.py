@@ -1,24 +1,31 @@
 """Scout API for on-demand and cached deal discovery."""
 
 import asyncio
-from datetime import datetime
+from collections.abc import Collection, Sequence
+from datetime import UTC, datetime
 
 import structlog
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.condition import condition_value_factor
 from app.domain.identity import is_set_offer
-from app.domain.offer_url import offer_identity
+from app.domain.offer_url import canonical_offer_url, offer_identity
 from app.engine.decision_engine import analyze_deal
-from app.models import LegoSet, Offer, get_session
+from app.models import DismissedOffer, LegoSet, Offer, get_session
 from app.scrapers import OFFER_SCRAPERS, PRICE_SCRAPERS
 from app.scrapers.base import ScrapedOffer, ScrapedPrice
+from app.services.heartbeat import latest_scan_success, load_heartbeats
 
 logger = structlog.get_logger()
 router = APIRouter()
+
+# So viele Karten zeigt der Feed. Der Deckel greift nach dem Abwahl-Filter,
+# sonst hielte ein ausgeblendetes Inserat seinen Platz einfach leer.
+FEED_LIMIT = 20
 
 
 class ScoutRequest(BaseModel):
@@ -68,6 +75,52 @@ class ScoutResponse(BaseModel):
     deals: list[DealResult]
     total_scanned: int
     sets_analyzed: int
+    # Wann der letzte Angebots-Scan durchlief. Nicht zu verwechseln mit dem
+    # Zeitpunkt dieses Requests: der Feed pollt alle 30 s, gescannt wird alle
+    # zwei bis sechs Stunden. Steht hier None, hat noch nie ein Lauf gemeldet.
+    last_scan_at: datetime | None = None
+
+
+class DismissRequest(BaseModel):
+    """Ein Inserat aus dem Feed nehmen."""
+
+    platform: str
+    offer_url: str
+    offer_title: str | None = None
+    set_number: str | None = None
+    price_eur: float | None = None
+
+
+class DismissedOfferResponse(BaseModel):
+    """Ein ausgeblendetes Inserat, wie es beim Abwählen aussah."""
+
+    id: int
+    platform: str
+    offer_url: str
+    offer_title: str | None
+    set_number: str | None
+    price_eur: float | None
+    dismissed_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+def dismissal_values(payload: DismissRequest, now: datetime) -> dict:
+    """Die Zeilenwerte einer Abwahl.
+
+    Abgewählt wird von einer Karte aus, deren URL den Tracking-Token des Laufs
+    trägt, der sie gefunden hat. Gespeichert wird die kanonische Identität —
+    sonst griffe die Abwahl schon beim nächsten Lauf nicht mehr.
+    """
+    return {
+        "offer_identity": offer_identity(payload.platform, payload.offer_url),
+        "platform": (payload.platform or "").upper(),
+        "offer_url": canonical_offer_url(payload.offer_url),
+        "offer_title": payload.offer_title,
+        "set_number": payload.set_number,
+        "price_eur": payload.price_eur,
+        "dismissed_at": now,
+    }
 
 
 def _build_deal_result(offer: Offer, lego_set: LegoSet) -> DealResult:
@@ -108,20 +161,24 @@ def _build_deal_result(offer: Offer, lego_set: LegoSet) -> DealResult:
     )
 
 
-async def _cached_scout_deals(request: ScoutRequest, session: AsyncSession) -> ScoutResponse:
-    result = await session.execute(
-        select(Offer, LegoSet)
-        .join(LegoSet, Offer.set_id == LegoSet.id)
-        .where(Offer.status == "ACTIVE")
-        .where(Offer.recommendation.is_not(None))
-        .order_by(Offer.last_seen_at.desc())
-    )
+def build_feed(
+    rows: Sequence[tuple[Offer, LegoSet]],
+    request: ScoutRequest,
+    *,
+    dismissed: Collection[str] = frozenset(),
+    last_scan_at: datetime | None = None,
+) -> ScoutResponse:
+    """Baut den Feed aus gespeicherten Angeboten — ohne I/O.
 
+    Die Datenbankzugriffe liegen bewusst beim Aufrufer: Abwahl-Liste und
+    Heartbeats kommen aus eigenen Abfragen, und eine Funktion, die drei
+    Queries absetzt, ließe sich nur noch über eine Fake-Session prüfen.
+    """
     seen_urls: set[str] = set()
     deals: list[DealResult] = []
     total_scanned = 0
 
-    for offer, lego_set in result.all():
+    for offer, lego_set in rows:
         if request.set_numbers and lego_set.set_number not in request.set_numbers:
             continue
         if request.max_budget and offer.price_eur > request.max_budget:
@@ -147,13 +204,44 @@ async def _cached_scout_deals(request: ScoutRequest, session: AsyncSession) -> S
         # copy with the ROI and score of the run that stored it. Ordered by
         # last_seen_at, the first hit is the freshest analysis.
         dedupe_key = offer_identity(offer.platform, offer.offer_url)
+        # Abgewählt heißt weg — auch wenn der nächste Lauf dieselbe Anzeige
+        # unter einer frischen Tracking-URL wiederfindet. Gezählt wurde sie
+        # oben trotzdem: geprüft hat der Scan sie ja.
+        if dedupe_key in dismissed:
+            continue
         if dedupe_key in seen_urls:
             continue
         seen_urls.add(dedupe_key)
         deals.append(_build_deal_result(offer, lego_set))
 
     deals.sort(key=lambda deal: deal.opportunity_score, reverse=True)
-    return ScoutResponse(deals=deals[:20], total_scanned=total_scanned, sets_analyzed=len(request.set_numbers))
+    return ScoutResponse(
+        deals=deals[:FEED_LIMIT],
+        total_scanned=total_scanned,
+        sets_analyzed=len(request.set_numbers),
+        last_scan_at=last_scan_at,
+    )
+
+
+async def load_dismissed_identities(session: AsyncSession) -> set[str]:
+    """Die Identitäten aller abgewählten Inserate."""
+    result = await session.execute(select(DismissedOffer.offer_identity))
+    return set(result.scalars().all())
+
+
+async def _cached_scout_deals(request: ScoutRequest, session: AsyncSession) -> ScoutResponse:
+    result = await session.execute(
+        select(Offer, LegoSet)
+        .join(LegoSet, Offer.set_id == LegoSet.id)
+        .where(Offer.status == "ACTIVE")
+        .where(Offer.recommendation.is_not(None))
+        .order_by(Offer.last_seen_at.desc())
+    )
+    rows = result.all()
+    dismissed = await load_dismissed_identities(session)
+    heartbeats = await load_heartbeats(session)
+
+    return build_feed(rows, request, dismissed=dismissed, last_scan_at=latest_scan_success(heartbeats))
 
 
 @router.post("/scan", response_model=ScoutResponse)
@@ -261,7 +349,57 @@ async def scout_deals(request: ScoutRequest, session: AsyncSession = Depends(get
                 )
 
     all_deals.sort(key=lambda deal: deal.opportunity_score, reverse=True)
-    return ScoutResponse(deals=all_deals[:20], total_scanned=total_offers, sets_analyzed=len(request.set_numbers))
+    return ScoutResponse(
+        deals=all_deals[:FEED_LIMIT],
+        total_scanned=total_offers,
+        sets_analyzed=len(request.set_numbers),
+        # Dieser Pfad hat gerade selbst gescrapt — der Scan ist genau jetzt.
+        last_scan_at=datetime.now(UTC),
+    )
+
+
+@router.post("/dismiss", response_model=DismissedOfferResponse)
+async def dismiss_offer(payload: DismissRequest, session: AsyncSession = Depends(get_session)):
+    """Ein Inserat dauerhaft aus dem Feed nehmen.
+
+    Idempotent: zweimal abwählen ist kein Fehler, sondern derselbe Zustand.
+    Die bereits gespeicherte Zeile bleibt dabei unangetastet — der Zeitpunkt
+    der ersten Abwahl ist der interessante.
+    """
+    if not payload.offer_url.strip():
+        raise HTTPException(status_code=422, detail="Ohne offer_url gibt es nichts abzuwählen")
+
+    values = dismissal_values(payload, datetime.now(UTC))
+    stmt = (
+        pg_insert(DismissedOffer)
+        .values(**values)
+        .on_conflict_do_nothing(index_elements=["offer_identity"])
+    )
+    await session.execute(stmt)
+    await session.commit()
+
+    result = await session.execute(
+        select(DismissedOffer).where(DismissedOffer.offer_identity == values["offer_identity"])
+    )
+    return DismissedOfferResponse.model_validate(result.scalar_one())
+
+
+@router.get("/dismissed", response_model=list[DismissedOfferResponse])
+async def list_dismissed(session: AsyncSession = Depends(get_session)):
+    """Alle ausgeblendeten Inserate, zuletzt abgewähltes zuerst."""
+    result = await session.execute(select(DismissedOffer).order_by(DismissedOffer.dismissed_at.desc()))
+    return [DismissedOfferResponse.model_validate(row) for row in result.scalars().all()]
+
+
+@router.delete("/dismissed/{dismissal_id}", status_code=204)
+async def restore_offer(dismissal_id: int, session: AsyncSession = Depends(get_session)):
+    """Eine Abwahl zurücknehmen — das Inserat taucht im nächsten Feed wieder auf.
+
+    Ein unbekanntes Id ist kein Fehler: das Ziel ist "nicht mehr abgewählt",
+    und das gilt dann bereits.
+    """
+    await session.execute(delete(DismissedOffer).where(DismissedOffer.id == dismissal_id))
+    await session.commit()
 
 
 @router.get("/quick/{set_number}")
@@ -272,4 +410,9 @@ async def quick_scout(
 ):
     """Quick scout for a single set."""
     response = await scout_deals(ScoutRequest(set_numbers=[set_number]), session=session)
-    return ScoutResponse(deals=response.deals[:max_results], total_scanned=response.total_scanned, sets_analyzed=1)
+    return ScoutResponse(
+        deals=response.deals[:max_results],
+        total_scanned=response.total_scanned,
+        sets_analyzed=1,
+        last_scan_at=response.last_scan_at,
+    )

@@ -1,7 +1,13 @@
 from datetime import UTC, datetime, timedelta
 
 from app.models.heartbeat import TaskHeartbeat
-from app.services.heartbeat import MONITORED_TASKS, TaskHealth, evaluate_health, filter_unthrottled
+from app.services.heartbeat import (
+    MONITORED_TASKS,
+    TaskHealth,
+    evaluate_health,
+    filter_unthrottled,
+    latest_scan_success,
+)
 
 NOW = datetime(2026, 6, 29, 12, 0, 0, tzinfo=UTC)
 
@@ -98,3 +104,53 @@ def test_stale_alert_outside_window_is_eligible_again():
     hb.last_alerted_at = NOW - timedelta(hours=8)  # older than the 6h window
     eligible = filter_unthrottled([_problem(name)], {name: hb}, CUTOFF)
     assert [p.task_name for p in eligible] == [name]
+
+
+class TestLatestScanSuccess:
+    """Der Feed-Header soll sagen, wann zuletzt gescannt wurde.
+
+    Nicht `max(last_seen_at)` über die Angebote: das steht auch dann still,
+    wenn der Scan sauber läuft und nur nichts Neues findet. Der Heartbeat
+    trennt "lief, nichts gefunden" von "läuft seit Tagen nicht mehr".
+    """
+
+    def test_der_juengste_erfolgreiche_scraper_lauf_gewinnt(self):
+        heartbeats = [
+            _hb("app.tasks.scrape_daily.scrape_all_watched_sets", success_age_h=5),
+            _hb("app.tasks.scrape_daily.scrape_kleinanzeigen_watched", success_age_h=1),
+        ]
+
+        assert latest_scan_success(heartbeats) == NOW - timedelta(hours=1)
+
+    def test_ohne_heartbeats_gibt_es_kein_datum(self):
+        assert latest_scan_success([]) is None
+
+    def test_tasks_die_keine_angebote_holen_zaehlen_nicht(self):
+        # Der Wochenreport lief gerade, der Scraper vor 5 Stunden. Angezeigt
+        # gehört der Scraper — sonst meldet der Header Frische, die es für
+        # Angebote nicht gibt.
+        heartbeats = [
+            _hb("app.tasks.weekly_report.send_weekly_report_task", success_age_h=0.1),
+            _hb("app.tasks.scrape_daily.scrape_all_watched_sets", success_age_h=5),
+        ]
+
+        assert latest_scan_success(heartbeats) == NOW - timedelta(hours=5)
+
+    def test_ein_fehlgeschlagener_lauf_ist_kein_scan(self):
+        # last_run_at ist gesetzt, last_success_at nicht: der Lauf ist
+        # gestartet und abgebrochen. Angebote hat er keine geholt.
+        hb = _hb("app.tasks.scrape_daily.scrape_all_watched_sets", success_age_h=None, status="error", run_age_h=0.5)
+
+        assert latest_scan_success([hb]) is None
+
+    def test_der_letzte_erfolg_zaehlt_auch_wenn_der_lauf_danach_scheiterte(self):
+        # Die Angebote von vor drei Stunden liegen weiter in der DB. Dass der
+        # Lauf danach kaputtging, macht sie nicht jünger, aber auch nicht weg.
+        hb = _hb(
+            "app.tasks.scrape_daily.scrape_all_watched_sets",
+            success_age_h=3,
+            status="error",
+            run_age_h=0.5,
+        )
+
+        assert latest_scan_success([hb]) == NOW - timedelta(hours=3)
