@@ -14,31 +14,52 @@ a deliberately low price floor.
 
 import re
 
+from app.domain.german import UE
 from app.scrapers.base import MIN_PLAUSIBLE_SET_PRICE
 
-# Phrases that never occur in a listing selling the set itself.
-# Preisangaben im Titel, in allen Schreibweisen, die auf Kleinanzeigen
-# vorkommen. "1500,- VB" ist die Normalform, und jedes Trennzeichen zwischen
-# Ziffern und Einheit brach den Match — womit die Zahl als zweite Setnummer
-# galt und das Angebot in _upsert_offers gar nicht erst gespeichert wurde.
-# Betroffen war das vierstellige Segment, in dem Arbitrage ueberhaupt lohnt.
-_PRICE_UNIT = (
-    r"(?:(?:teil|teile|teilen|st[üu]cke?n?|steine?|pieces?|pcs|gramm|kg|euro|eur"
-    r"|vb|verhandlungsbasis|verhandelbar|festpreis|fixpreis|fp)\b|€|%)"
+# ── Preisangaben im Titel ────────────────────────────────────────────
+# "1500,- VB" ist die Normalform, und was hier nicht als Preis erkannt wird,
+# gilt als zweite Setnummer: das Angebot wird dann in _upsert_offers gar nicht
+# erst gespeichert und fehlt spurlos im Feed. Betroffen ist das vierstellige
+# Segment, in dem Arbitrage ueberhaupt lohnt.
+#
+# Die Unterscheidung, die alles traegt: manche Signale machen eine Zahl
+# zweifelsfrei zum Preis, andere nur wahrscheinlich. Die zweite Sorte darf
+# keine fuenfstellige Setnummer verstecken.
+
+# Einheiten, die eine Zahl zweifelsfrei zur Menge oder zum Preis machen. Eine
+# Setnummer steht nie vor "Teile" oder "EUR", also gilt das in jeder Laenge.
+_HARD_UNIT = r"(?:(?:teil|teile|teilen|st[üu]cke?n?|steine?|pieces?|pcs|gramm|kg|euro|eur)\b|€|%)"
+
+# Preiswoerter dagegen sind nicht zweifelsfrei: "1500 VB" ist ein Preis,
+# "10326 10350 VB" sind zwei Sets, bei denen das VB zur letzten Nummer
+# gerutscht ist. Sie gelten deshalb nur fuer Zahlen, die als Preis durchgehen
+# — dieselbe Grenze wie bei den Preiswoertern vor der Zahl.
+_SOFT_PRICE_WORD = (
+    r"(?:vb|verhandlungsbasis|verhandelbar|festpreis|fixpreis|fp"
+    r"|zu\s+verkaufen|abzugeben|zu\s+haben|zu\s+verschenken)\b"
 )
-# Entweder eine Dezimal-/Strichnotation (dann ist die Einheit optional, "1500,00"
-# ist auch ohne "EUR" ein Preis) oder direkt eine Einheit.
+
+# Zwischen Zahl und Einheit steht oft noch ein Trennwort oder -zeichen:
+# "1500 oder VB", "1500 - VB", "1500 / VB" sind eine Preisangabe, keine zwei.
+# Ein blosses \s* dazwischen liess sie alle als Setnummer durchgehen.
+_PRICE_SEPARATOR = r"(?:\s*(?:oder|bzw\.?|o\.?|[/|]|-|–)\s*|\s*)"
+
+# Dezimal- und Strichnotation ist selbst schon der Preis, die Einheit dahinter
+# darf fehlen ("1500,00", "1500,-").
 # (?!\d) ist Pflicht: ohne sie frisst "10326,10350" die ersten zwei Ziffern
 # der zweiten Setnummer als Nachkommastellen und macht das Konvolut zum
 # Einzelset-Schnaeppchen.
-_PRICE_TAIL = rf"(?:(?:[.,]\d{{2}}(?!\d)|,-|\.-)\s*{_PRICE_UNIT}?|\s*{_PRICE_UNIT})"
+_PRICE_NOTATION = rf"(?:[.,]\d{{2}}(?!\d)|,-|\.-)\s*(?:{_HARD_UNIT}|{_SOFT_PRICE_WORD})?"
 
+# ── Zubehoer ─────────────────────────────────────────────────────────
+# Phrases that never occur in a listing selling the set itself.
 _HARD_ACCESSORY_PATTERNS = (
     r"kompatibel\s+mit",
     r"compatible\s+with",
     r"kein\s+lego",
     r"not\s+lego",
-    r"passend\s+f[üu]r\s+lego",
+    rf"passend\s+f{UE}r\s+lego",
     r"wandhalterung",
     r"wall[\s-]*mount",
     r"display[\s-]*case",
@@ -58,11 +79,21 @@ _HARD_ACCESSORY_PATTERNS = (
     r"\bmoc\b",
     r"zusatz(etage|modul|bau)",
     r"erweiterungs[\s-]*(set|modul)",
-    # Zubehoer nennt das Set, fuer das es gemacht ist. Der Lookahead haelt
-    # Preisangaben heraus ("fuer 1500 Euro").
-    # Dieselbe Preis-Notation wie oben, statt einer zweiten, aermeren Liste:
-    # "fuer 1200 VB" ist ein Preis, kein Zubehoer-Verweis auf ein anderes Set.
-    rf"f[üu]r\s+(?:lego\s+)?\d{{4,6}}(?!\s*{_PRICE_TAIL})",
+    # Zubehoer nennt das Set, fuer das es gemacht ist ("Beleuchtung fuer
+    # 10326"). Die Zahl dahinter ist aber genauso oft der Preis, und die als
+    # Zubehoer-Verweis zu lesen verwirft ein echtes Angebot — deshalb
+    # entscheidet nicht ein Lookahead auf die Preisschreibweise, sondern die
+    # Zahl selbst:
+    #
+    #   "fuer Lego 4184"  → Setnummer, weil "Lego" davor steht
+    #   "fuer 10326"      → Setnummer, fuenfstellig ist keine Preisvorstellung
+    #   "fuer 1500"       → Preis, und zwar egal in welcher Schreibweise
+    #
+    # Die Kosten dieser Regel: ein fuenfstelliger Preis nach "fuer" gilt als
+    # Setnummer. Ein Einzelset ueber 10.000 EUR gibt es auf Kleinanzeigen
+    # praktisch nicht, ein "fuer 10326" als Preis noch weniger.
+    rf"f{UE}r\s+lego\s+\d{{4,6}}",
+    rf"f{UE}r\s+(?<!\d)\d{{5,6}}(?!\d)",
 )
 
 # Phrases that describe an accessory when it IS the product, but appear just as
@@ -115,19 +146,22 @@ MIN_PRICE_RATIO = 0.08
 SOFT_MARKER_PRICE_RATIO = 0.35
 
 _CANDIDATE_NUMBER_RE = re.compile(r"(?<!\d)(\d{4,6})(?!\d)")
+# Deutsche Postleitzahlen sind genau fuenfstellig.
+_POSTCODE_RE = re.compile(r"(?<!\d)(\d{5})(?!\d)")
 # "1000 VB" und "1500 €" sind Preisangaben wie "1000 Euro". Das abschliessende
 # \b galt vorher fuer die ganze Gruppe und verlangte damit auch hinter "€" ein
 # Wortzeichen — womit "1500 € VB" als zweite Setnummer galt und das Angebot gar
 # nicht erst gespeichert wurde. Genau die Preisklasse, in der Arbitrage lohnt.
-_UNIT_AFTER_NUMBER_RE = re.compile(rf"\s*{_PRICE_TAIL}", re.IGNORECASE)
+_HARD_UNIT_AFTER_NUMBER_RE = re.compile(
+    rf"\s*(?:{_PRICE_NOTATION}|{_PRICE_SEPARATOR}{_HARD_UNIT})", re.IGNORECASE
+)
+_SOFT_PRICE_AFTER_NUMBER_RE = re.compile(rf"{_PRICE_SEPARATOR}{_SOFT_PRICE_WORD}", re.IGNORECASE)
 
 # Fuenfstellige Zahlen im Titel sind auf Kleinanzeigen oft die Postleitzahl des
 # Abholorts, nicht eine zweite Setnummer. Solche Angebote wurden bisher nicht
 # nur aus dem Feed gehalten, sondern gar nicht erst gespeichert.
 _LOCATION_BEFORE_NUMBER_RE = re.compile(
     r"(abholung|selbstabholung|abzuholen|abholort|standort|plz|versand(kosten)?|"
-    # Auch die Preisangabe steht oft vor der Zahl ("Festpreis 1500").
-    r"festpreis|preis|vb|verhandlungsbasis|kostet|"
     r"tel\.?|telefon|mobil|whatsapp|handy)"
     # Ein Fuellwort darf dazwischen stehen: "Abholung in 40233" ist dieselbe
     # Aussage wie "Abholung 40233", scheiterte aber an \W{0,12} — und der
@@ -136,6 +170,25 @@ _LOCATION_BEFORE_NUMBER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Preisankuendigungen sind die zweite Sorte Kontext vor der Zahl, und sie
+# duerfen nicht dasselbe duerfen: eine Ortsangabe macht jede Zahl zur Adresse,
+# eine Preisankuendigung nur die, die als Preis durchgeht.
+#
+#   "Festpreis 1500"   → Preis, das Angebot bleibt
+#   "Festpreis 10350"  → zweite Setnummer eines Konvoluts, das Angebot fliegt
+#
+# Ohne diese Grenze versteckt jedes "VB" davor eine echte Setnummer, und ein
+# Konvolutpreis wird gegen das teurere der beiden Sets gerechnet — genau das
+# erfundene Schnaeppchen, das dieser Filter verhindern soll.
+_PRICE_BEFORE_NUMBER_RE = re.compile(
+    rf"(festpreis|fixpreis|preis|vb|verhandlungsbasis|kostet|f{UE}r|nur|ab)"
+    r"(?:\W+(?:nur|noch|ca\.?|etwa))?\W{0,12}$",
+    re.IGNORECASE,
+)
+# Vierstellig ist die Obergrenze fuer einen Preis, der noch zu einem einzelnen
+# Set passt. Darueber ist die Zahl eine Setnummer.
+MAX_PRICE_DIGITS = 4
+
 _TOKEN_RE = re.compile(r"[a-zäöüß0-9]+", re.IGNORECASE)
 _NAME_STOPWORDS = {"lego", "der", "die", "das", "und", "mit", "von", "the", "set", "de"}
 
@@ -143,6 +196,18 @@ _NAME_STOPWORDS = {"lego", "der", "die", "das", "und", "mit", "von", "the", "set
 def _normalize_number(text: str) -> str:
     """Digits only — matches '42 143' and '42-143' to '42143'."""
     return re.sub(r"[^0-9]", "", text)
+
+
+def _postcode_of(location: str | None) -> str | None:
+    """The five-digit postcode in a pickup location, if it carries one.
+
+    Kleinanzeigen reports the location as "40233 Duesseldorf". Only the digits
+    are used, so the spelling of the town does not have to match the title's.
+    """
+    if not location:
+        return None
+    match = _POSTCODE_RE.search(location)
+    return match.group(1) if match else None
 
 
 def names_match(title: str, set_name: str | None) -> bool:
@@ -176,7 +241,7 @@ def looks_like_bundle(title: str) -> bool:
     return bool(_BUNDLE_RE.search(title or ""))
 
 
-def mentions_other_set_numbers(title: str, set_number: str) -> bool:
+def mentions_other_set_numbers(title: str, set_number: str, seller_location: str | None = None) -> bool:
     """Whether the title names sets other than the one being valued.
 
     A listing that offers four sets has one headline price, and it belongs to
@@ -185,10 +250,11 @@ def mentions_other_set_numbers(title: str, set_number: str) -> bool:
     invents a bargain that was never offered.
 
     Numbers that are obviously not set numbers are ignored: release years,
-    figures followed by a unit ("4014 Teile", "1500 VB"), and postcodes or
-    phone numbers announced as such ("Abholung 40233 Duesseldorf").
+    figures followed by a unit ("4014 Teile", "1500 VB"), the postcode of the
+    listing's own pickup location, and phone numbers announced as such.
     """
     wanted = _normalize_number(set_number)
+    postcode = _postcode_of(seller_location)
     text = title or ""
     for match in _CANDIDATE_NUMBER_RE.finditer(text):
         number = match.group(1)
@@ -196,9 +262,23 @@ def mentions_other_set_numbers(title: str, set_number: str) -> bool:
             continue
         if 1900 <= int(number) <= 2099:
             continue
-        if _UNIT_AFTER_NUMBER_RE.match(text, match.end(1)):
+        # Der Abholort des Angebots sagt, welche fuenfstellige Zahl die PLZ ist.
+        # Das ist der einzige Punkt hier, an dem nicht die Formulierung des
+        # Verkaeufers entscheidet, sondern eine Tatsache — "Notre Dame, 40233
+        # Duesseldorf" braucht kein "Abholung" davor, um lesbar zu sein.
+        if postcode and number == postcode:
             continue
-        if _LOCATION_BEFORE_NUMBER_RE.search(text[: match.start(1)]):
+        if _HARD_UNIT_AFTER_NUMBER_RE.match(text, match.end(1)):
+            continue
+        before = text[: match.start(1)]
+        if _LOCATION_BEFORE_NUMBER_RE.search(before):
+            continue
+        # Die zweifelhaften Preissignale — vor und hinter der Zahl — zaehlen nur
+        # fuer Zahlen, die ueberhaupt ein Preis sein koennen.
+        if len(number) <= MAX_PRICE_DIGITS and (
+            _PRICE_BEFORE_NUMBER_RE.search(before)
+            or _SOFT_PRICE_AFTER_NUMBER_RE.match(text, match.end(1))
+        ):
             continue
         return True
     return False
@@ -210,8 +290,14 @@ def is_set_offer(
     price_eur: float | None = None,
     reference_price: float | None = None,
     set_name: str | None = None,
+    seller_location: str | None = None,
 ) -> bool:
-    """Whether this listing plausibly sells the set itself."""
+    """Whether this listing plausibly sells the set itself.
+
+    ``seller_location`` is the listing's own pickup location. It is optional
+    because the field is nullable, and an offer without it still has to be
+    judged — it then falls back to the announcing keywords in the title.
+    """
     if not title:
         return False
 
@@ -229,7 +315,7 @@ def is_set_offer(
     if looks_like_bundle(title):
         return False
 
-    if mentions_other_set_numbers(title, set_number):
+    if mentions_other_set_numbers(title, set_number, seller_location):
         return False
 
     if price_ratio is not None and price_ratio < MIN_PRICE_RATIO:

@@ -18,6 +18,8 @@ import re
 
 import structlog
 
+from app.domain.german import AE, OE, UE
+
 logger = structlog.get_logger()
 
 # Zustandsstrings, die anderswo im System entstehen und dasselbe meinen.
@@ -101,12 +103,11 @@ _LABEL_TO_CONDITION = {
     "DEFEKT": "USED_INCOMPLETE",
 }
 
-# Auf Kleinanzeigen wird der Umlaut oft umschrieben ("beschaedigt"), und
-# Zeichenklassen decken nur die Ein-Zeichen-Varianten ab. Ein Text-Fold waere
-# gefaehrlich — "neue", "teuer", "Steuer" enthalten alle ein "ue".
-_AE = "(?:ä|ae|a)"
-_OE = "(?:ö|oe|o)"
-_UE = "(?:ü|ue|u)"
+# Die Schreibweisen liegen jetzt in app.domain.german: der Identity-Filter
+# braucht dieselben, und getrennt gepflegt kannte er "fuer" nicht.
+_AE = AE
+_OE = OE
+_UE = UE
 
 # ── Verneinungen ─────────────────────────────────────────────────────
 # Drei Richtungen, drei Muster. Ein gemeinsames ginge nicht: "ohne" ist in
@@ -117,9 +118,17 @@ _NEG_BEFORE_RE = re.compile(r"\b(nicht|nie|kein\w*)\s+(?:mehr\s+)?$", re.IGNOREC
 # Gewaehrleistungsausschluss, der auf Kleinanzeigen Pflichttext ist, die Zeile
 # davor — "Ohne OVP\nKeine Ruecknahme" ist keine Verneinung von "ohne OVP".
 _NEG_AFTER_RE = re.compile(r"^[ \t]*(kein\w*|nichts)\b", re.IGNORECASE)
-# Nahe am Schadenswort und nicht ueber ein Satzzeichen hinweg: in "nicht mehr
-# original, hat Dellen" verneint das "nicht" das Original, nicht die Dellen.
-_NEG_NEAR_RE = re.compile(r"\b(ohne|kein\w*|nicht)\b[^,.;]{0,15}$", re.IGNORECASE)
+# Nahe am Schadenswort und nicht ueber eine Satzteilgrenze hinweg: in "nicht
+# mehr original, hat Dellen" verneint das "nicht" das Original, nicht die
+# Dellen.
+#
+# Gezaehlt werden Woerter, nicht Zeichen. Ein festes Zeichenfenster kippte in
+# beide Richtungen: "ohne groessere sichtbare Dellen" war 24 Zeichen lang und
+# damit ausserhalb — die Zusage wurde zum Schaden; "nicht mehr perfekt: Dellen"
+# lag drinnen, obwohl der Doppelpunkt eine neue Aussage anfaengt — der Schaden
+# verschwand. Dazwischen dürfen bis zu drei Woerter stehen (Adjektive,
+# Steigerungen), aber kein Satzzeichen, denn \w+ matcht keines.
+_NEG_NEAR_RE = re.compile(r"\b(ohne|kein\w*|nicht)\b(?:\s+\w+){0,3}\s*$", re.IGNORECASE)
 
 
 def _matches_unnegated(pattern: re.Pattern, text: str, where: str) -> bool:
@@ -215,11 +224,43 @@ _INNER_BAGS_RE = re.compile(rf"t{_UE}ten|beutel|innenverpackung|baggies", re.IGN
 # Satzweise gelesen: das Objekt muss im selben Satz stehen, damit ein "Riss"
 # ohne Bezug nicht den Karton belastet.
 _BOX_OBJECT_RE = re.compile(r"karton|box|verpackung|ovp", re.IGNORECASE)
-# Bewusst ohne "kratzer" und "gebrauchsspuren": beide beschreiben fast immer
-# die Steine oder das Modell, nicht den Karton — und _has_box_damage verlangt
-# nur, dass das Karton-Wort irgendwo im selben Satz steht.
+# Wem der Schaden gehoert, entscheidet das Objekt, das davor genannt wird.
+# Der Karton irgendwo im Satz reichte nicht: "Karton in gutem Zustand, die
+# Figur hat einen Riss" belastete den Karton fuer einen Riss in der Figur.
+_OBJECT_RE = re.compile(
+    r"(?P<box>karton|schachtel|box|verpackung|ovp)"
+    r"|(?P<other>figur\w*|minifig\w*|steine?\b|teile?\b|anleitung\w*|aufkleber"
+    r"|sticker|modell|bauwerk|aufbau)",
+    re.IGNORECASE,
+)
+
+
+def _damage_belongs_to_the_box(sentence: str, damage_start: int, damage_end: int) -> bool:
+    """Whether the object the damage word attaches to is the box.
+
+    German names the object first: "Anleitung hat einen Riss" is the manual's,
+    "Karton hat einen Riss" the box's. So the nearest object *before* the
+    damage word wins, however far away — that is what carries a topic across a
+    comma in "Karton ohne Dellen, aber ein Riss im Deckel". Only when nothing
+    precedes it does the object behind decide ("Dellen im Karton").
+    """
+    nearest_before = None
+    nearest_after = None
+    for match in _OBJECT_RE.finditer(sentence):
+        if match.end() <= damage_start:
+            nearest_before = match
+        elif match.start() >= damage_end and nearest_after is None:
+            nearest_after = match
+    chosen = nearest_before or nearest_after
+    return chosen is not None and chosen.lastgroup == "box"
+# "kratzer" und "gebrauchsspuren" standen hier bewusst nicht drin, solange ein
+# Karton-Wort irgendwo im Satz genuegte: beide beschreiben meistens die Steine
+# oder das Modell, und der Karton haette deren Schaden mitbezahlt. Seit
+# _damage_belongs_to_the_box das Objekt bestimmt, tragen sie — "Die Steine
+# haben Kratzer, Karton ist top" bleibt schadenfrei.
 _DAMAGE_WORD_RE = re.compile(
-    rf"besch{_AE}dig|\bdelle|\bknick|\briss|eingerissen|einriss|gedr{_UE}ckt|wasserschaden",
+    rf"besch{_AE}dig|\bdelle|\bknick|\briss|eingerissen|einriss|gedr{_UE}ckt"
+    r"|wasserschaden|wasserfleck|\bkratzer|\bverkratzt|\bgebrauchsspur",
     re.IGNORECASE,
 )
 # Der Punkt trennt nur mit folgendem Grossbuchstaben — sonst zerfaellt
@@ -239,6 +280,8 @@ def _has_box_damage(text: str) -> bool:
             continue
         for damage in _DAMAGE_WORD_RE.finditer(sentence):
             if _NEG_NEAR_RE.search(sentence[: damage.start()]):
+                continue
+            if not _damage_belongs_to_the_box(sentence, damage.start(), damage.end()):
                 continue
             return True
     return False

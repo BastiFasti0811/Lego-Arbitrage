@@ -138,6 +138,7 @@ async def _cached_scout_deals(request: ScoutRequest, session: AsyncSession) -> S
             price_eur=offer.price_eur,
             reference_price=lego_set.current_market_price or lego_set.uvp_eur,
             set_name=lego_set.set_name,
+            seller_location=offer.seller_location,
         ):
             continue
 
@@ -209,6 +210,7 @@ async def scout_deals(request: ScoutRequest, session: AsyncSession = Depends(get
                 price_eur=offer.price_eur,
                 reference_price=reference_price,
                 set_name=lego_set.set_name if lego_set else None,
+                seller_location=offer.seller_location,
             ):
                 continue
 

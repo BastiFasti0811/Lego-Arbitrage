@@ -289,6 +289,7 @@ async def _enrich_offer_details(scraper, lego_set: LegoSet, offers) -> int:
             price_eur=offer.price_eur,
             reference_price=reference_price,
             set_name=getattr(lego_set, "set_name", None),
+            seller_location=offer.seller_location,
         )
     ]
     # Ein fehlender Preis ist unbekannt, nicht teuer — er gehoert nach vorne,
@@ -354,6 +355,7 @@ async def _upsert_offers(session, lego_set: LegoSet, offers, now: datetime) -> i
             price_eur=offer.price_eur,
             reference_price=reference_price,
             set_name=getattr(lego_set, "set_name", None),
+            seller_location=offer.seller_location,
         ):
             logger.info(
                 "scrape.offer_rejected_not_set",

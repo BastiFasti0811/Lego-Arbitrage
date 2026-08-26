@@ -150,6 +150,7 @@ class TestFeedDedupe:
                     condition="NEW_SEALED",
                     box_damage=False,
                     last_seen_at=datetime.now(UTC),
+                    seller_location=None,
                 ),
                 lego_set,
             )
@@ -180,6 +181,7 @@ class TestFeedDedupe:
                     condition="NEW_SEALED",
                     box_damage=False,
                     last_seen_at=datetime.now(UTC),
+                    seller_location=None,
                 ),
                 lego_set,
             )
@@ -215,6 +217,7 @@ class TestFeedRejectsImplausibleLegacyRows:
                 condition="NEW_SEALED",
                 box_damage=False,
                 last_seen_at=datetime.now(UTC),
+                seller_location=None,
             ),
             lego_set,
         )

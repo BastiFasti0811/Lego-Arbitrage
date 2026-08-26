@@ -98,7 +98,13 @@ class _RecordingScraper:
 
 def _offer(title, price, url):
     return SimpleNamespace(
-        offer_title=title, price_eur=price, offer_url=url, condition="UNKNOWN", box_damage=False, sealed=True
+        offer_title=title,
+        price_eur=price,
+        offer_url=url,
+        condition="UNKNOWN",
+        box_damage=False,
+        sealed=True,
+        seller_location=None,
     )
 
 
