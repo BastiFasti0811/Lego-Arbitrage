@@ -1,4 +1,5 @@
 import VerdictBadge from "./VerdictBadge";
+import { exactMoment, money, relativeAge } from "../lib/datetime";
 
 // Sonderzeichen stehen hier direkt als UTF-8 (die Datei ist UTF-8, index.html
 // deklariert es). In der Preiszeile stand vorher die Escape-Sequenz fuer das
@@ -14,11 +15,6 @@ const CONDITION_LABELS = {
   UNKNOWN: "Zustand unbekannt",
 };
 
-const money = (value) =>
-  typeof value === "number" && Number.isFinite(value)
-    ? value.toLocaleString("de-DE", { style: "currency", currency: "EUR" })
-    : null;
-
 const percent = (value) =>
   typeof value === "number" && Number.isFinite(value)
     ? `${value > 0 ? "+" : ""}${value.toLocaleString("de-DE", {
@@ -32,21 +28,7 @@ const score = (value) =>
     ? value.toLocaleString("de-DE", { maximumFractionDigits: 0 })
     : null;
 
-function relativeAge(value) {
-  if (!value) return null;
-  const seen = new Date(value);
-  if (Number.isNaN(seen.getTime())) return null;
-
-  const minutes = Math.round((Date.now() - seen.getTime()) / 60_000);
-  if (minutes < 2) return "gerade eben";
-  if (minutes < 60) return `vor ${minutes} Min.`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `vor ${hours} Std.`;
-  const days = Math.round(hours / 24);
-  return days === 1 ? "vor 1 Tag" : `vor ${days} Tagen`;
-}
-
-export default function DealCard({ deal, onClick }) {
+export default function DealCard({ deal, onClick, onDismiss }) {
   const roi = deal.estimated_roi ?? deal.roi_percent;
   const roiColor = roi >= 30 ? "text-go-star" : roi >= 15 ? "text-go" : roi >= 0 ? "text-check" : "text-no-go";
 
@@ -73,11 +55,17 @@ export default function DealCard({ deal, onClick }) {
   // ob hier das Set verkauft wird oder eine Anleitung mit derselben Nummer.
   const listingTitle = deal.offer_title && deal.offer_title !== deal.set_name ? deal.offer_title : null;
 
+  // last_seen_at ist der letzte Lauf, in dem GENAU DIESES Inserat noch da war
+  // — nicht der letzte Lauf ueberhaupt. Steht hier "vor 4 Tagen", waehrend der
+  // Header einen Scan von heute frueh meldet, ist das Angebot weg. Darum
+  // "zuletzt gesehen" statt einer nackten Zeitangabe.
+  const seenAge = relativeAge(deal.last_seen_at);
   const meta = [
     deal.platform,
     CONDITION_LABELS[deal.condition],
     shippingLabel,
-    relativeAge(deal.last_seen_at),
+    seenAge && `zuletzt gesehen ${seenAge}`,
+    exactMoment(deal.last_seen_at),
   ].filter(Boolean);
 
   const body = (
@@ -119,7 +107,7 @@ export default function DealCard({ deal, onClick }) {
       {meta.length > 0 && (
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-2">
           {meta.map((entry, index) => (
-            <span key={entry} className="text-text-muted text-xs">
+            <span key={`${index}-${entry}`} className="text-text-muted text-xs">
               {index > 0 && <span className="mr-2 text-border">{"·"}</span>}
               {entry}
             </span>
@@ -144,17 +132,13 @@ export default function DealCard({ deal, onClick }) {
   );
 
   const className =
-    "block bg-bg-card border border-border rounded-xl p-4 hover:border-lego-blue/50 transition-all group";
+    "block h-full bg-bg-card border border-border rounded-xl p-4 hover:border-lego-blue/50 transition-all group";
 
-  if (!deal.offer_url) {
-    return (
-      <div onClick={onClick} className={className}>
-        {body}
-      </div>
-    );
-  }
-
-  return (
+  const card = !deal.offer_url ? (
+    <div onClick={onClick} className={className}>
+      {body}
+    </div>
+  ) : (
     <a
       href={deal.offer_url}
       target="_blank"
@@ -164,5 +148,33 @@ export default function DealCard({ deal, onClick }) {
     >
       {body}
     </a>
+  );
+
+  // Ohne offer_url weist die Route die Abwahl mit 422 ab — dann gehoert da
+  // auch kein Knopf hin, der nichts tun kann.
+  if (!onDismiss || !deal.offer_url) return card;
+
+  // Der Knopf liegt NEBEN dem Anker, nicht darin: ein <button> im <a> ist
+  // ungueltiges HTML, und ein Klick darauf oeffnete trotzdem das Angebot. Die
+  // negativen Offsets setzen ihn auf die Kartenecke, wo er weder den Preis
+  // noch die Fusszeile verdeckt. Sichtbar bleibt er auch ohne Hover, sonst
+  // waere er auf dem Handy nicht erreichbar.
+  // text-text-secondary statt text-text-muted und opacity-90 statt 60: bei
+  // 60 % kam der Knopf auf 1,6:1 gegen den Kartengrund — unlesbar, und auf
+  // dem Handy hebt ihn kein Hover an.
+  const label = deal.set_name || deal.offer_title || `Set ${deal.set_number}`;
+  return (
+    <div className="relative h-full">
+      {card}
+      <button
+        type="button"
+        onClick={() => onDismiss(deal)}
+        title="Nicht mehr im Feed zeigen"
+        aria-label={`${label} nicht mehr im Feed zeigen`}
+        className="absolute -top-2 -right-2 z-10 flex h-6 w-6 items-center justify-center rounded-full border border-border bg-bg-hover text-text-secondary text-xs opacity-90 transition-opacity hover:opacity-100 hover:text-no-go focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-lego-blue"
+      >
+        {"✕"}
+      </button>
+    </div>
   );
 }
