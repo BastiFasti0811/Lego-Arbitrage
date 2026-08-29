@@ -6,11 +6,11 @@ import structlog
 from bs4 import BeautifulSoup
 
 from app.scrapers.base import BaseScraper, ScrapedPrice, ScrapedSetInfo
+from app.services.fx import get_usd_to_eur
 
 logger = structlog.get_logger()
 
 BASE_URL = "https://www.brickeconomy.com"
-USD_TO_EUR = 0.92  # Approximate conversion rate
 
 
 class BrickEconomyScraper(BaseScraper):
@@ -88,7 +88,8 @@ class BrickEconomyScraper(BaseScraper):
             retail_match = re.search(r"(?:Retail|RRP|MSRP)[:\s]*\$?([\d,.]+)", page_text)
             if retail_match:
                 usd_price = float(retail_match.group(1).replace(",", ""))
-                info.uvp_eur = round(usd_price * USD_TO_EUR, 2)
+                fx_rate = await get_usd_to_eur()
+                info.uvp_eur = round(usd_price * fx_rate.usd_to_eur, 2)
 
             # EOL Status
             if re.search(r"Retired|Discontinued", page_text, re.I):
@@ -137,18 +138,28 @@ class BrickEconomyScraper(BaseScraper):
                 return None
 
             usd_price = float(value_match.group(1).replace(",", ""))
-            eur_price = round(usd_price * USD_TO_EUR, 2)
+            fx_rate = await get_usd_to_eur()
+            eur_price = round(usd_price * fx_rate.usd_to_eur, 2)
 
             # Growth info
             growth_match = re.search(r"Growth[:\s]+([-+]?\d+[.,]?\d*)%", page_text)
-            notes = None
+            notes_parts = []
             if growth_match:
-                notes = f"Growth: {growth_match.group(1)}%"
+                notes_parts.append(f"Growth: {growth_match.group(1)}%")
+            # ScrapedPrice hat kein price_original-Feld (siehe base.py) — ein
+            # frueherer Versuch, es dort mitzugeben, warf TypeError bei jedem
+            # Treffer und liess get_price() still None zurueckgeben. currency
+            # "USD" allein sagt nicht mehr, welcher Dollarbetrag dahinter
+            # steckt, darum landet er hier im einzigen Freitextfeld, das bis
+            # ins Lauf-Protokoll durchschlaegt.
+            notes_parts.append(f"USD {usd_price:.2f}")
+            if fx_rate.note:
+                notes_parts.append(fx_rate.note)
+            notes = " | ".join(notes_parts)
 
             return ScrapedPrice(
                 source="BRICKECONOMY",
                 price_eur=eur_price,
-                price_original=usd_price,
                 currency="USD",
                 source_url=url,
                 notes=notes,

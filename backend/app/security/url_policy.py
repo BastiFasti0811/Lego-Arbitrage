@@ -17,6 +17,7 @@ ALLOWED_HOSTS_BY_PLATFORM: dict[str, set[str]] = {
     "BRICKLINK": {"bricklink.com"},
     "BRICKMERGE": {"brickmerge.de"},
     "CATAWIKI": {"catawiki.com"},
+    "ECB": {"ecb.europa.eu"},
     "EBAY": {"ebay.de", "ebay.com"},
     "IDEALO": {"idealo.de"},
     "KLEINANZEIGEN": {"kleinanzeigen.de"},

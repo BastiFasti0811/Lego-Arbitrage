@@ -7,13 +7,16 @@ Decoder, httpx reichte die Rohbytes durch. `_search_set` fand null Treffer und
 """
 
 import gzip
+from datetime import UTC, datetime
 
 import httpx
 import pytest
 import structlog
 
+from app.scrapers import brickeconomy
 from app.scrapers.base import UndecodableResponseError, looks_undecoded
 from app.scrapers.brickeconomy import BrickEconomyScraper
+from app.services.fx import FxRate
 
 
 @pytest.fixture
@@ -165,3 +168,78 @@ async def test_brickeconomy_says_when_the_search_finds_nothing(monkeypatch, capl
 
     assert price is None
     assert "brickeconomy.set_not_found" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_get_price_constructs_a_real_scraped_price_on_a_hit(monkeypatch):
+    # Regression: ScrapedPrice (app/scrapers/base.py) hat kein price_original-
+    # Feld. get_price rief es trotzdem mit price_original=usd_price auf — das
+    # warf TypeError bei jedem Treffer, das breite `except Exception` schluckte
+    # ihn, und get_price gab lautlos None zurueck. Der Encoding-Bug oben hatte
+    # das fuenf Monate verdeckt, weil die Ausfuehrung schon vorher abbrach; erst
+    # mit dessen Fix war diese Zeile ueberhaupt erreichbar. Ein reiner
+    # "is not None"-Check haette den Konstruktor-Fehler durchgelassen, solange
+    # er zufaellig doch ein Objekt zurueckgibt — darum werden hier die Werte
+    # selbst geprueft.
+    html = (
+        "<!doctype html><html><body>"
+        "<h1>75414 Some Set</h1>\n"
+        "<p>Value New: $120.50</p>\n"
+        "<p>Growth: +12.3%</p>\n"
+        "</body></html>"
+    )
+
+    async def fake_search(self, set_number):
+        return "https://www.brickeconomy.com/set/75414-1/Some-Set"
+
+    async def fake_fetch(self, url):
+        return html
+
+    async def fake_fx():
+        return FxRate(usd_to_eur=0.9, as_of=None, is_fallback=True)
+
+    monkeypatch.setattr(BrickEconomyScraper, "_search_set", fake_search)
+    monkeypatch.setattr(BrickEconomyScraper, "_fetch", fake_fetch)
+    monkeypatch.setattr(brickeconomy, "get_usd_to_eur", fake_fx)
+
+    async with BrickEconomyScraper() as scraper:
+        price = await scraper.get_price("75414")
+
+    assert price is not None
+    assert price.source == "BRICKECONOMY"
+    assert price.currency == "USD"
+    assert price.price_eur == pytest.approx(round(120.50 * 0.9, 2))
+    # Der USD-Originalbetrag hat kein eigenes Feld mehr auf ScrapedPrice —
+    # er muss trotzdem lesbar bleiben, statt beim Runden zu verschwinden.
+    assert "USD 120.50" in price.notes
+    assert "Growth: +12.3%" in price.notes
+    assert "Ersatzkurs" in price.notes
+
+
+@pytest.mark.asyncio
+async def test_get_price_notes_hold_the_usd_amount_without_growth_or_fallback(monkeypatch):
+    # Ohne Wachstumsangabe und mit einem gemessenen (nicht Ersatz-)Kurs bleibt
+    # notes trotzdem gefuellt: der USD-Betrag wird jetzt unbedingt angehaengt,
+    # nicht nur als Nebenprodukt eines Growth-Treffers.
+    html = "<!doctype html><html><body><h1>75414 Some Set</h1>\n<p>Value New: $50.00</p></body></html>"
+
+    async def fake_search(self, set_number):
+        return "https://www.brickeconomy.com/set/75414-1/Some-Set"
+
+    async def fake_fetch(self, url):
+        return html
+
+    as_of = datetime(2026, 8, 25, tzinfo=UTC)
+
+    async def fake_fx():
+        return FxRate(usd_to_eur=0.85, as_of=as_of, is_fallback=False)
+
+    monkeypatch.setattr(BrickEconomyScraper, "_search_set", fake_search)
+    monkeypatch.setattr(BrickEconomyScraper, "_fetch", fake_fetch)
+    monkeypatch.setattr(brickeconomy, "get_usd_to_eur", fake_fx)
+
+    async with BrickEconomyScraper() as scraper:
+        price = await scraper.get_price("75414")
+
+    assert price is not None
+    assert price.notes == "USD 50.00"
