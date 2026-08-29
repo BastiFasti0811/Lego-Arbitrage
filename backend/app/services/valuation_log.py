@@ -39,9 +39,14 @@ class SourceProbe:
         }
 
     def describe(self) -> str:
+        # Beide Zweige haengen den Vermerk an — eine Quelle kann gleichzeitig
+        # einen Fehler UND einen Vermerk tragen (z.B. eine fehlgeschlagene
+        # Abfrage waehrend der FX-Kurs schon veraltet war). Der Vermerk darf
+        # dabei nie verloren gehen, egal auf welchem Zweig.
         if self.price_eur is None:
-            return f"{self.source}: {self.error or 'kein Preis'}"
-        text = f"{self.source}: {format_eur(self.price_eur)}"
+            text = f"{self.source}: {self.error or 'kein Preis'}"
+        else:
+            text = f"{self.source}: {format_eur(self.price_eur)}"
         return f"{text} ({self.note})" if self.note else text
 
 
@@ -118,7 +123,13 @@ class ValuationRunRecorder:
         }
 
     async def flush(self, session: AsyncSession, run_id: int) -> None:
-        """Zeilen und Zaehler an den Lauf haengen. Committen tut der Aufrufer."""
+        """Zeilen und Zaehler an den Lauf haengen. Committen tut der Aufrufer.
+
+        Voraussetzung: die ValuationRun-Zeile mit `run_id` existiert bereits — sonst
+        loest das folgende `session.get()` per Autoflush die zuvor hinzugefuegten
+        Zeilen ein und scheitert mit einem IntegrityError, dessen Stacktrace nicht
+        auf diese Ursache zeigt.
+        """
         for row in self.rows:
             session.add(ValuationRunItem(run_id=run_id, **row))
         run = await session.get(ValuationRun, run_id)
