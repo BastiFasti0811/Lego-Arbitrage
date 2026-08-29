@@ -56,7 +56,9 @@ Dahinter steht ein strukturelles Problem: **Das System kann sein eigenes Nichtst
 
 **Dubletten werden gemeldet, nicht verboten.** Ein Lookup-Endpunkt liefert vorhandene Einträge zur Setnummer. Das Formular fragt beim Verlassen des Feldes und bietet zwei Wege an: Menge am vorhandenen Eintrag erhöhen oder als eigenen Eintrag anlegen.
 
-**Referenz-Links entstehen von selbst.** Der BrickMerge-Link wird aus der Setnummer erzeugt und ist damit sofort für alle 41 Sets da. Ein neues Feld `reference_url` überschreibt ihn, wenn die Automatik danebenliegt.
+**Referenz-Links entstehen von selbst.** Aus der Setnummer werden zwei Links erzeugt — BrickMerge und die Idealo-Suche `LEGO <Setnummer>` — und sind damit sofort für alle 41 Sets da. Beide sind reine Ableitungen, sie brauchen keinen Speicher. Ein neues Feld `reference_url` nimmt zusätzlich einen eigenen Link auf, wenn beide danebenliegen.
+
+Idealo ist bewusst **nur** Link und **keine** Konsensquelle. Gemessen am 25.08.2026 vom Produktions-Host, sechs Sets: fünf `403`, ein `200`. Im einzigen Treffer (71839, Marktwert rund 14 €) hätte der Ganzseiten-Fallback **5,57 €** gemeldet — das Minimum aus 80 Euro-Beträgen der Suchseite — und der Selektor 78 €, weil die Suchseite fremde Produkte listet. Für einen Menschen ist Idealo eine gute Quelle, weil er sieht, welcher Treffer der richtige ist. Genau diese Unterscheidung fehlt dem Scraper, und eine Quelle mit rund 17 % Antwortquote trägt ohnehin kein Zwei-Quellen-Konsens.
 
 ## User Stories
 
@@ -66,7 +68,7 @@ Dahinter steht ein strukturelles Problem: **Das System kann sein eigenes Nichtst
 4. Als Betreiber möchte ich je Lauf nachlesen, welche Quelle für welches Set was geliefert hat, damit ich einen Ausfall von „Set ist unbekannt" unterscheiden kann.
 5. Als Betreiber möchte ich beim Einbuchen gewarnt werden, wenn die Setnummer schon im Bestand liegt, damit ich nicht versehentlich doppelt erfasse.
 6. Als Betreiber möchte ich bei einer erkannten Dublette die Menge am vorhandenen Eintrag erhöhen können, damit ein echter Nachkauf nicht als zweiter Eintrag endet.
-7. Als Betreiber möchte ich von jeder Inventar-Karte direkt zu BrickMerge springen, damit ich einen gemeldeten Wert gegenprüfen kann.
+7. Als Betreiber möchte ich von jeder Inventar-Karte direkt zu BrickMerge und zur Idealo-Suche springen, damit ich einen gemeldeten Wert — oder eine fehlende Bewertung — mit eigenen Augen gegenprüfen kann.
 8. Als Betreiber möchte ich einen eigenen Link hinterlegen können, wenn der erzeugte auf die falsche Seite zeigt.
 9. Als Betreiber möchte ich, dass BrickEconomy-Preise mit einem tagesaktuellen Kurs umgerechnet werden, damit der Konsens nicht an einer alten Konstante hängt.
 10. Als Betreiber möchte ich, dass ein Lauf mit vielen Übersprungenen als Problem gilt, damit „grün" wieder bedeutet, dass Werte entstehen.
@@ -140,7 +142,7 @@ Der Watchdog bekommt eine Nutzarbeits-Regel analog zu `evaluate_data_freshness`:
 
 **Dubletten-Hinweis.** Beim Verlassen des Setnummer-Feldes fragt das Formular `/lookup`. Treffer: „40800 liegt bereits 2× im Bestand (24.08.2026, 7 €)" mit *Menge erhöhen* und *Trotzdem neu anlegen*.
 
-**Referenz-Link.** Auf jeder Karte ein Link — `reference_url`, sonst `brickmerge.de/?find=<setnummer>`. Im Bearbeiten-Dialog ein Feld dafür.
+**Referenz-Links.** Auf jeder Karte zwei erzeugte Links — BrickMerge (`brickmerge.de/?find=<setnummer>`) und Idealo (`idealo.de/preisvergleich/MainSearchProductCategory.html?q=LEGO%20<setnummer>`). Ist `reference_url` gesetzt, kommt sie als dritter Link dazu. Im Bearbeiten-Dialog ein Feld dafür.
 
 ## Fehlerbehandlung
 
@@ -171,7 +173,8 @@ Eine Alembic-Revision: zwei Tabellen, eine Spalte. Reines Schema, kein Datenumzu
 
 - **eBay-Sold wiederbeleben.** Der `403` bleibt. Playwright/Stealth oder die offizielle eBay-API sind ein eigener Brocken mit eigener Entscheidung.
 - **Ein-Quellen-Werte anzeigen.** Die Zwei-Quellen-Regel bleibt unangetastet. Sichtbar wird der Grund, nicht die geratene Zahl.
-- **Mehrere Referenz-Links je Set.** Ein Link, überschreibbar.
+- **Idealo als Konsensquelle.** Bleibt Link. Der Weg dorthin wäre Suchtreffer → Produkt-Detailseite → Titel-Abgleich auf die Setnummer; die Antwortquote von rund 17 % bliebe auch danach.
+- **Eine verwaltete Link-Liste je Set.** Zwei erzeugte Links plus ein manuelles Feld — keine eigene Tabelle.
 - **Parallelisierung der Bewertung.** Erst nötig, wenn das erhöhte Zeitlimit nicht mehr reicht.
 
 ## Risiken
