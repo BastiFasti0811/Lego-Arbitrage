@@ -70,10 +70,22 @@ def _classify_consensus(consensus) -> tuple[str, ValuationSkipReason | None]:
     Rein und ohne I/O, damit jede der vier Aussteige-Stellen einzeln
     pruefbar ist. `is_persistable_consensus` liefert nur ja/nein; fuer das
     Protokoll wird der Grund gebraucht.
+
+    Sieht nur den Konsens, nicht die Probes je Quelle. `num_sources == 0`
+    heisst hier deshalb immer NO_PRICES — auch wenn in Wahrheit eine Quelle
+    geantwortet hat und ihr Preis wegen Unplausibilitaet verworfen wurde.
+    Diese Funktion kann die beiden Faelle nicht auseinanderhalten, weil sie
+    die Probes nicht sieht; `_resolve_skip_reason` unten zieht die Grenze
+    dort nach, wo die Probes tatsaechlich vorliegen.
     """
     if consensus.num_sources == 0:
         return "skipped", ValuationSkipReason.NO_PRICES
     if consensus.consensus_price <= 0:
+        # Defensiv, nicht produktiv erreichbar: calculate_consensus zaehlt
+        # nur price_eur > 0 als Quelle, daher liefert es nie num_sources >= 1
+        # zusammen mit consensus_price <= 0. Der Zweig bleibt als billige
+        # Absicherung des Geldpfads stehen, falls sich das je aendert — wer
+        # hier einen produktiven Ausloeser sucht, wird keinen finden.
         return "skipped", ValuationSkipReason.ZERO_CONSENSUS
     if consensus.num_sources < 2:
         return "skipped", ValuationSkipReason.SINGLE_SOURCE
@@ -113,6 +125,35 @@ async def _collect_prices(item, uvp: float | None) -> tuple[list, list[SourcePro
         probes.append(SourceProbe(source=price.source, price_eur=price.price_eur, note=price.notes))
         prices.append(price)
     return prices, probes
+
+
+def _has_rejected_price(probes: list[SourceProbe]) -> bool:
+    """Ob eine Quelle einen Preis lieferte, der als unplausibel verworfen wurde.
+
+    Die einzige Probe mit sowohl `price_eur` als auch `error` gesetzt ist die
+    aus dem Unplausibilitaets-Zweig in `_collect_prices`: eine erfolgreiche
+    Quelle setzt nie `error`, eine stumme oder fehlgeschlagene Quelle nie
+    `price_eur`. Das Feldpaar allein identifiziert den Fall eindeutig, ohne
+    auf den Wortlaut der Fehlermeldung angewiesen zu sein.
+    """
+    return any(probe.price_eur is not None and probe.error is not None for probe in probes)
+
+
+def _resolve_skip_reason(consensus, probes: list[SourceProbe]) -> tuple[str, ValuationSkipReason | None]:
+    """`_classify_consensus`, ergaenzt um die eine Unterscheidung, die sie ohne
+    die Probes nicht treffen kann: keine Quelle hat geantwortet (NO_PRICES)
+    gegen eine Quelle hat geantwortet und wurde verworfen (IMPLAUSIBLE_PRICE).
+    Beides ergibt bei `_classify_consensus` dasselbe `num_sources == 0`, sind
+    aber zwei verschiedene Handlungsanweisungen fuer die Person, die den Lauf
+    liest: NO_PRICES zeigt auf die Quelle selbst (tot oder Set unbekannt),
+    IMPLAUSIBLE_PRICE auf die Seite oder den UVP-Anker. Die Probes tragen
+    diesen Unterschied bereits (siehe `_has_rejected_price`); hier wird er
+    nur noch in den Grund uebersetzt.
+    """
+    outcome, reason = _classify_consensus(consensus)
+    if reason is ValuationSkipReason.NO_PRICES and _has_rejected_price(probes):
+        reason = ValuationSkipReason.IMPLAUSIBLE_PRICE
+    return outcome, reason
 
 
 @celery_app.task(
@@ -158,7 +199,7 @@ async def _update_valuations_async(run_id: int | None = None) -> dict:
             try:
                 prices, probes = await _collect_prices(item, uvp_by_set.get(item.set_number))
                 consensus = calculate_consensus(prices)
-                outcome, reason = _classify_consensus(consensus)
+                outcome, reason = _resolve_skip_reason(consensus, probes)
 
                 if outcome == "skipped":
                     logger.info(
