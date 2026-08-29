@@ -260,6 +260,42 @@ def evaluate_data_freshness(
     )
 
 
+# Unterhalb dieser Anzahl sagt der Anteil nichts: bei zwei Sets ist ein
+# Uebersprung schon die Haelfte.
+MIN_ITEMS_FOR_COVERAGE_CHECK = 5
+MAX_SKIPPED_SHARE = 0.5
+
+
+def evaluate_valuation_coverage(run, now: datetime) -> TaskHealth | None:
+    """Nutzarbeit der Bewertung: ein Lauf muss Werte erzeugen, nicht nur laufen.
+
+    Der Heartbeat sieht nur, dass der Task durchlief. Ein Lauf, der jedes
+    zweite Set ueberspringt, ist ein Quellenausfall — und genau der blieb
+    fuenf Monate unbemerkt. Rein (kein I/O); gibt ein synthetisches Problem
+    oder None zurueck.
+    """
+    if run is None or run.items_total < MIN_ITEMS_FOR_COVERAGE_CHECK:
+        return None
+
+    share = run.items_skipped / run.items_total
+    if share <= MAX_SKIPPED_SHARE:
+        return None
+
+    return TaskHealth(
+        task_name="pipeline.valuation_coverage",
+        status="stale",
+        last_success_at=run.started_at,
+        last_run_at=run.started_at,
+        last_status=None,
+        age_seconds=(now - run.started_at).total_seconds() if run.started_at else None,
+        max_age_seconds=0,
+        detail=(
+            f"Letzter Bewertungslauf: {run.items_skipped} von {run.items_total} Sets "
+            f"ohne Marktwert — Quellenlage im Protokoll pruefen"
+        ),
+    )
+
+
 def filter_unthrottled(
     problems: Sequence[TaskHealth],
     by_name: dict[str, TaskHeartbeat],

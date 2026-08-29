@@ -15,10 +15,12 @@ from app.config import settings
 from app.models import PriceRecord, WatchlistItem
 from app.models.base import async_session
 from app.models.heartbeat import TaskHeartbeat
+from app.models.valuation_run import ValuationRun
 from app.notifications.telegram_bot import send_pipeline_health_alert
 from app.services.heartbeat import (
     evaluate_data_freshness,
     evaluate_health,
+    evaluate_valuation_coverage,
     filter_unthrottled,
     load_heartbeats,
 )
@@ -50,6 +52,14 @@ async def _check_async() -> dict:
                 select(func.count()).select_from(WatchlistItem).where(WatchlistItem.is_active)
             )
         ).scalar_one()
+        latest_run = (
+            await session.execute(
+                select(ValuationRun)
+                .where(ValuationRun.finished_at.is_not(None))
+                .order_by(ValuationRun.started_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
     report = evaluate_health(heartbeats, now)
 
     # Nutzarbeit on top of task success: a green pipeline that stops writing
@@ -58,6 +68,10 @@ async def _check_async() -> dict:
     freshness_problem = evaluate_data_freshness(latest_price_at, active_watchlist, now)
     if freshness_problem is not None:
         problems.append(freshness_problem)
+
+    coverage_problem = evaluate_valuation_coverage(latest_run, now)
+    if coverage_problem is not None:
+        problems.append(coverage_problem)
 
     if not problems:
         logger.info("health.pipeline_ok", monitored=len(report.tasks))
