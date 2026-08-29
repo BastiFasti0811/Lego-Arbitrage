@@ -335,6 +335,28 @@ class _FakeFailureSession:
         pass
 
 
+class _FakeBrokenFailureSession:
+    """Die Rescue-Session, wenn sie selbst scheitert - dieselbe Stoerung, die
+    den urspruenglichen Lauf abbrach, oder eine eigene. get() funktioniert,
+    commit() nicht - der Fehlerfall, der Round 3 dieses Tasks ausloeste.
+    """
+
+    def __init__(self, run):
+        self._run = run
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    async def get(self, _model, id_):
+        return self._run if id_ == self._run.id else None
+
+    async def commit(self):
+        raise ConnectionError("Rescue-Session ebenfalls nicht erreichbar")
+
+
 class _FakeBrickMerge:
     """Ersetzt den Peak-Check-Scraper: leere Historie, kein Netzwerk, kein Signal."""
 
@@ -461,6 +483,33 @@ async def test_a_crashed_run_is_marked_failed_not_left_running(monkeypatch):
     assert run.status == ValuationRunStatus.FAILED.value
     assert run.finished_at is not None
     assert "Datenbank nicht erreichbar" in run.error
+
+
+@pytest.mark.asyncio
+async def test_a_failing_rescue_still_lets_the_original_exception_escape(monkeypatch):
+    # Round 3: die Rescue-Session kann dieselbe Stoerung treffen, die den
+    # Lauf ueberhaupt erst abbrach, oder eine eigene. Ohne Schutz wuerde ihre
+    # eigene Ausnahme das `raise` unten ersetzen - Celery/Heartbeat saehen
+    # dann den sekundaeren Fehler (hier: ConnectionError) statt der Ursache
+    # (RuntimeError). Der Zeilen-Status ist hier nicht pruefbar (das Rescue
+    # scheiterte ja gerade) - die Identitaet der entkommenden Ausnahme ist
+    # der Punkt: sie muss die urspruengliche sein, nicht die des Rescues.
+    class _BoomSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def execute(self, _statement):
+            raise RuntimeError("Datenbank nicht erreichbar")
+
+    run = SimpleNamespace(id=99, status=ValuationRunStatus.RUNNING.value, finished_at=None, error=None)
+    sessions = iter([_BoomSession(), _FakeBrokenFailureSession(run)])
+    monkeypatch.setattr(update_inventory, "async_session", lambda: next(sessions))
+
+    with pytest.raises(RuntimeError, match="Datenbank nicht erreichbar"):
+        await _update_valuations_async(run_id=99)
 
 
 @pytest.mark.asyncio

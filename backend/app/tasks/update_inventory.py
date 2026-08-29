@@ -322,13 +322,27 @@ async def _update_valuations_async(run_id: int | None = None) -> dict:
             # Zeile fuer immer "running": das Rescue am Endpoint kennt nur den
             # neuesten Lauf, und einen Beat-Lauf klickt niemand nach.
             logger.error("inventory.valuation_run_failed", run_id=run_id, error=str(exc))
-            async with async_session() as failure_session:
-                failed_run = await failure_session.get(ValuationRun, run_id)
-                if failed_run is not None:
-                    failed_run.status = ValuationRunStatus.FAILED.value
-                    failed_run.finished_at = datetime.now(UTC)
-                    failed_run.error = f"{type(exc).__name__}: {exc}"[:2000]
-                    await failure_session.commit()
+            try:
+                async with async_session() as failure_session:
+                    failed_run = await failure_session.get(ValuationRun, run_id)
+                    if failed_run is not None:
+                        failed_run.status = ValuationRunStatus.FAILED.value
+                        failed_run.finished_at = datetime.now(UTC)
+                        failed_run.error = f"{type(exc).__name__}: {exc}"[:2000]
+                        await failure_session.commit()
+            except Exception as rescue_exc:
+                # Das Rescue selbst darf die urspruengliche Ursache nicht
+                # verschlucken: eine zweite Ausnahme hier wuerde sonst das
+                # `raise` unten ersetzen, und Celery/Heartbeat saehen nur noch
+                # den sekundaeren Fehler — jemand, der den toten Lauf
+                # untersucht, liefe einem Symptom hinterher statt der
+                # Ursache. Die Zeile bleibt dann "running" stehen, sichtbar
+                # als eigener, kleinerer Befund, statt den echten Fehler zu
+                # verdecken.
+                logger.error(
+                    "inventory.valuation_run_rescue_failed",
+                    run_id=run_id, original_error=str(exc), rescue_error=str(rescue_exc),
+                )
             raise
 
     counts = recorder.counts()
