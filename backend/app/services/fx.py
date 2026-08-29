@@ -4,9 +4,14 @@ BrickEconomy quotiert in Dollar. Der Umrechnungskurs stand bisher als
 Konstante im Scraper — ohne Datum, also ohne Chance, die Drift zu bemerken.
 
 Der Kurs wird hoechstens einmal am Tag geholt und in `app_settings`
-zwischengelagert. Faellt der Abruf aus, gilt der letzte bekannte Kurs; gibt
-es auch den nicht, greift ein Ersatzwert — und der traegt einen Vermerk, der
-bis ins Lauf-Protokoll durchschlaegt.
+zwischengelagert. Faellt der Abruf aus, gilt der letzte bekannte Kurs — und
+sobald der aelter als der Cache-Zeitraum ist, traegt er selbst einen
+Vermerk, denn ein Kurs von vor Wochen ist strukturell derselbe Fall wie ein
+Ersatzwert: real, aber nicht mehr aktuell. Gibt es auch keinen
+zwischengelagerten Kurs, greift der hartkodierte Ersatzwert, ebenfalls
+vermerkt. Alle drei Zustaende — frisch, veraltet, Ersatzwert — sind
+unterscheidbar, und beide Nicht-frisch-Faelle schlagen bis ins
+Lauf-Protokoll durch.
 """
 
 from dataclasses import dataclass
@@ -38,13 +43,34 @@ class FxRate:
     usd_to_eur: float
     as_of: datetime | None
     is_fallback: bool
+    # Default False, damit jeder bestehende Aufruf (auch in Tests, die das
+    # Feld nicht kennen) unveraendert "nicht veraltet" bleibt. Nur der eine
+    # Pfad in get_usd_to_eur(), der einen abgelaufenen Cache-Wert zurueckgibt,
+    # setzt ihn explizit auf True. Getrennt von is_fallback, weil beide
+    # Zustaende unabhaengig voneinander sind: der Ersatzwert ist immer "nicht
+    # frisch", aber ein veralteter Cache-Wert ist kein Ersatzwert — er ist ein
+    # echter, nur nicht mehr aktueller EZB-Kurs.
+    is_stale: bool = False
 
     @property
     def note(self) -> str | None:
-        """Vermerk fuer das Lauf-Protokoll — None, wenn der Kurs gemessen ist."""
-        if not self.is_fallback:
-            return None
-        return "Ersatzkurs — kein EZB-Kurs verfuegbar"
+        """Vermerk fuer das Lauf-Protokoll — None nur, wenn der Kurs frisch ist.
+
+        Drei Zustaende, nicht zwei: frisch gemessen (kein Vermerk), echt aber
+        veraltet (Vermerk mit Datum) und hartkodierter Ersatzwert (Vermerk wie
+        gehabt). Der veraltete Fall nennt das Datum aus `as_of`, nicht ein
+        "vor N Tagen": ein Tage-Delta braucht das aktuelle `now()` und wuerde
+        sich bei jedem Lesen aendern, je nachdem wann man hinschaut — zwei
+        Aufrufe von `.note` an verschiedenen Tagen haetten dann unterschiedlichen
+        Text fuer denselben, laengst eingefrorenen Kurs. Ein festes Datum aus
+        dem Objekt selbst bleibt stabil und ist trotzdem auf einen Blick lesbar.
+        """
+        if self.is_fallback:
+            return "Ersatzkurs — kein EZB-Kurs verfuegbar"
+        if self.is_stale:
+            as_of_text = self.as_of.date().isoformat() if self.as_of else "unbekannt"
+            return f"Kurs veraltet — zuletzt am {as_of_text} von der EZB bestaetigt"
+        return None
 
 
 def parse_ecb_rate(xml_text: str) -> float | None:
@@ -127,7 +153,7 @@ async def _fetch_ecb() -> float | None:
 
 
 async def get_usd_to_eur() -> FxRate:
-    """Tageskurs — frisch, sonst zwischengelagert, sonst Ersatzwert."""
+    """Tageskurs — frisch, sonst zwischengelagert (mit Altersvermerk), sonst Ersatzwert."""
     now = datetime.now(UTC)
     cached_rate, cached_at = await _load_cached()
     if cached_rate is not None and is_fresh(cached_at, now):
@@ -144,8 +170,13 @@ async def get_usd_to_eur() -> FxRate:
         return FxRate(usd_to_eur=fetched, as_of=now, is_fallback=False)
 
     if cached_rate is not None:
+        # Hier ist `is_fresh(cached_at, now)` oben bereits False gewesen —
+        # dieser Kurs ist real, aber laenger als MAX_AGE alt. Vorher kam er
+        # mit is_fallback=False ohne jeden Vermerk zurueck: strukturell nicht
+        # von einem Kurs von vor einer Minute zu unterscheiden. is_stale=True
+        # markiert genau diesen Unterschied.
         logger.warning("fx.using_stale_rate", as_of=cached_at.isoformat() if cached_at else None)
-        return FxRate(usd_to_eur=cached_rate, as_of=cached_at, is_fallback=False)
+        return FxRate(usd_to_eur=cached_rate, as_of=cached_at, is_fallback=False, is_stale=True)
 
     logger.warning("fx.using_fallback_rate", rate=FALLBACK_USD_TO_EUR)
     return FxRate(usd_to_eur=FALLBACK_USD_TO_EUR, as_of=None, is_fallback=True)

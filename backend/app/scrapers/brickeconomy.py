@@ -90,6 +90,20 @@ class BrickEconomyScraper(BaseScraper):
                 usd_price = float(retail_match.group(1).replace(",", ""))
                 fx_rate = await get_usd_to_eur()
                 info.uvp_eur = round(usd_price * fx_rate.usd_to_eur, 2)
+                # ScrapedSetInfo hat kein notes-Feld — es ist von jedem Scraper
+                # geteilt, und diese Aufgabe erweitert seine Form nicht (anders
+                # als ScrapedPrice.notes, siehe get_price unten). Ein veralteter
+                # oder Ersatz-Kurs ginge hier sonst spurlos verloren. uvp_eur
+                # dient als Plausibilitaets-Anker fuer den Konsenspreis, nicht
+                # als Geldwert im Bestand — die Herkunft bleibt trotzdem ueber
+                # das Log auffindbar, mit Set-Nummer und Kursdatum.
+                if fx_rate.note:
+                    logger.warning(
+                        "brickeconomy.uvp_fx_note",
+                        set_number=set_number,
+                        note=fx_rate.note,
+                        as_of=fx_rate.as_of.isoformat() if fx_rate.as_of else None,
+                    )
 
             # EOL Status
             if re.search(r"Retired|Discontinued", page_text, re.I):

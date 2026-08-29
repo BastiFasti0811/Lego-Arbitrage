@@ -60,3 +60,22 @@ def test_measured_rate_carries_its_date_and_no_note():
     as_of = datetime(2026, 8, 25, tzinfo=UTC)
     rate = fx.FxRate(usd_to_eur=0.925, as_of=as_of, is_fallback=False)
     assert rate.note is None
+
+
+def test_stale_cached_rate_is_marked_with_its_date():
+    # Review-Finding (Critical): ein Kurs, dessen Live-Abruf fehlschlaegt, fiel
+    # bisher auf den zwischengelagerten Wert zurueck und kam mit
+    # is_fallback=False zurueck — strukturell nicht von einem Kurs zu
+    # unterscheiden, der gerade erst gemessen wurde, obwohl er Wochen oder
+    # Monate alt sein kann. is_stale ist der dritte, bisher fehlende Zustand.
+    as_of = datetime(2026, 7, 1, tzinfo=UTC)
+    rate = fx.FxRate(usd_to_eur=0.9, as_of=as_of, is_fallback=False, is_stale=True)
+    assert rate.is_fallback is False
+    assert rate.note == "Kurs veraltet — zuletzt am 2026-07-01 von der EZB bestaetigt"
+
+
+def test_stale_note_falls_back_to_unbekannt_without_a_date():
+    # Randfall: ein zwischengelagerter Kurswert ohne lesbares Datum (z.B. ein
+    # korrupter UPDATED_KEY-Eintrag) darf note nicht zum Absturz bringen.
+    rate = fx.FxRate(usd_to_eur=0.9, as_of=None, is_fallback=False, is_stale=True)
+    assert rate.note == "Kurs veraltet — zuletzt am unbekannt von der EZB bestaetigt"

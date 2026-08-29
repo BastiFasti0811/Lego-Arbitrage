@@ -243,3 +243,74 @@ async def test_get_price_notes_hold_the_usd_amount_without_growth_or_fallback(mo
 
     assert price is not None
     assert price.notes == "USD 50.00"
+
+
+@pytest.mark.asyncio
+async def test_get_price_notes_carry_a_stale_rate_warning(monkeypatch):
+    # Review-Finding (Critical): FxRate unterschied bisher nur zwei Zustaende
+    # (Ersatzwert / alles andere). Ein echter, aber laenger als MAX_AGE alter
+    # Cache-Kurs kam mit is_fallback=False und damit note=None zurueck — vom
+    # Objekt allein war das nicht zu fangen, denn FxRate.note war fuer diesen
+    # Fall schlicht "richtig" im Sinne der (unvollstaendigen) alten Logik. Der
+    # Verlust passierte am Uebergang: brickeconomy.get_price haette den
+    # Vermerk weiterreichen muessen, egal was FxRate zurueckgibt. Darum hier
+    # der Weg durch den echten Aufruf bis in ScrapedPrice.notes, nicht nur ein
+    # isolierter Test gegen FxRate.note.
+    html = "<!doctype html><html><body><h1>75414 Some Set</h1>\n<p>Value New: $80.00</p></body></html>"
+
+    async def fake_search(self, set_number):
+        return "https://www.brickeconomy.com/set/75414-1/Some-Set"
+
+    async def fake_fetch(self, url):
+        return html
+
+    as_of = datetime(2026, 6, 1, tzinfo=UTC)
+
+    async def fake_fx():
+        return FxRate(usd_to_eur=0.8, as_of=as_of, is_fallback=False, is_stale=True)
+
+    monkeypatch.setattr(BrickEconomyScraper, "_search_set", fake_search)
+    monkeypatch.setattr(BrickEconomyScraper, "_fetch", fake_fetch)
+    monkeypatch.setattr(brickeconomy, "get_usd_to_eur", fake_fx)
+
+    async with BrickEconomyScraper() as scraper:
+        price = await scraper.get_price("75414")
+
+    assert price is not None
+    assert price.price_eur == pytest.approx(round(80.00 * 0.8, 2))
+    assert "USD 80.00" in price.notes
+    assert "Kurs veraltet" in price.notes
+    assert "2026-06-01" in price.notes
+
+
+@pytest.mark.asyncio
+async def test_get_set_info_logs_a_dropped_fx_note_with_attribution(monkeypatch, caplog, _caplog_sees_structlog):
+    # Review-Finding (Important): ScrapedSetInfo hat kein notes-Feld, also
+    # verschwand fx_rate.note hier komplett — auch im "echten" Ersatzwert-Fall,
+    # den der Reviewer als Beispiel nannte. Die Ruling war, ScrapedSetInfo
+    # nicht zu erweitern (geteilte Form, nicht Teil dieser Aufgabe); die Spur
+    # muss also ueber das Log kommen, mit Set-Nummer, damit sie auffindbar ist.
+    html = "<!doctype html><html><body><h1>75414 Some Set</h1>\n<p>Retail: $80.00</p></body></html>"
+
+    async def fake_search(self, set_number):
+        return "https://www.brickeconomy.com/set/75414-1/Some-Set"
+
+    async def fake_fetch(self, url):
+        return html
+
+    async def fake_fx():
+        return FxRate(usd_to_eur=0.8, as_of=None, is_fallback=True)
+
+    monkeypatch.setattr(BrickEconomyScraper, "_search_set", fake_search)
+    monkeypatch.setattr(BrickEconomyScraper, "_fetch", fake_fetch)
+    monkeypatch.setattr(brickeconomy, "get_usd_to_eur", fake_fx)
+
+    async with BrickEconomyScraper() as scraper:
+        with caplog.at_level("WARNING"):
+            info = await scraper.get_set_info("75414")
+
+    assert info is not None
+    assert info.uvp_eur == pytest.approx(round(80.00 * 0.8, 2))
+    assert "brickeconomy.uvp_fx_note" in caplog.text
+    assert "75414" in caplog.text
+    assert "Ersatzkurs" in caplog.text
