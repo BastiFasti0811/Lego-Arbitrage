@@ -129,11 +129,28 @@ class UndecodableResponseError(RuntimeError):
     """
 
 
-# Echtes HTML enthaelt praktisch keine Steuerzeichen. Unentpackte Bytes
-# bestehen zu rund einem Drittel daraus; der Abstand ist gross genug, dass
-# die Grenze nicht fein justiert werden muss.
-_UNDECODED_RATIO = 0.10
 _UNDECODED_SAMPLE = 2000
+
+# Kurze Marker, die jede echte Seite dieser Scraper im ersten Sample-Fenster
+# traegt (Doctype/html/head/body stehen am Dokumentanfang). Fuer eine
+# zufaellige Bytefolge ist die Kollisionschance mit dem kuerzesten Token
+# ("<head", 5 Zeichen) auf 2000 Positionen rund 2000 * 256**-5 < 1e-8 —
+# faktisch nie. Fehlt jedes Token, ist die Antwort keine Seite, unabhaengig
+# vom Steuerzeichenanteil. Das ist das primaere Signal; der Anteil unten ist
+# nur das Netz fuer den (astronomisch unwahrscheinlichen) Fall, dass eines
+# der Tokens doch einmal zufaellig auftaucht.
+_HTML_MARKERS = ("<!doctype", "<html", "<head", "<body")
+
+# Vorherige Version dieses Kommentars behauptete, unentpackte Bytes seien zu
+# "rund einem Drittel" Steuerzeichen — falsch gemessen. Der Code zaehlt nur
+# ord < 32 ohne Tab/LF/CR, also 29 von 256 Bytewerten ≈ 11,3 %. Echtes HTML
+# liegt nahe 0 %, aber der Abstand zur alten 10-%-Grenze war zu klein:
+# gzip-komprimiertes HTML, real als latin-1 decodiert (der Fallback-Pfad bei
+# einem Server, der eine Single-Byte-Kodierung deklariert), maß 7,4-8,65 %,
+# ein reiner Zufallslauf 9,95 % — beide unter der alten Grenze durchgerutscht.
+# 5 % liegt sicher unter diesen gemessenen Faellen und weit ueber dem Wert
+# echter Seiten.
+_UNDECODED_RATIO = 0.05
 
 
 def looks_undecoded(body: str) -> bool:
@@ -141,6 +158,9 @@ def looks_undecoded(body: str) -> bool:
     if not body:
         return False
     sample = body[:_UNDECODED_SAMPLE]
+    lowered = sample.lower()
+    if not any(marker in lowered for marker in _HTML_MARKERS):
+        return True
     odd = sum(
         1 for ch in sample
         if ch == "�" or (ord(ch) < 32 and ch not in "\t\r\n")

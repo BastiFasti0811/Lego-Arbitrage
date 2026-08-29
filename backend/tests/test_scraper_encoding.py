@@ -6,6 +6,8 @@ Decoder, httpx reichte die Rohbytes durch. `_search_set` fand null Treffer und
 `get_price` stieg ohne Logzeile aus.
 """
 
+import gzip
+
 import httpx
 import pytest
 import structlog
@@ -53,6 +55,63 @@ def test_undecoded_compression_is_flagged():
     # So sah die BrickEconomy-Antwort in Produktion aus: Rohbytes, als Zeichen gelesen.
     garbage = bytes(range(1, 200)).decode("latin-1") * 20
     assert looks_undecoded(garbage) is True
+
+
+def test_gzip_compressed_html_decoded_as_latin1_is_flagged():
+    # Der reale Fehlerpfad aus dem Review-Finding: ein Server deklariert eine
+    # Single-Byte-Kodierung (z.B. ISO-8859-1), httpx decodiert den noch
+    # gzip-komprimierten Koerper als latin-1. Der Steuerzeichenanteil allein
+    # lag hier je nach Seitengroesse gemessen zwischen 7,4 % und 19,5 % —
+    # mal drunter, mal drueber der alten 10-%-Grenze. Was nie schwankt: der
+    # komprimierte Koerper enthaelt kein einziges HTML-Markertoken, das waere
+    # ein Zufallstreffer mit Wahrscheinlichkeit < 1e-8.
+    para = (
+        "<div class='listing'><span class='price'>{p},99 &euro;</span> "
+        "<a href='/set/{n}-1/LEGO-Star-Wars'>LEGO Star Wars Set {n}</a> "
+        "Baujahr 20{y}, {pc} Teile, {mf} Minifiguren, Wachstum {g} Prozent.</div>\n"
+    )
+    rows = "".join(
+        para.format(p=100 + i, n=75000 + i, y=15 + (i % 9), pc=200 + i * 7, mf=1 + i % 6, g=i % 40)
+        for i in range(400)
+    )
+    html = (
+        "<!doctype html><html><head><title>LEGO Suche - BrickEconomy</title>"
+        "<meta charset='utf-8'><link rel='stylesheet' href='/site.css'></head>"
+        "<body><header><nav>Home | Sets | Search</nav></header>"
+        f"<main>{rows}</main>"
+        "<footer>&copy; 2026 BrickEconomy</footer></body></html>"
+    ).encode()
+
+    garbage = gzip.compress(html).decode("latin-1")
+
+    assert looks_undecoded(garbage) is True
+
+
+def test_binary_looking_body_without_html_markers_is_flagged_even_at_zero_ratio():
+    # Der Steuerzeichenanteil ist nicht die einzige Verteidigungslinie: ein
+    # Koerper kann fast nur aus druckbaren Zeichen bestehen (Ratio 0 %) und
+    # trotzdem keine Seite sein — z.B. ein anderes Kompressionsformat als
+    # gzip/brotli (etwa ein kuenftiges zstd, das im Image ebenfalls keinen
+    # Decoder hat) muss nicht Richtung Steuerzeichen verteilt sein. Fehlt
+    # jedes HTML-Markertoken, wird trotzdem verworfen — unabhaengig vom
+    # Anteil. Eine reine Anteils-Pruefung haette diesen Fall durchgelassen.
+    base64_like = (
+        "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5"
+        "ejAxMjM0NTY3ODkrLw=="
+    ) * 40
+    assert looks_undecoded(base64_like) is True
+
+
+def test_html_with_heavy_umlauts_is_not_flagged():
+    # Akzentzeichen sind gewoehnliche Zeichen, keine Steuerzeichen — ein
+    # Textanteil mit vielen Umlauten darf den Detektor nicht triggern.
+    html = (
+        "<!doctype html><html><body><h1>Fruehstueck in Zuerich</h1>"
+        "<p>Ein Café bietet Croissants, Kaffee und ein Müsli mit Naïvität.</p>"
+        "<p>Straße, Öffnungszeiten, überraschend günstig, groß, Fußgänger.</p>"
+        "</body></html>"
+    )
+    assert looks_undecoded(html) is False
 
 
 def test_client_does_not_claim_encodings_it_cannot_decode():
