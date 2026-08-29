@@ -1,8 +1,8 @@
-"""Gruen soll wieder heissen, dass Werte entstehen.
+"""Grün soll wieder heißen, dass Werte entstehen.
 
-Der Lauf vom 25.08.2026 uebersprang 32 von 41 Sets und meldete `success`.
-Der Watchdog misst Task-Erfolg, nicht Nutzarbeit — dieselbe Luecke, die
-evaluate_data_freshness fuer die Preisdaten bereits schliesst.
+Der Lauf vom 25.08.2026 übersprang 32 von 41 Sets und meldete `success`.
+Der Watchdog misst Task-Erfolg, nicht Nutzarbeit — dieselbe Lücke, die
+evaluate_data_freshness für die Preisdaten bereits schließt.
 """
 
 from datetime import UTC, datetime
@@ -39,10 +39,14 @@ def test_an_empty_inventory_is_not_a_problem():
     assert evaluate_valuation_coverage(_run(0, 0, 0), NOW) is None
 
 
-def test_a_tiny_inventory_does_not_trip_the_share():
-    # Bei zwei Sets ist ein Uebersprung schon ueber der Haelfte, sagt aber nichts.
-    assert evaluate_valuation_coverage(_run(2, 1, 1), NOW) is None
+def test_a_tiny_inventory_is_not_flagged_even_at_full_skip():
+    # Drei von drei sind eine Quote von 100 % — weit über der Schwelle. Nur
+    # die Mindestgröße hält hier zurück, nicht der Anteil selbst: ohne
+    # MIN_ITEMS_FOR_COVERAGE_CHECK würde dieselbe Eingabe eine Meldung auslösen.
+    assert evaluate_valuation_coverage(_run(3, 0, 3), NOW) is None
 
 
 def test_exactly_half_skipped_is_still_fine():
+    # Andere Grenze als oben: hier liegt die Quote (nicht die Anzahl) genau
+    # auf der Schwelle — zehn Sets sind längst über dem Minimum.
     assert evaluate_valuation_coverage(_run(10, 5, 5), NOW) is None

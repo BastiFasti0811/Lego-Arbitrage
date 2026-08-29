@@ -10,6 +10,7 @@ loop would otherwise raise "attached to a different loop".
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 import structlog
 from sqlalchemy import select
@@ -19,6 +20,12 @@ from sqlalchemy.pool import NullPool
 
 from app.config import settings
 from app.models.heartbeat import TaskHeartbeat
+
+# Nur für den Typ gebraucht: heartbeat.py ist Service-Schicht, ValuationRun
+# ist Modell-Schicht. Ein echter Import würde das zur Laufzeit koppeln, ohne
+# dass die Funktion darunter je etwas anderes als den Typ braucht.
+if TYPE_CHECKING:
+    from app.models.valuation_run import ValuationRun
 
 logger = structlog.get_logger()
 
@@ -261,18 +268,18 @@ def evaluate_data_freshness(
 
 
 # Unterhalb dieser Anzahl sagt der Anteil nichts: bei zwei Sets ist ein
-# Uebersprung schon die Haelfte.
+# Übersprung schon die Hälfte.
 MIN_ITEMS_FOR_COVERAGE_CHECK = 5
 MAX_SKIPPED_SHARE = 0.5
 
 
-def evaluate_valuation_coverage(run, now: datetime) -> TaskHealth | None:
+def evaluate_valuation_coverage(run: "ValuationRun | None", now: datetime) -> TaskHealth | None:
     """Nutzarbeit der Bewertung: ein Lauf muss Werte erzeugen, nicht nur laufen.
 
     Der Heartbeat sieht nur, dass der Task durchlief. Ein Lauf, der jedes
-    zweite Set ueberspringt, ist ein Quellenausfall — und genau der blieb
-    fuenf Monate unbemerkt. Rein (kein I/O); gibt ein synthetisches Problem
-    oder None zurueck.
+    zweite Set überspringt, ist ein Quellenausfall — und genau der blieb
+    fünf Monate unbemerkt. Rein (kein I/O); gibt ein synthetisches Problem
+    oder None zurück.
     """
     if run is None or run.items_total < MIN_ITEMS_FOR_COVERAGE_CHECK:
         return None
@@ -291,7 +298,7 @@ def evaluate_valuation_coverage(run, now: datetime) -> TaskHealth | None:
         max_age_seconds=0,
         detail=(
             f"Letzter Bewertungslauf: {run.items_skipped} von {run.items_total} Sets "
-            f"ohne Marktwert — Quellenlage im Protokoll pruefen"
+            f"ohne Marktwert — Quellenlage im Protokoll prüfen"
         ),
     )
 
