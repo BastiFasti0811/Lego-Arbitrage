@@ -116,6 +116,7 @@ class BrickEconomyScraper(BaseScraper):
         try:
             url = await self._search_set(set_number)
             if not url:
+                logger.warning("brickeconomy.set_not_found", set_number=set_number)
                 return None
 
             html = await self._fetch(url)

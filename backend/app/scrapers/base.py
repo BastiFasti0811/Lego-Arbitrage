@@ -118,6 +118,36 @@ class ScrapedSetInfo:
     growth_percent: float | None = None
 
 
+class UndecodableResponseError(RuntimeError):
+    """Der Antwortkoerper ist keine Textseite.
+
+    httpx gibt die Rohbytes zurueck, wenn es die Content-Encoding nicht
+    entpacken kann; `.text` liest sie dann als Zeichen. Das Ergebnis ist
+    ueberwiegend nicht druckbar, und jeder Parser dahinter sieht eine leere
+    Seite — genau der Ausfall, der bei BrickEconomy fuenf Monate niemandem
+    auffiel. Lieber laut scheitern als still nichts finden.
+    """
+
+
+# Echtes HTML enthaelt praktisch keine Steuerzeichen. Unentpackte Bytes
+# bestehen zu rund einem Drittel daraus; der Abstand ist gross genug, dass
+# die Grenze nicht fein justiert werden muss.
+_UNDECODED_RATIO = 0.10
+_UNDECODED_SAMPLE = 2000
+
+
+def looks_undecoded(body: str) -> bool:
+    """Ob ein Antwortkoerper Binaerdaten statt Text ist."""
+    if not body:
+        return False
+    sample = body[:_UNDECODED_SAMPLE]
+    odd = sum(
+        1 for ch in sample
+        if ch == "�" or (ord(ch) < 32 and ch not in "\t\r\n")
+    )
+    return odd / len(sample) > _UNDECODED_RATIO
+
+
 class BaseScraper(ABC):
     """Abstract base for all scrapers.
 
@@ -133,17 +163,26 @@ class BaseScraper(ABC):
         self.name = self.__class__.__name__
         self._client: httpx.AsyncClient | None = None
 
+    def _base_headers(self) -> dict[str, str]:
+        """Header des gemeinsamen Clients.
+
+        Ohne `Accept-Encoding`: httpx setzt den Header selbst, und zwar genau
+        auf die Verfahren, fuer die ein Decoder installiert ist. Ein
+        handgeschriebener Wert ist eine Behauptung ueber Faehigkeiten, die
+        niemand gegen die Umgebung prueft.
+        """
+        return {
+            "User-Agent": ua.random,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "de-DE,de;q=0.9,en;q=0.5",
+            "DNT": "1",
+            "Connection": "keep-alive",
+        }
+
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client with proper headers."""
         if self._client is None or self._client.is_closed:
-            headers = {
-                "User-Agent": ua.random,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "de-DE,de;q=0.9,en;q=0.5",
-                "Accept-Encoding": "gzip, deflate, br",
-                "DNT": "1",
-                "Connection": "keep-alive",
-            }
+            headers = self._base_headers()
             proxy = settings.proxy_url if settings.proxy_url else None
             self._client = httpx.AsyncClient(
                 headers=headers,
@@ -163,8 +202,14 @@ class BaseScraper(ABC):
         wait=wait_exponential(multiplier=1, min=2, max=30),
         retry=retry_if_exception(
             # Harte Bot-Blocks nie wiederholen — ein 403/429 soll den Druck
-            # senken, nicht verdreifachen.
-            lambda e: not (isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (403, 429))
+            # senken, nicht verdreifachen. Ein UndecodableResponseError ebenso
+            # wenig: ein fehlender Decoder im Image loest sich nicht durch
+            # einen zweiten Versuch, sondern verdreifacht nur die Last auf
+            # der Quelle und verlangsamt jeden Testlauf, der das provoziert.
+            lambda e: not (
+                (isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (403, 429))
+                or isinstance(e, UndecodableResponseError)
+            )
         ),
         reraise=True,
     )
@@ -181,7 +226,20 @@ class BaseScraper(ABC):
         response = await client.get(safe_url)
         validate_url_for_scraper(str(response.url), self.name)
         response.raise_for_status()
-        return response.text
+
+        body = response.text
+        if looks_undecoded(body):
+            logger.error(
+                "scraper.undecodable_response",
+                scraper=self.name,
+                url=safe_url[:100],
+                encoding=response.headers.get("content-encoding"),
+            )
+            raise UndecodableResponseError(
+                f"{self.name}: Antwort von {safe_url[:80]} ist nicht dekodierbar "
+                f"(content-encoding={response.headers.get('content-encoding')})"
+            )
+        return body
 
     async def close(self) -> None:
         """Close the HTTP client."""
