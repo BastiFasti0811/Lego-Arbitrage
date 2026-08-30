@@ -11,6 +11,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import get_session
@@ -173,7 +174,11 @@ async def create_listing(item_id: int, data: ListingCreate, session: AsyncSessio
         next_check_at=compute_next_check(listed_at, data.check_interval_days),
     )
     session.add(listing)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=f"Es gibt schon ein offenes Listing auf {platform}") from None
     await session.refresh(listing)
     logger.info("listing.activated", item_id=item.id, platform=platform, price=data.current_price)
     return to_listing_response(listing)
@@ -186,6 +191,20 @@ async def update_listing(
     listing = await _get_listing(item_id, listing_id, session)
     if listing.status not in OPEN_LISTING_STATUSES:
         raise HTTPException(status_code=400, detail="Beendete Listings sind Historie und unveraenderlich")
+
+    target_price = data.current_price if data.current_price is not None else listing.current_price
+    target_min = data.min_price if data.min_price is not None else listing.min_price
+    if data.current_price is not None and (target_price is None or target_price <= 0):
+        raise HTTPException(status_code=400, detail="Preis muss groesser 0 sein")
+    if data.min_price is not None and (target_min is None or target_min <= 0):
+        raise HTTPException(status_code=400, detail="Schmerzgrenze muss groesser 0 sein")
+    price_or_min_touched = data.current_price is not None or data.min_price is not None
+    if price_or_min_touched and target_min is not None and target_price is not None and target_min > target_price:
+        raise HTTPException(status_code=400, detail="Schmerzgrenze liegt ueber dem Preis")
+    if data.check_interval_days is not None and data.check_interval_days < 1:
+        raise HTTPException(status_code=400, detail="check_interval_days muss mindestens 1 sein")
+    if data.price_drop_percent is not None and not 0 <= data.price_drop_percent < 100:
+        raise HTTPException(status_code=400, detail="price_drop_percent muss zwischen 0 und 99 liegen")
 
     if data.status is not None:
         allowed = {ListingStatus.ACTIVE.value, ListingStatus.PAUSED.value}
