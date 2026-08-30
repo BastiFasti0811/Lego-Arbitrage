@@ -474,9 +474,12 @@ export default function Inventar() {
       id: editModal.id,
       data: {
         set_name: editForm.set_name,
-        // product_group darf beim PATCH nie explizit null sein (Backend lehnt das ab) -
-        // bei leerem Feld den Key per undefined weglassen, dann bleibt der bisherige Wert.
-        product_group: editForm.product_group.trim() || undefined,
+        // Warengruppe ist bei Lego-Artikeln Invariante ("Lego", siehe CONTEXT.md) - den Key
+        // fuer Lego gar nicht senden, dann laesst exclude_unset den gespeicherten Wert in Ruhe.
+        // Bei GENERIC nie explizit null schicken (Backend lehnt das ab): leeres Feld -> undefined
+        // weglassen statt null senden.
+        product_group:
+          editModal.item_type === "GENERIC" ? editForm.product_group.trim() || undefined : undefined,
         search_query: editForm.search_query || null,
         theme: editForm.theme || null,
         buy_price: editForm.buy_price === "" ? null : Number(editForm.buy_price),
@@ -701,8 +704,12 @@ export default function Inventar() {
                 <div className="space-y-3">
                   <input type="text" value={editForm.set_name} onChange={(e) => setEditForm({ ...editForm, set_name: e.target.value })} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
                   <input type="text" value={editForm.theme} onChange={(e) => setEditForm({ ...editForm, theme: e.target.value })} placeholder="Theme" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-                  <input type="text" list="product-groups-edit-list" value={editForm.product_group} onChange={(e) => setEditForm({ ...editForm, product_group: e.target.value })} placeholder="Warengruppe" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-                  <datalist id="product-groups-edit-list">{productGroups.map((group) => <option key={group} value={group} />)}</datalist>
+                  {editModal.item_type === "GENERIC" && (
+                    <>
+                      <input type="text" list="product-groups-edit-list" value={editForm.product_group} onChange={(e) => setEditForm({ ...editForm, product_group: e.target.value })} placeholder="Warengruppe" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
+                      <datalist id="product-groups-edit-list">{productGroups.map((group) => <option key={group} value={group} />)}</datalist>
+                    </>
+                  )}
                   <input type="text" value={editForm.search_query} onChange={(e) => setEditForm({ ...editForm, search_query: e.target.value })} placeholder="Such-Query fuer Marktpreis-Recherche" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
                   <div className="grid grid-cols-2 gap-3">
                     <input
