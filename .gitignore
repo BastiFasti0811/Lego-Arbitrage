@@ -59,3 +59,6 @@ playwright-report/
 test-results/
 .playwright-cli/
 output/
+
+# SDD-Arbeitsverzeichnis (Session-Scratch, nie committen)
+.superpowers/
