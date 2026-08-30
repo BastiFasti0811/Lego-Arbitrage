@@ -138,6 +138,11 @@ export default function ListingManager({ item, onClose, onChanged }) {
           <h3 className="font-bold text-text-primary">Listings — {item.set_name}</h3>
           <button onClick={onClose} className="text-text-secondary hover:text-text-primary">✕</button>
         </div>
+        {item.status === "SOLD" && (
+          <p className="text-xs text-no-go mb-2">
+            Artikel ist verkauft — offene Anzeigen unten mit „Beendet/geloescht" abraeumen!
+          </p>
+        )}
         {PLATFORMS.map((platform) => {
           const open = listings.find(
             (x) => x.platform === platform && (x.status === "ACTIVE" || x.status === "PAUSED" || x.status === "DRAFT"),
