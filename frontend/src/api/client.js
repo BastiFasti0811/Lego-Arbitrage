@@ -164,6 +164,15 @@ export const api = {
   getSellLinks: (id) => request(`/inventory/${id}/sell-links`),
   portfolioSummary: () => request("/inventory/summary"),
   inventoryHistory: () => request("/inventory/history"),
+  listListings: (itemId) => request(`/inventory/${itemId}/listings`),
+  createListing: (itemId, data) => request(`/inventory/${itemId}/listings`, { method: "POST", body: JSON.stringify(data) }),
+  updateListing: (itemId, listingId, data) =>
+    request(`/inventory/${itemId}/listings/${listingId}`, { method: "PATCH", body: JSON.stringify(data) }),
+  endListing: (itemId, listingId) => request(`/inventory/${itemId}/listings/${listingId}/end`, { method: "POST" }),
+  deleteListing: (itemId, listingId) => request(`/inventory/${itemId}/listings/${listingId}`, { method: "DELETE" }),
+  splitInventory: (itemId, splitQuantity) =>
+    request(`/inventory/${itemId}/split`, { method: "POST", body: JSON.stringify({ split_quantity: splitQuantity }) }),
+  listProductGroups: () => request("/inventory/product-groups"),
 
   // Settings
   listSettings: (category) => request(`/settings/${category ? `?category=${category}` : ""}`),
