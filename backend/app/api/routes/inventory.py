@@ -15,6 +15,7 @@ from pydantic import BaseModel, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.routes.listings import ListingResponse, open_listing_responses
 from app.config import settings
 from app.engine.roi_calculator import calculate_ebay_fees
 from app.models import AnalysisHistoryEntry, DealFeedback, LegoSet, get_session
@@ -140,6 +141,7 @@ class InventoryResponse(BaseModel):
     quantity: int = 1
     notes: str | None
     photos: list[InventoryPhotoResponse] = []
+    listings: list[ListingResponse] = []
     current_market_price: float | None
     market_price_updated_at: datetime | None
     unrealized_profit: float | None
@@ -785,6 +787,7 @@ def _to_response(item: InventoryItem) -> InventoryResponse:
         quantity=item.quantity or 1,
         notes=item.notes,
         photos=[_to_photo_response(photo) for photo in item.photos],
+        listings=open_listing_responses(item),
         current_market_price=item.current_market_price,
         market_price_updated_at=item.market_price_updated_at,
         unrealized_profit=item.unrealized_profit,
