@@ -2,10 +2,11 @@
 
 import re
 
+import httpx
 import structlog
 from bs4 import BeautifulSoup
 
-from app.scrapers.base import BaseScraper, ScrapedPrice, ScrapedSetInfo
+from app.scrapers.base import BaseScraper, ScrapedPrice, ScrapedSetInfo, UndecodableResponseError
 from app.services.fx import get_usd_to_eur
 
 logger = structlog.get_logger()
@@ -37,6 +38,13 @@ class BrickEconomyScraper(BaseScraper):
                     return href if href.startswith("http") else f"{BASE_URL}{href}"
 
             return None
+        except (UndecodableResponseError, httpx.HTTPError):
+            # Die Quelle hat versagt (kaputte Antwort, Bot-Block, Verbindung
+            # weg) - etwas anderes als "die Suche fand nichts" (der obige
+            # return None). get_price faengt das in seinem eigenen except
+            # ebenso durch, bis es bei _collect_prices als Probe mit dem
+            # echten Grund ankommt statt als "kein Preis gefunden".
+            raise
         except Exception as e:
             logger.error("brickeconomy.search_failed", set_number=set_number, error=str(e))
             return None
@@ -178,6 +186,11 @@ class BrickEconomyScraper(BaseScraper):
                 source_url=url,
                 notes=notes,
             )
+        except (UndecodableResponseError, httpx.HTTPError):
+            # Siehe _search_set oben: eine tote Quelle darf nicht als
+            # "kein Preis gefunden" ankommen. Deckt beide _fetch-Aufrufe in
+            # dieser Methode ab (ueber _search_set und die Detailseite).
+            raise
         except Exception as e:
             logger.error("brickeconomy.price_failed", set_number=set_number, error=str(e))
             return None

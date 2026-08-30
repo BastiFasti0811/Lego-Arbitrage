@@ -9,9 +9,11 @@ ein nacktes `continue`, das weder einen Zaehler erhoehte noch irgendwo ankam.
 from datetime import date
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from celery.exceptions import SoftTimeLimitExceeded
 
+from app.config import settings
 from app.engine.market_consensus import calculate_consensus
 from app.models.valuation_run import ValuationRunItem, ValuationRunStatus, ValuationSkipReason
 from app.scrapers import BrickEconomyScraper, BrickMergeScraper, EbaySoldScraper
@@ -258,6 +260,75 @@ async def test_collect_prices_looks_up_the_source_name_mapping_for_silent_scrape
     _, probes = await _collect_prices(SimpleNamespace(set_number="76430"), uvp=None)
 
     assert probes[0].source == "TEST_SOURCE"
+
+
+# ---------------------------------------------------------------------------
+# C1 (Critical): alle drei _fetch-Aufrufer endeten in einem nackten
+# `except Exception: return None` - ein UndecodableResponseError, ein HTTP
+# 403 und ein Verbindungsabbruch kamen bei _collect_prices identisch als
+# SourceProbe(error="kein Preis gefunden") an, ununterscheidbar vom Fall
+# "diese Quelle kennt das Set nicht". Die Tests oben treiben nur Fake-
+# Scraper an, die auf Kommando werfen - das ist eine Form, die kein echter
+# Scraper je produziert (er wirft aus _fetch, nicht aus get_price selbst).
+# Dieser Test treibt _collect_prices mit den ECHTEN Scraper-Klassen an und
+# faelscht nur die Netzwerkschicht (httpx.AsyncClient.get) in den drei
+# realistischen Ausfallarten aus dem Review-Finding.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_collect_prices_tells_a_dead_source_from_an_unknown_set(monkeypatch):
+    # Vor dem C1-Fix: alle drei Zeilen unten lauteten
+    # SourceProbe(error="kein Preis gefunden") - byte-identisch mit einem
+    # Set, das schlicht niemand fuehrt. Nach dem Fix traegt jede Probe den
+    # tatsaechlichen Fehler.
+    monkeypatch.setattr(
+        update_inventory, "PRICE_SCRAPERS", [EbaySoldScraper, BrickEconomyScraper, BrickMergeScraper]
+    )
+    # Kein Testverhalten, nur Testlaufzeit: _delay() wartet sonst echte
+    # 2-5s pro _fetch-Aufruf ab.
+    monkeypatch.setattr(settings, "scraper_delay_min", 0.0)
+    monkeypatch.setattr(settings, "scraper_delay_max", 0.0)
+
+    async def fake_get(self, url, **kwargs):
+        request = httpx.Request("GET", url)
+        if "brickeconomy.com" in url:
+            # Der Fuenf-Monate-Bug selbst: HTTP 200, Koerper unlesbar
+            # (Brotli ohne installierten Decoder). Derselbe Wert wie in
+            # test_scraper_encoding.py::test_undecoded_compression_is_flagged.
+            garbage = bytes(range(1, 200)).decode("latin-1") * 20
+            return httpx.Response(200, text=garbage, request=request)
+        if "ebay.de" in url:
+            return httpx.Response(403, request=request)
+        if "brickmerge.de" in url:
+            raise httpx.ConnectTimeout("Verbindungsaufbau zu BrickMerge lief ab", request=request)
+        raise AssertionError(f"unerwartete Test-URL: {url}")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    item = SimpleNamespace(set_number="75414")
+    prices, probes = await _collect_prices(item, uvp=None)
+
+    assert prices == []
+    assert len(probes) == 3
+    by_source = {p.source: p for p in probes}
+    assert set(by_source) == {"EBAY_SOLD", "BRICKECONOMY", "BRICKMERGE"}
+
+    # Der Kern des Findings: keine der drei sieht mehr aus wie ein Set, das
+    # eine Quelle einfach nicht fuehrt.
+    for name, probe in by_source.items():
+        assert probe.error is not None
+        assert probe.error != "kein Preis gefunden", (
+            f"{name}: eine tote Quelle darf nicht wie ein unbekanntes Set aussehen"
+        )
+
+    # Und die drei Ausfaelle sind auch untereinander unterscheidbar - nicht
+    # nur vom alten "kein Preis gefunden" abgegrenzt, sondern voneinander.
+    assert len({probe.error for probe in by_source.values()}) == 3
+
+    assert "UndecodableResponseError" in by_source["BRICKECONOMY"].error
+    assert "403" in by_source["EBAY_SOLD"].error
+    assert "ConnectTimeout" in by_source["BRICKMERGE"].error
 
 
 class _FakeQueryResult:
