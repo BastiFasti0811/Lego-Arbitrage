@@ -99,6 +99,12 @@ class InventoryUpdate(BaseModel):
     quantity: int | None = None
     notes: str | None = None
 
+    @model_validator(mode="after")
+    def _reject_null_product_group(self):
+        if "product_group" in self.model_fields_set and self.product_group is None:
+            raise ValueError("product_group darf nicht null sein")
+        return self
+
 
 class SellRequest(BaseModel):
     sell_price: float

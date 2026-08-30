@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 from pydantic import ValidationError
 
-from app.api.routes.inventory import InventoryAdd
+from app.api.routes.inventory import InventoryAdd, InventoryUpdate
 
 
 def _payload(**overrides):
@@ -45,3 +45,13 @@ def test_generic_ignores_set_number():
 def test_unknown_item_type_is_rejected():
     with pytest.raises(ValidationError):
         InventoryAdd(**_payload(item_type="OBST"))
+
+
+def test_update_rejects_explicit_null_product_group():
+    with pytest.raises(ValidationError, match="product_group"):
+        InventoryUpdate(product_group=None)
+
+
+def test_update_without_product_group_is_fine():
+    InventoryUpdate(set_name="X")
+    assert "product_group" not in InventoryUpdate(set_name="X").model_fields_set
