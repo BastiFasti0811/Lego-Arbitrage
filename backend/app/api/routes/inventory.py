@@ -4,7 +4,7 @@ from base64 import b64decode
 from binascii import Error as BinasciiError
 from datetime import date, datetime
 from pathlib import Path
-from shutil import rmtree
+from shutil import copy2, rmtree
 from urllib.parse import urlencode
 from uuid import uuid4
 
@@ -112,6 +112,10 @@ class SellRequest(BaseModel):
     sell_price: float
     sell_date: date | None = None
     sell_platform: str | None = None
+
+
+class SplitRequest(BaseModel):
+    split_quantity: int
 
 
 class InventoryPhotoResponse(BaseModel):
@@ -507,6 +511,50 @@ async def mark_as_sold(
     return _to_response(item)
 
 
+@router.post("/{item_id}/split", response_model=InventoryResponse)
+async def split_inventory_item(item_id: int, data: SplitRequest, session: AsyncSession = Depends(get_session)):
+    """Teilt einen Posten (quantity 3 -> 2+1). Listings bleiben beim Original."""
+    item = await _get_item(item_id, session)
+    if item.status == InventoryStatus.SOLD.value:
+        raise HTTPException(status_code=400, detail="Verkaufte Artikel lassen sich nicht teilen")
+    quantity = item.quantity or 1
+    if not 1 <= data.split_quantity < quantity:
+        raise HTTPException(status_code=400, detail=f"split_quantity muss zwischen 1 und {quantity - 1} liegen")
+
+    new_item = InventoryItem(
+        item_type=item.item_type,
+        set_number=item.set_number,
+        set_name=item.set_name,
+        product_group=item.product_group,
+        search_query=item.search_query,
+        theme=item.theme,
+        image_url=item.image_url,
+        buy_price=item.buy_price,
+        buy_shipping=item.buy_shipping,
+        buy_date=item.buy_date,
+        buy_platform=item.buy_platform,
+        buy_url=item.buy_url,
+        condition=item.condition,
+        quantity=data.split_quantity,
+        notes=item.notes,
+        status=item.status,
+        current_market_price=item.current_market_price,
+        market_price_updated_at=item.market_price_updated_at,
+    )
+    session.add(new_item)
+    await session.flush()
+
+    for payload in copy_item_photos(item.photos, _photo_dir(item.id), _photo_dir(new_item.id)):
+        session.add(InventoryPhoto(item_id=new_item.id, **payload))
+
+    item.quantity = quantity - data.split_quantity
+    _recalculate_unrealized_metrics(new_item)
+    await session.commit()
+    await session.refresh(new_item)
+    logger.info("inventory.split", source=item.id, new=new_item.id, split=data.split_quantity)
+    return _to_response(new_item)
+
+
 @router.delete("/{item_id}")
 async def delete_inventory_item(item_id: int, session: AsyncSession = Depends(get_session)):
     item = await _get_item(item_id, session)
@@ -753,6 +801,27 @@ def _cleanup_photo_dir(item_id: int) -> None:
     photo_dir = _photo_dir(item_id)
     if photo_dir.exists() and not any(photo_dir.iterdir()):
         photo_dir.rmdir()
+
+
+def copy_item_photos(photos, source_dir: Path, target_dir: Path) -> list[dict]:
+    """Kopiert Foto-Dateien fuer einen geteilten Posten; fehlende Dateien werden uebersprungen."""
+    copied: list[dict] = []
+    for photo in photos:
+        source = source_dir / photo.filename
+        if not source.exists():
+            continue
+        target_dir.mkdir(parents=True, exist_ok=True)
+        new_name = f"{uuid4().hex}{Path(photo.filename).suffix}"
+        copy2(source, target_dir / new_name)
+        copied.append(
+            {
+                "filename": new_name,
+                "original_filename": photo.original_filename,
+                "content_type": photo.content_type,
+                "sort_order": photo.sort_order,
+            }
+        )
+    return copied
 
 
 async def _reindex_photos(
