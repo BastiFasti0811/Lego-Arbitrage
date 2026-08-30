@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import StatCard from "../components/StatCard";
+import ValuationStatus from "../components/ValuationStatus";
 
 const EURO = "\u20ac";
 const PHOTO_ICON = "\u{1F4F8}";
@@ -494,7 +495,7 @@ export default function Inventar() {
         </div>
       )}
 
-      {summary && <p className="text-text-muted text-xs mb-4">Marktwerte werden automatisch alle 6 Stunden aktualisiert.</p>}
+      <ValuationStatus />
 
       {summary?.sell_signals_active > 0 && (
         <div className="bg-sell-signal/10 border border-sell-signal/30 rounded-xl p-4 mb-6 flex items-center gap-3">
