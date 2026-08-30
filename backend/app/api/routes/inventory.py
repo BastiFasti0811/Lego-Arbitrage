@@ -318,20 +318,32 @@ async def get_sell_links(item_id: int, session: AsyncSession = Depends(get_sessi
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
 
-    suggested_price = item.current_market_price or (item.buy_price * 1.5)
-    title = f"LEGO {item.set_number} {item.set_name} NEU OVP"
+    if item.current_market_price is not None:
+        suggested_price = item.current_market_price
+    elif item.buy_price is not None:
+        suggested_price = item.buy_price * 1.5
+    else:
+        suggested_price = 0.0
+
+    if item.set_number:
+        title = f"LEGO {item.set_number} {item.set_name} NEU OVP"
+        ebay_keyword = f"LEGO {item.set_number}"
+    else:
+        title = item.set_name
+        ebay_keyword = item.set_name
     if len(title) > 80:
         title = title[:77] + "..."
 
     ebay_params = {
-        "keyword": f"LEGO {item.set_number}",
+        "keyword": ebay_keyword,
         "LH_BIN": "1",
     }
     ebay_url = f"https://www.ebay.de/sell/create?{urlencode(ebay_params)}"
 
+    set_line = f"LEGO Set {item.set_number} - {item.set_name}\n" if item.set_number else f"{item.set_name}\n"
     kleinanzeigen_text = (
         f"{title}\n\n"
-        f"LEGO Set {item.set_number} - {item.set_name}\n"
+        f"{set_line}"
         f"Zustand: Neu & Originalverpackt (OVP)\n"
         f"Preis: {suggested_price:.0f}\u20ac\n\n"
         f"Versand m\u00f6glich."
