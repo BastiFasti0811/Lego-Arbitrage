@@ -78,8 +78,11 @@ def test_inventory_gained_the_reference_url(migrated):
 
 def test_run_items_are_removed_with_their_run(migrated):
     # Nachgemessen: der SQLite-Inspector liefert fuer diesen Fremdschluessel
-    # `options == {}` — die Cascade-Aussage steht nur im DDL selbst. Ein Test
-    # ueber get_foreign_keys() waere gruen, ohne irgendetwas zu pruefen.
+    # tatsaechlich `options == {'ondelete': 'CASCADE'}` (Tabellen-Constraint,
+    # so wie diese Migration ihn erzeugt). Trotzdem die DDL-Zeile direkt
+    # pruefen, nicht ueber get_foreign_keys(): sie zeigt, was die Migration
+    # tatsaechlich emittiert, unabhaengig davon, wie eine bestimmte
+    # SQLAlchemy-Version das anschliessend interpretiert.
     ddl = migrated.exec_driver_sql(
         "SELECT sql FROM sqlite_master WHERE name = :name",
         {"name": ValuationRunItem.__tablename__},

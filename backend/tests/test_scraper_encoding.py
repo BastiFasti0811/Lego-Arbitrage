@@ -64,10 +64,11 @@ def test_gzip_compressed_html_decoded_as_latin1_is_flagged():
     # Der reale Fehlerpfad aus dem Review-Finding: ein Server deklariert eine
     # Single-Byte-Kodierung (z.B. ISO-8859-1), httpx decodiert den noch
     # gzip-komprimierten Koerper als latin-1. Der Steuerzeichenanteil allein
-    # lag hier je nach Seitengroesse gemessen zwischen 7,4 % und 19,5 % —
-    # mal drunter, mal drueber der alten 10-%-Grenze. Was nie schwankt: der
-    # komprimierte Koerper enthaelt kein einziges HTML-Markertoken, das waere
-    # ein Zufallstreffer mit Wahrscheinlichkeit < 1e-8.
+    # lag hier je nach Seitengroesse nachgemessen zwischen rund 6,0 % (1600
+    # Zeilen) und 13,4 % (10 Zeilen) — mal drunter, mal drueber der alten
+    # 10-%-Grenze. Was nie schwankt: der komprimierte Koerper enthaelt kein
+    # einziges HTML-Markertoken, das waere ein Zufallstreffer mit
+    # Wahrscheinlichkeit < 1e-8.
     para = (
         "<div class='listing'><span class='price'>{p},99 &euro;</span> "
         "<a href='/set/{n}-1/LEGO-Star-Wars'>LEGO Star Wars Set {n}</a> "
