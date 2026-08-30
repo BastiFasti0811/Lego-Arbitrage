@@ -521,6 +521,10 @@ async def split_inventory_item(item_id: int, data: SplitRequest, session: AsyncS
     if not 1 <= data.split_quantity < quantity:
         raise HTTPException(status_code=400, detail=f"split_quantity muss zwischen 1 und {quantity - 1} liegen")
 
+    (new_buy, new_ship), (rest_buy, rest_ship) = prorate_purchase(
+        item.buy_price, item.buy_shipping or 0.0, quantity, data.split_quantity
+    )
+
     new_item = InventoryItem(
         item_type=item.item_type,
         set_number=item.set_number,
@@ -529,8 +533,8 @@ async def split_inventory_item(item_id: int, data: SplitRequest, session: AsyncS
         search_query=item.search_query,
         theme=item.theme,
         image_url=item.image_url,
-        buy_price=item.buy_price,
-        buy_shipping=item.buy_shipping,
+        buy_price=new_buy,
+        buy_shipping=new_ship,
         buy_date=item.buy_date,
         buy_platform=item.buy_platform,
         buy_url=item.buy_url,
@@ -544,12 +548,21 @@ async def split_inventory_item(item_id: int, data: SplitRequest, session: AsyncS
     session.add(new_item)
     await session.flush()
 
-    for payload in copy_item_photos(item.photos, _photo_dir(item.id), _photo_dir(new_item.id)):
-        session.add(InventoryPhoto(item_id=new_item.id, **payload))
+    try:
+        for payload in copy_item_photos(item.photos, _photo_dir(item.id), _photo_dir(new_item.id)):
+            session.add(InventoryPhoto(item_id=new_item.id, **payload))
 
-    item.quantity = quantity - data.split_quantity
-    _recalculate_unrealized_metrics(new_item)
-    await session.commit()
+        item.quantity = quantity - data.split_quantity
+        item.buy_price = rest_buy
+        item.buy_shipping = rest_ship
+        _recalculate_unrealized_metrics(new_item)
+        _recalculate_unrealized_metrics(item)
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        rmtree(_photo_dir(new_item.id), ignore_errors=True)
+        raise
+
     await session.refresh(new_item)
     logger.info("inventory.split", source=item.id, new=new_item.id, split=data.split_quantity)
     return _to_response(new_item)
@@ -801,6 +814,25 @@ def _cleanup_photo_dir(item_id: int) -> None:
     photo_dir = _photo_dir(item_id)
     if photo_dir.exists() and not any(photo_dir.iterdir()):
         photo_dir.rmdir()
+
+
+def prorate_purchase(
+    buy_price: float | None, buy_shipping: float, quantity: int, split_quantity: int
+) -> tuple[tuple[float | None, float], tuple[float | None, float]]:
+    """Teilt Kaufkosten eines Postens exakt auf: (neuer Posten, Rest-Posten).
+
+    Kaufpreis/Versand sind Zeilen-Gesamtwerte; der Rest wird als Differenz
+    gerechnet, nie separat gerundet — die Summe bleibt centgenau erhalten.
+    """
+    def _split_total(total: float) -> tuple[float, float]:
+        part = round(total * split_quantity / quantity, 2)
+        return part, round(total - part, 2)
+
+    new_ship, rest_ship = _split_total(buy_shipping)
+    if buy_price is None:
+        return (None, new_ship), (None, rest_ship)
+    new_price, rest_price = _split_total(buy_price)
+    return (new_price, new_ship), (rest_price, rest_ship)
 
 
 def copy_item_photos(photos, source_dir: Path, target_dir: Path) -> list[dict]:
