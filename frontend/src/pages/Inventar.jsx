@@ -263,6 +263,7 @@ export default function Inventar() {
   const [editModal, setEditModal] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [lookupLoading, setLookupLoading] = useState(false);
+  const [duplicates, setDuplicates] = useState([]);
   const [addForm, setAddForm] = useState(emptyAddForm());
   const [addPhotoEntries, setAddPhotoEntries] = useState([]);
   const [editPhotoEntries, setEditPhotoEntries] = useState([]);
@@ -295,6 +296,7 @@ export default function Inventar() {
     setAddPhotoEntries([]);
     setAddForm(emptyAddForm());
     setAddModal(false);
+    setDuplicates([]);
   }
 
   function closeEditModal() {
@@ -666,9 +668,64 @@ export default function Inventar() {
               <div className="grid md:grid-cols-2 gap-4">
                 <div className="space-y-3">
                   <div className="relative">
-                    <input type="text" placeholder="Set-Nummer *" value={addForm.set_number} onChange={(e) => handleSetNumberChange(e.target.value)} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
+                    <input
+                      type="text"
+                      placeholder="Set-Nummer *"
+                      value={addForm.set_number}
+                      onChange={(e) => handleSetNumberChange(e.target.value)}
+                      onBlur={async (e) => {
+                        const value = e.target.value.trim();
+                        if (!value) { setDuplicates([]); return; }
+                        try {
+                          setDuplicates(await api.lookupInventory(value));
+                        } catch {
+                          // Der Hinweis ist eine Hilfe, kein Tor: faellt die Abfrage aus,
+                          // laesst sich trotzdem einbuchen.
+                          setDuplicates([]);
+                        }
+                      }}
+                      required
+                      className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]"
+                    />
                     {lookupLoading && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-lego-yellow text-xs animate-pulse">Suche...</span>}
                   </div>
+                  {duplicates.length > 0 && (
+                    <div className="mt-2 p-3 rounded-lg border border-lego-yellow/40 bg-lego-yellow/5 text-xs">
+                      <p className="mb-2">
+                        <strong>{duplicates[0].set_number}</strong> liegt bereits{" "}
+                        {duplicates.reduce((sum, d) => sum + (d.quantity || 1), 0)}× im Bestand
+                        {" "}({duplicates
+                          .map((d) => `${new Date(d.buy_date).toLocaleDateString("de-DE")}, ${d.buy_price} €`)
+                          .join(" · ")}).
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          className="px-2 py-1 rounded bg-lego-yellow text-bg-primary font-medium"
+                          onClick={() => {
+                            const target = duplicates[0];
+                            editMutation.mutate({
+                              id: target.id,
+                              data: { quantity: (target.quantity || 1) + 1 },
+                              photoFiles: [],
+                              deletedPhotoIds: [],
+                            });
+                            setDuplicates([]);
+                            closeAddModal();
+                          }}
+                        >
+                          Menge erhöhen
+                        </button>
+                        <button
+                          type="button"
+                          className="px-2 py-1 rounded border border-bg-hover"
+                          onClick={() => setDuplicates([])}
+                        >
+                          Trotzdem neu anlegen
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   <input type="text" placeholder="Set-Name *" value={addForm.set_name} onChange={(e) => setAddForm({ ...addForm, set_name: e.target.value })} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
                   <input type="text" placeholder="Theme" value={addForm.theme} onChange={(e) => setAddForm({ ...addForm, theme: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
                   <div className="grid grid-cols-2 gap-3">
