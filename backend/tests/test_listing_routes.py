@@ -56,8 +56,8 @@ class _FakeSession:
             obj.created_at = datetime(2026, 8, 30, tzinfo=UTC)
 
 
-def _item(listings=None):
-    return SimpleNamespace(id=1, listings=listings if listings is not None else [])
+def _item(listings=None, status="HOLDING"):
+    return SimpleNamespace(id=1, listings=listings if listings is not None else [], status=status)
 
 
 def _listing(**overrides):
@@ -154,3 +154,34 @@ async def test_end_twice_rejected():
         await end_listing(item_id=1, listing_id=1, session=session)
 
     assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_sold_item():
+    item = _item(status="SOLD")
+    session = _FakeSession(fetch_result=item)
+    data = ListingCreate(platform="KLEINANZEIGEN", current_price=50.0)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_listing(item_id=1, data=data, session=session)
+
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_bad_interval_and_drop():
+    item = _item()
+    session = _FakeSession(fetch_result=item)
+    data = ListingCreate(platform="KLEINANZEIGEN", current_price=50.0, check_interval_days=0)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_listing(item_id=1, data=data, session=session)
+    assert exc_info.value.status_code == 400
+
+    item2 = _item()
+    session2 = _FakeSession(fetch_result=item2)
+    data2 = ListingCreate(platform="KLEINANZEIGEN", current_price=50.0, price_drop_percent=150.0)
+
+    with pytest.raises(HTTPException) as exc_info2:
+        await create_listing(item_id=1, data=data2, session=session2)
+    assert exc_info2.value.status_code == 400

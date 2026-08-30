@@ -74,11 +74,23 @@ function ActivateForm({ itemId, platform, onDone }) {
 
 function OpenListing({ itemId, listing, onDone }) {
   const [priceDraft, setPriceDraft] = useState("");
+  const [error, setError] = useState(null);
   const patch = useMutation({
     mutationFn: (data) => api.updateListing(itemId, listing.id, data),
-    onSuccess: onDone,
+    onSuccess: () => {
+      setError(null);
+      onDone();
+    },
+    onError: (err) => setError(err.message),
   });
-  const end = useMutation({ mutationFn: () => api.endListing(itemId, listing.id), onSuccess: onDone });
+  const end = useMutation({
+    mutationFn: () => api.endListing(itemId, listing.id),
+    onSuccess: () => {
+      setError(null);
+      onDone();
+    },
+    onError: (err) => setError(err.message),
+  });
 
   return (
     <div className="space-y-2">
@@ -107,6 +119,7 @@ function OpenListing({ itemId, listing, onDone }) {
         <button onClick={() => end.mutate()}
           className="text-xs px-2 py-1 rounded bg-bg-hover text-no-go border border-border">Beendet/geloescht</button>
       </div>
+      {error && <p className="text-xs text-no-go">{error}</p>}
       {listing.price_changes.length > 0 && (
         <p className="text-xs text-text-secondary">
           {listing.price_changes.map((c) => `${formatDate(c.changed_at)}: ${Math.round(c.old_price)}→${Math.round(c.new_price)}€`).join(" · ")}
@@ -152,8 +165,10 @@ export default function ListingManager({ item, onClose, onChanged }) {
               <p className="text-sm font-bold text-text-primary mb-2">{PLATFORM_LABELS[platform]}</p>
               {open ? (
                 <OpenListing itemId={item.id} listing={open} onDone={refresh} />
-              ) : (
+              ) : item.status !== "SOLD" ? (
                 <ActivateForm itemId={item.id} platform={platform} onDone={refresh} />
+              ) : (
+                <p className="text-xs text-text-secondary">Artikel ist verkauft.</p>
               )}
             </div>
           );

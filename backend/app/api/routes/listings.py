@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import get_session
-from app.models.inventory import InventoryItem
+from app.models.inventory import InventoryItem, InventoryStatus
 from app.models.listing import OPEN_LISTING_STATUSES, Listing, ListingStatus
 from app.services.listing_rules import (
     apply_price_change,
@@ -151,11 +151,17 @@ async def list_listings(item_id: int, session: AsyncSession = Depends(get_sessio
 async def create_listing(item_id: int, data: ListingCreate, session: AsyncSession = Depends(get_session)):
     """Als eingestellt markieren: Mensch hat die Anzeige angelegt, wir merken sie."""
     item = await _get_item(item_id, session)
+    if item.status == InventoryStatus.SOLD.value:
+        raise HTTPException(status_code=400, detail="Verkaufte Artikel lassen sich nicht neu einstellen")
     platform = data.platform.strip().upper()
     min_price = data.min_price if data.min_price is not None else default_min_price(data.current_price)
     error = validate_activation(platform, data.current_price, min_price)
     if error:
         raise HTTPException(status_code=400, detail=error)
+    if data.check_interval_days < 1:
+        raise HTTPException(status_code=400, detail="check_interval_days muss mindestens 1 sein")
+    if not 0 <= data.price_drop_percent < 100:
+        raise HTTPException(status_code=400, detail="price_drop_percent muss zwischen 0 und 99 liegen")
     if any(x.platform == platform and x.status in OPEN_LISTING_STATUSES for x in item.listings):
         raise HTTPException(status_code=400, detail=f"Es gibt schon ein offenes Listing auf {platform}")
 
