@@ -15,26 +15,6 @@ const FIELD_CONFIG = [
     ],
   },
   {
-    category: "ebay",
-    title: "eBay API",
-    description: "Fuer automatisches Einstellen - kommt spaeter.",
-    enabled: false,
-    fields: [
-      { key: "ebay_api_key", label: "API Key", type: "password" },
-      { key: "ebay_api_secret", label: "API Secret", type: "password" },
-    ],
-  },
-  {
-    category: "kleinanzeigen",
-    title: "Kleinanzeigen",
-    description: "Fuer automatisches Einstellen - kommt spaeter.",
-    enabled: false,
-    fields: [
-      { key: "kleinanzeigen_email", label: "E-Mail", type: "text" },
-      { key: "kleinanzeigen_password", label: "Passwort", type: "password" },
-    ],
-  },
-  {
     category: "catawiki",
     title: "Catawiki Scan",
     description:

@@ -57,34 +57,6 @@ class SettingUpdate(BaseModel):
 
 DEFAULT_SETTINGS = [
     {
-        "key": "ebay_api_key",
-        "category": "ebay",
-        "label": "eBay API Key",
-        "description": "eBay Developer App ID",
-        "is_secret": True,
-    },
-    {
-        "key": "ebay_api_secret",
-        "category": "ebay",
-        "label": "eBay API Secret",
-        "description": "eBay Developer Cert ID",
-        "is_secret": True,
-    },
-    {
-        "key": "kleinanzeigen_email",
-        "category": "kleinanzeigen",
-        "label": "Kleinanzeigen E-Mail",
-        "description": "Login E-Mail fuer Kleinanzeigen",
-        "is_secret": False,
-    },
-    {
-        "key": "kleinanzeigen_password",
-        "category": "kleinanzeigen",
-        "label": "Kleinanzeigen Passwort",
-        "description": "Login Passwort",
-        "is_secret": True,
-    },
-    {
         "key": "telegram_bot_token",
         "category": "telegram",
         "label": "Telegram Bot Token",
