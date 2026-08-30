@@ -7,14 +7,18 @@ bleibt dagegen auf `running` stehen und wuerde die Bewertung dauerhaft
 blockieren, wenn ihn nichts abloest.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
 from app.api.routes import inventory
 from app.api.routes.inventory import STALE_RUN_MINUTES, is_run_blocking
+from app.models import Base
+from app.models.inventory import InventoryItem, InventoryStatus
 from app.models.valuation_run import ValuationRunStatus, ValuationTrigger
 from app.tasks.celery_app import celery_app
 
@@ -186,3 +190,120 @@ async def test_a_finished_run_does_not_block_and_is_left_alone(monkeypatch):
     assert vars(finished) == before  # kein Attribut angefasst
     assert result == {"run_id": _FakeValuationSession.NEW_RUN_ID}
     assert send_task.calls  # der neue Lauf wird trotzdem angestossen
+
+
+# ---------------------------------------------------------------------------
+# lookup_by_set_number und der reference_url-Rundlauf durch add_inventory_item.
+#
+# lookup_by_set_number lebt von einer echten WHERE-Klausel (nur HOLDING
+# zaehlt als Dublette); der reference_url-Rundlauf haengt an fuenf Stellen,
+# die alle stimmen muessen (InventoryAdd -> InventoryItem -> _to_response ->
+# InventoryResponse). Eine Fake-Session, die feste Zeilen zurueckgibt, wuerde
+# die WHERE-Klausel nie ausfuehren -- ein entfernter Statusfilter koennte
+# einen so aufgebauten Test dann nie rot faerben. Ein In-Memory-SQLite aus
+# der Python-Standardbibliothek genuegt dafuer, ganz ohne aiosqlite oder
+# TestClient: derselbe synchrone create_engine("sqlite://"), den
+# test_migration_valuation_runs.py bereits fuer die Migration selbst nutzt.
+# Der Adapter unten macht nur execute()/add()/commit()/refresh() awaitable;
+# die eigentliche Arbeit -- inklusive WHERE-Klausel und Spalten-Defaults --
+# macht die echte synchrone Session.
+# ---------------------------------------------------------------------------
+
+
+class _AsyncSessionAdapter:
+    """Reicht Aufrufe an eine echte synchrone SQLAlchemy-Session durch."""
+
+    def __init__(self, sync_session):
+        self._session = sync_session
+
+    async def execute(self, statement):
+        return self._session.execute(statement)
+
+    def add(self, obj):
+        self._session.add(obj)
+
+    async def commit(self):
+        self._session.commit()
+
+    async def refresh(self, obj):
+        self._session.refresh(obj)
+
+
+@pytest.fixture
+def db_session():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    with Session(engine) as sync_session:
+        yield _AsyncSessionAdapter(sync_session)
+    engine.dispose()
+
+
+def _holding_item(**overrides):
+    defaults = dict(
+        set_number="40800", set_name="Yoda", buy_price=19.99, buy_shipping=0.0,
+        buy_date=date(2026, 1, 10), buy_platform="eBay", condition="NEW_SEALED",
+        quantity=2, status=InventoryStatus.HOLDING.value,
+    )
+    defaults.update(overrides)
+    return InventoryItem(**defaults)
+
+
+@pytest.mark.asyncio
+async def test_lookup_returns_holding_and_excludes_sold_for_the_same_set(db_session):
+    holding = _holding_item()
+    sold = _holding_item(
+        status=InventoryStatus.SOLD.value, quantity=1, buy_price=15.0,
+        buy_date=date(2025, 6, 1), buy_platform="Kleinanzeigen",
+    )
+    db_session.add(holding)
+    db_session.add(sold)
+    await db_session.commit()
+
+    result = await inventory.lookup_by_set_number(set_number="40800", session=db_session)
+
+    # Nur die gehaltene Zeile zaehlt als Dublette -- die verkaufte darf nicht
+    # auftauchen, sonst warnt das Formular vor laengst verkauften Sets.
+    assert len(result) == 1
+    hit = result[0]
+    assert hit.id == holding.id
+    assert hit.set_number == "40800"
+    assert hit.quantity == 2
+    assert hit.buy_price == 19.99
+    assert hit.buy_date == date(2026, 1, 10)
+
+
+@pytest.mark.asyncio
+async def test_lookup_returns_empty_list_when_the_set_has_no_holdings(db_session):
+    # Ein Holding-Eintrag existiert, aber unter einer anderen Setnummer --
+    # taucht der trotzdem auf, filtert die Abfrage nicht nach Setnummer.
+    db_session.add(_holding_item(set_number="75331"))
+    await db_session.commit()
+
+    result = await inventory.lookup_by_set_number(set_number="40800", session=db_session)
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_reference_url_survives_the_round_trip_when_set(db_session):
+    data = inventory.InventoryAdd(
+        set_number="40800", set_name="Yoda", buy_price=19.99, buy_date=date(2026, 1, 10),
+        reference_url="https://www.bricklink.com/v2/catalog/catalogitem.page?S=40800-1",
+    )
+
+    result = await inventory.add_inventory_item(data, session=db_session)
+
+    assert result.reference_url == (
+        "https://www.bricklink.com/v2/catalog/catalogitem.page?S=40800-1"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reference_url_is_none_when_omitted(db_session):
+    data = inventory.InventoryAdd(
+        set_number="75331", set_name="AT-AT", buy_price=299.0, buy_date=date(2026, 1, 11),
+    )
+
+    result = await inventory.add_inventory_item(data, session=db_session)
+
+    assert result.reference_url is None
