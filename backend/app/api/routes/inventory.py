@@ -91,13 +91,16 @@ class InventoryPhotoResponse(BaseModel):
 
 class InventoryResponse(BaseModel):
     id: int
-    set_number: str
+    set_number: str | None
     set_name: str
     theme: str | None
     image_url: str | None
-    buy_price: float
+    item_type: str
+    product_group: str
+    search_query: str | None
+    buy_price: float | None
     buy_shipping: float
-    total_invested: float
+    total_invested: float | None
     buy_date: date
     buy_platform: str | None
     buy_url: str | None
@@ -369,39 +372,45 @@ async def mark_as_sold(
     if item.status == InventoryStatus.SOLD.value:
         raise HTTPException(status_code=400, detail="Item already sold")
 
-    total_invested = item.buy_price + item.buy_shipping
-    selling_costs = sum(calculate_ebay_fees(data.sell_price))
-    realized_profit = data.sell_price - total_invested - selling_costs
-
     item.status = InventoryStatus.SOLD.value
     item.sell_price = data.sell_price
     item.sell_date = data.sell_date or date.today()
     item.sell_platform = data.sell_platform
-    item.realized_profit = round(realized_profit, 2)
-    item.realized_roi_percent = round((realized_profit / total_invested) * 100, 1) if total_invested > 0 else 0
     item.sell_signal_active = False
 
-    analysis_match = await _find_matching_analysis(item, session)
-    feedback_set = await _ensure_feedback_set(item, analysis_match, session)
-    if feedback_set:
-        feedback = DealFeedback(
-            set_id=feedback_set.id,
-            purchase_price=item.buy_price,
-            purchase_shipping=item.buy_shipping or 0.0,
-            purchase_date=item.buy_date,
-            purchase_platform=item.buy_platform or "UNKNOWN",
-            sale_price=item.sell_price,
-            sale_fees=round(selling_costs, 2),
-            sale_shipping=0.0,
-            sale_packaging=0.0,
-            sale_date=item.sell_date,
-            sale_platform=item.sell_platform,
-            predicted_roi=analysis_match.roi_percent if analysis_match else None,
-            predicted_risk_score=analysis_match.risk_score if analysis_match else None,
-            notes=_build_feedback_notes(item, analysis_match),
+    if item.buy_price is not None:
+        total_invested = item.buy_price + (item.buy_shipping or 0)
+        selling_costs = sum(calculate_ebay_fees(data.sell_price))
+        realized_profit = data.sell_price - total_invested - selling_costs
+        item.realized_profit = round(realized_profit, 2)
+        item.realized_roi_percent = (
+            round((realized_profit / total_invested) * 100, 1) if total_invested > 0 else 0
         )
-        feedback.calculate_outcomes()
-        session.add(feedback)
+
+        analysis_match = await _find_matching_analysis(item, session)
+        feedback_set = await _ensure_feedback_set(item, analysis_match, session)
+        if feedback_set:
+            feedback = DealFeedback(
+                set_id=feedback_set.id,
+                purchase_price=item.buy_price,
+                purchase_shipping=item.buy_shipping or 0.0,
+                purchase_date=item.buy_date,
+                purchase_platform=item.buy_platform or "UNKNOWN",
+                sale_price=item.sell_price,
+                sale_fees=round(selling_costs, 2),
+                sale_shipping=0.0,
+                sale_packaging=0.0,
+                sale_date=item.sell_date,
+                sale_platform=item.sell_platform,
+                predicted_roi=analysis_match.roi_percent if analysis_match else None,
+                predicted_risk_score=analysis_match.risk_score if analysis_match else None,
+                notes=_build_feedback_notes(item, analysis_match),
+            )
+            feedback.calculate_outcomes()
+            session.add(feedback)
+    else:
+        item.realized_profit = None
+        item.realized_roi_percent = None
 
     await session.commit()
     await session.refresh(item)
@@ -428,9 +437,17 @@ async def portfolio_summary(session: AsyncSession = Depends(get_session)):
     holding = [i for i in items if i.status == InventoryStatus.HOLDING.value]
     sold = [i for i in items if i.status == InventoryStatus.SOLD.value]
 
-    total_invested = sum(i.buy_price + i.buy_shipping for i in holding)
-    current_value = sum(i.current_market_price or (i.buy_price + i.buy_shipping) for i in holding)
-    unrealized = current_value - total_invested
+    priced_holding = [i for i in holding if i.buy_price is not None]
+    total_invested = sum(i.buy_price + (i.buy_shipping or 0) for i in priced_holding)
+    current_value = sum(
+        i.current_market_price
+        if i.current_market_price is not None
+        else (i.buy_price + (i.buy_shipping or 0)) if i.buy_price is not None else 0
+        for i in holding
+    )
+    unrealized = current_value - total_invested - sum(
+        i.current_market_price or 0 for i in holding if i.buy_price is None
+    )
 
     return PortfolioSummary(
         total_items=len(items),
@@ -519,7 +536,7 @@ async def _hydrate_market_snapshot(item: InventoryItem, session: AsyncSession) -
 
 
 def _recalculate_unrealized_metrics(item: InventoryItem) -> None:
-    if item.current_market_price is None:
+    if item.current_market_price is None or item.buy_price is None:
         item.unrealized_profit = None
         item.unrealized_roi_percent = None
         return
@@ -678,7 +695,8 @@ def _to_photo_response(photo: InventoryPhoto) -> InventoryPhotoResponse:
 
 
 def _to_response(item: InventoryItem) -> InventoryResponse:
-    total_invested = item.buy_price + (item.buy_shipping or 0)
+    has_buy_price = item.buy_price is not None
+    total_invested = round(item.buy_price + (item.buy_shipping or 0), 2) if has_buy_price else None
     holding_days = (date.today() - item.buy_date).days if item.buy_date else 0
 
     return InventoryResponse(
@@ -687,9 +705,12 @@ def _to_response(item: InventoryItem) -> InventoryResponse:
         set_name=item.set_name,
         theme=item.theme,
         image_url=item.image_url,
+        item_type=item.item_type,
+        product_group=item.product_group,
+        search_query=item.search_query,
         buy_price=item.buy_price,
         buy_shipping=item.buy_shipping or 0,
-        total_invested=round(total_invested, 2),
+        total_invested=total_invested,
         buy_date=item.buy_date,
         buy_platform=item.buy_platform,
         buy_url=item.buy_url,
