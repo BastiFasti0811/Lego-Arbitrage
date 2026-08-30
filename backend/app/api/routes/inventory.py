@@ -354,7 +354,7 @@ async def start_valuation_run(session: AsyncSession = Depends(get_session)):
 
 @router.get("/valuation/runs", response_model=list[ValuationRunResponse])
 async def list_valuation_runs(
-    limit: int = Query(default=20, le=100),
+    limit: int = Query(default=20, ge=1, le=100),
     session: AsyncSession = Depends(get_session),
 ):
     result = await session.execute(
