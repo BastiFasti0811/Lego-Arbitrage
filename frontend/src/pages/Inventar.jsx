@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import StatCard from "../components/StatCard";
 import ValuationStatus from "../components/ValuationStatus";
+import { referenceLinks } from "./inventoryLinks";
 
 const EURO = "\u20ac";
 const PHOTO_ICON = "\u{1F4F8}";
@@ -434,6 +435,7 @@ export default function Inventar() {
       buy_date: item.buy_date,
       buy_platform: item.buy_platform || "",
       buy_url: item.buy_url || "",
+      reference_url: item.reference_url || "",
       image_url: item.image_url || "",
       condition: item.condition,
       quantity: String(item.quantity || 1),
@@ -453,6 +455,7 @@ export default function Inventar() {
         buy_date: editForm.buy_date,
         buy_platform: editForm.buy_platform || null,
         buy_url: editForm.buy_url || null,
+        reference_url: editForm.reference_url || null,
         image_url: editForm.image_url || null,
         condition: editForm.condition,
         quantity: parseInt(editForm.quantity || "1", 10),
@@ -542,6 +545,17 @@ export default function Inventar() {
                     {item.buy_platform && <span>{item.buy_platform}</span>}
                     {item.buy_url && <a href={item.buy_url} target="_blank" rel="noreferrer" className="text-lego-yellow hover:text-lego-yellow/80 transition-colors">Original-Link</a>}
                     {item.image_url && <a href={item.image_url} target="_blank" rel="noreferrer" className="text-lego-blue hover:text-lego-blue/80 transition-colors">Externer Foto-Link</a>}
+                    {referenceLinks(item).map((link) => (
+                      <a
+                        key={link.label}
+                        href={link.href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-lego-yellow hover:underline"
+                      >
+                        {link.label} ↗
+                      </a>
+                    ))}
                   </div>
                   {item.notes && <p className="text-text-muted text-xs mt-2">{item.notes}</p>}
                   {item.sell_signal_active && item.sell_signal_reason && <p className="text-sell-signal text-xs mt-2">{item.sell_signal_reason}</p>}
@@ -623,6 +637,16 @@ export default function Inventar() {
                   </div>
                   <datalist id="platforms-list">{platforms.map((platform) => <option key={platform} value={platform} />)}</datalist>
                   <input type="url" value={editForm.buy_url} onChange={(e) => setEditForm({ ...editForm, buy_url: e.target.value })} placeholder="Original-Link" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
+                  <div>
+                    <label className="block text-xs text-text-muted mb-1">Eigener Referenz-Link</label>
+                    <input
+                      type="url"
+                      value={editForm.reference_url || ""}
+                      onChange={(e) => setEditForm({ ...editForm, reference_url: e.target.value })}
+                      placeholder="https://…"
+                      className="w-full px-3 py-2 rounded-lg bg-bg-primary border border-bg-hover text-sm"
+                    />
+                  </div>
                   <div className="grid grid-cols-2 gap-3">
                     <select value={editForm.condition} onChange={(e) => setEditForm({ ...editForm, condition: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm">
                       <option value="NEW_SEALED">Neu & Versiegelt</option>
