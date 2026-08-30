@@ -644,7 +644,7 @@ export default function Inventar() {
                       value={editForm.reference_url || ""}
                       onChange={(e) => setEditForm({ ...editForm, reference_url: e.target.value })}
                       placeholder="https://…"
-                      className="w-full px-3 py-2 rounded-lg bg-bg-primary border border-bg-hover text-sm"
+                      className="w-full px-3 py-2 rounded-lg bg-bg-primary border border-border text-sm"
                     />
                   </div>
                   <div className="grid grid-cols-2 gap-3">
@@ -728,14 +728,22 @@ export default function Inventar() {
                           className="px-2 py-1 rounded bg-lego-yellow text-bg-primary font-medium"
                           onClick={() => {
                             const target = duplicates[0];
-                            editMutation.mutate({
-                              id: target.id,
-                              data: { quantity: (target.quantity || 1) + 1 },
-                              photoFiles: [],
-                              deletedPhotoIds: [],
-                            });
-                            setDuplicates([]);
-                            closeAddModal();
+                            editMutation.mutate(
+                              {
+                                id: target.id,
+                                data: { quantity: (target.quantity || 1) + 1 },
+                                photoFiles: [],
+                                deletedPhotoIds: [],
+                              },
+                              {
+                                // Nur bei Erfolg schliessen: sonst behauptet der
+                                // Dialog eine Mengenerhoehung, die nie ankam.
+                                onSuccess: () => {
+                                  setDuplicates([]);
+                                  closeAddModal();
+                                },
+                              },
+                            );
                           }}
                         >
                           Menge erhöhen
@@ -748,6 +756,7 @@ export default function Inventar() {
                           Trotzdem neu anlegen
                         </button>
                       </div>
+                      {editMutation.isError && <p className="text-no-go text-sm mt-2">{editMutation.error.message}</p>}
                     </div>
                   )}
                   <input type="text" placeholder="Set-Name *" value={addForm.set_name} onChange={(e) => setAddForm({ ...addForm, set_name: e.target.value })} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
