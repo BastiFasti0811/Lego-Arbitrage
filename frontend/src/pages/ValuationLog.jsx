@@ -105,9 +105,21 @@ export default function ValuationLog() {
                 </span>
               </span>
               <span className="text-text-secondary">
-                {run.items_valued} bewertet · {run.items_skipped} übersprungen
-                {run.items_failed > 0 && ` · ${run.items_failed} fehlgeschlagen`}
-                {run.status === "running" && (isRunActive(run) ? " · läuft" : " · abgebrochen")}
+                {run.status === "failed" ? (
+                  // Vorher verschwand "abgebrochen" genau in dem Moment, in dem
+                  // start_valuation_run den Lauf von running auf failed hob —
+                  // aus einem vermuteten Absturz wurde ein bestaetigter, und die
+                  // Zeile sah danach aus wie ein normaler, ergebnisloser Lauf.
+                  <span className="text-no-go">
+                    Abgebrochen{run.error ? ` — ${run.error}` : ""}
+                  </span>
+                ) : (
+                  <>
+                    {run.items_valued} bewertet · {run.items_skipped} übersprungen
+                    {run.items_failed > 0 && ` · ${run.items_failed} fehlgeschlagen`}
+                    {run.status === "running" && (isRunActive(run) ? " · läuft" : " · abgebrochen")}
+                  </>
+                )}
               </span>
             </button>
             {openRunId === run.id && <RunDetail runId={run.id} />}

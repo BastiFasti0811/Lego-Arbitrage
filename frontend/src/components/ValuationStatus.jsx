@@ -17,6 +17,12 @@ function summarize(run) {
     if (isRunActive(run)) return "Aktualisierung läuft …";
     return "Keine Rückmeldung seit dem Start — ein neuer Lauf ist möglich.";
   }
+  if (run.status === "failed") {
+    // items_total bleibt bei einem abgebrochenen Lauf immer 0 (der Recorder
+    // schreibt erst am Laufende) — "0 von 0 bewertet" waere hier genau das
+    // beruhigend-leere Signal, das dieser Branch abschaffen soll.
+    return `Abgebrochen — ${run.error || "unbekannter Fehler"}`;
+  }
   const parts = [`${run.items_valued} von ${run.items_total} bewertet`];
   if (run.items_skipped) parts.push(`${run.items_skipped} übersprungen`);
   if (run.items_failed) parts.push(`${run.items_failed} fehlgeschlagen`);
@@ -38,6 +44,7 @@ export default function ValuationStatus() {
 
   const latest = runs[0];
   const running = isRunActive(latest);
+  const failed = latest?.status === "failed";
 
   const start = useMutation({
     mutationFn: api.startValuationRun,
@@ -47,7 +54,8 @@ export default function ValuationStatus() {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mb-4 text-xs">
       <span className="text-text-muted">
-        Letzte Aktualisierung: {formatWhen(latest?.finished_at || latest?.started_at)} — {summarize(latest)}
+        Letzte Aktualisierung: {formatWhen(latest?.finished_at || latest?.started_at)} —{" "}
+        <span className={failed ? "text-no-go" : undefined}>{summarize(latest)}</span>
       </span>
       <button
         type="button"
