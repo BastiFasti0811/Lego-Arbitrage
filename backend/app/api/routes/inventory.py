@@ -11,14 +11,20 @@ from uuid import uuid4
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.engine.roi_calculator import calculate_ebay_fees
 from app.models import AnalysisHistoryEntry, DealFeedback, LegoSet, get_session
-from app.models.inventory import InventoryItem, InventoryStatus
+from app.models.inventory import (
+    LEGO_PRODUCT_GROUP,
+    PRODUCT_GROUP_SUGGESTIONS,
+    InventoryItem,
+    InventoryItemType,
+    InventoryStatus,
+)
 from app.models.inventory_photo import InventoryPhoto
 
 logger = structlog.get_logger()
@@ -46,11 +52,14 @@ class InventoryPhotoUploadRequest(BaseModel):
 
 
 class InventoryAdd(BaseModel):
-    set_number: str
+    item_type: str = InventoryItemType.LEGO.value
+    set_number: str | None = None
     set_name: str
+    product_group: str | None = None
+    search_query: str | None = None
     theme: str | None = None
     image_url: str | None = None
-    buy_price: float
+    buy_price: float | None = None
     buy_shipping: float = 0.0
     buy_date: date
     buy_platform: str | None = None
@@ -59,9 +68,26 @@ class InventoryAdd(BaseModel):
     quantity: int = 1
     notes: str | None = None
 
+    @model_validator(mode="after")
+    def _apply_type_rules(self):
+        if self.item_type not in (t.value for t in InventoryItemType):
+            raise ValueError(f"Unbekannter item_type: {self.item_type}")
+        if self.item_type == InventoryItemType.LEGO.value:
+            if not (self.set_number or "").strip():
+                raise ValueError("Set-Nummer ist bei Lego-Artikeln Pflicht")
+            self.product_group = LEGO_PRODUCT_GROUP
+            if not self.search_query:
+                self.search_query = f"LEGO {self.set_number}"
+        else:
+            self.set_number = None
+            self.product_group = (self.product_group or "").strip() or "Diverses"
+        return self
+
 
 class InventoryUpdate(BaseModel):
     set_name: str | None = None
+    product_group: str | None = None
+    search_query: str | None = None
     theme: str | None = None
     image_url: str | None = None
     buy_price: float | None = None
@@ -166,9 +192,21 @@ async def list_platforms(session: AsyncSession = Depends(get_session)):
     return sorted(set(buy_platforms + sell_platforms))
 
 
+@router.get("/product-groups")
+async def list_product_groups(session: AsyncSession = Depends(get_session)):
+    """Warengruppen fuers Dropdown: Startliste plus alles bereits Vergebene."""
+    result = await session.execute(
+        select(InventoryItem.product_group).where(InventoryItem.product_group.is_not(None)).distinct()
+    )
+    stored = {row[0] for row in result.all() if row[0]}
+    return sorted(stored | set(PRODUCT_GROUP_SUGGESTIONS))
+
+
 @router.get("/", response_model=list[InventoryResponse])
 async def list_inventory(
     status: str | None = Query(default=None),
+    item_type: str | None = Query(default=None),
+    product_group: str | None = Query(default=None),
     sort_by: str = Query(default="buy_date"),
     limit: int = Query(default=100, le=500),
     offset: int = 0,
@@ -177,6 +215,10 @@ async def list_inventory(
     query = select(InventoryItem)
     if status:
         query = query.where(InventoryItem.status == status)
+    if item_type:
+        query = query.where(InventoryItem.item_type == item_type)
+    if product_group:
+        query = query.where(InventoryItem.product_group == product_group)
     query = query.order_by(InventoryItem.created_at.desc()).offset(offset).limit(limit)
     result = await session.execute(query)
     items = result.scalars().all()
@@ -186,8 +228,11 @@ async def list_inventory(
 @router.post("/", response_model=InventoryResponse)
 async def add_inventory_item(data: InventoryAdd, session: AsyncSession = Depends(get_session)):
     item = InventoryItem(
+        item_type=data.item_type,
         set_number=data.set_number,
         set_name=data.set_name,
+        product_group=data.product_group,
+        search_query=data.search_query,
         theme=data.theme,
         image_url=data.image_url,
         buy_price=data.buy_price,
@@ -201,7 +246,8 @@ async def add_inventory_item(data: InventoryAdd, session: AsyncSession = Depends
         status=InventoryStatus.HOLDING.value,
     )
     session.add(item)
-    await _hydrate_market_snapshot(item, session)
+    if data.item_type == InventoryItemType.LEGO.value:
+        await _hydrate_market_snapshot(item, session)
     await session.commit()
     await session.refresh(item)
     logger.info("inventory.added", set_number=data.set_number, buy_price=data.buy_price)
@@ -516,6 +562,9 @@ async def _find_matching_analysis(
 
 
 async def _hydrate_market_snapshot(item: InventoryItem, session: AsyncSession) -> bool:
+    if item.set_number is None:
+        return False
+
     market_price: float | None = None
     updated_at: datetime | None = None
 
