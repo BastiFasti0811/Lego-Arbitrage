@@ -17,7 +17,7 @@ Der komplette eigene Bestand — Lego wie Nicht-Lego — wird inventarisiert und
 - `search_query`: eBay-Suchbegriff für die Preisrecherche. Bei LEGO automatisch aus der Set-Nummer erzeugt, bei GENERIC KI-Vorschlag; immer editierbar.
 - `ai_price_min`, `ai_price_max`, `ai_analysis_at`: KI-Preisrahmen der letzten Analyse.
 - Neuer Item-Status `DRAFT` (zusätzlich zu HOLDING/SOLD) für die Foto-first-Anlage. DRAFT-Artikel tauchen in Statistik und Bewertung nicht auf; Abbruch = löschen.
-- `quantity` (bestehend): Ein Listing bezieht sich immer auf den ganzen Posten. Teilverkauf gibt es nicht; stattdessen Aktion **„Posten teilen"**: neuer Artikel mit kopierten Feldern und kopierten Foto-Dateien, `quantity` wird aufgeteilt (z. B. 3 → 2+1).
+- `quantity` (bestehend): Ein Listing bezieht sich immer auf den ganzen Posten. Teilverkauf gibt es nicht; stattdessen Aktion **„Posten teilen"**: neuer Artikel mit kopierten Feldern und kopierten Foto-Dateien, `quantity` wird aufgeteilt (z. B. 3 → 2+1). Kaufpreis und Versandkosten sind Zeilen-Gesamtwerte und werden beim Teilen centgenau anteilig aufgeteilt — die Summe über beide Zeilen bleibt exakt erhalten, sonst zählte das Portfolio investiertes Kapital doppelt. Der Marktpreis-Schnappschuss gilt je Stück und wird kopiert.
 
 ### Neue Tabelle `listings`
 
