@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
+import { isRunActive } from "../lib/valuationRuns";
 
 const OUTCOME_LABEL = {
   valued: "bewertet",
@@ -106,7 +107,7 @@ export default function ValuationLog() {
               <span className="text-text-secondary">
                 {run.items_valued} bewertet · {run.items_skipped} übersprungen
                 {run.items_failed > 0 && ` · ${run.items_failed} fehlgeschlagen`}
-                {run.status === "running" && " · läuft"}
+                {run.status === "running" && (isRunActive(run) ? " · läuft" : " · abgebrochen")}
               </span>
             </button>
             {openRunId === run.id && <RunDetail runId={run.id} />}
