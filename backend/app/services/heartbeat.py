@@ -276,15 +276,19 @@ MAX_SKIPPED_SHARE = 0.5
 def evaluate_valuation_coverage(run: "ValuationRun | None", now: datetime) -> TaskHealth | None:
     """Nutzarbeit der Bewertung: ein Lauf muss Werte erzeugen, nicht nur laufen.
 
-    Der Heartbeat sieht nur, dass der Task durchlief. Ein Lauf, der jedes
-    zweite Set überspringt, ist ein Quellenausfall — und genau der blieb
-    fünf Monate unbemerkt. Rein (kein I/O); gibt ein synthetisches Problem
-    oder None zurück.
+    Der Heartbeat sieht nur, dass der Task durchlief. Ein Set bleibt auf zwei
+    Wegen ohne Marktwert — übersprungen (Quellenlage reicht nicht) oder
+    fehlgeschlagen (Exception im Bewertungscode) —, und beide zählen hier
+    gegen den Anteil: ein Lauf, der nur noch fehlschlägt statt überspringt,
+    ist derselbe Ausfall wie der, der fünf Monate unbemerkt blieb, nur mit
+    anderer Fehlerart. Rein (kein I/O); gibt ein synthetisches Problem oder
+    None zurück.
     """
     if run is None or run.items_total < MIN_ITEMS_FOR_COVERAGE_CHECK:
         return None
 
-    share = run.items_skipped / run.items_total
+    without_value = run.items_skipped + run.items_failed
+    share = without_value / run.items_total
     if share <= MAX_SKIPPED_SHARE:
         return None
 
@@ -297,8 +301,9 @@ def evaluate_valuation_coverage(run: "ValuationRun | None", now: datetime) -> Ta
         age_seconds=(now - run.started_at).total_seconds() if run.started_at else None,
         max_age_seconds=0,
         detail=(
-            f"Letzter Bewertungslauf: {run.items_skipped} von {run.items_total} Sets "
-            f"ohne Marktwert — Quellenlage im Protokoll prüfen"
+            f"Letzter Bewertungslauf: {without_value} von {run.items_total} Sets ohne "
+            f"Marktwert ({run.items_skipped} übersprungen, {run.items_failed} "
+            f"fehlgeschlagen) — Quellenlage im Protokoll prüfen"
         ),
     )
 
