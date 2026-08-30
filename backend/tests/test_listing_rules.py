@@ -13,6 +13,8 @@ from app.services.listing_rules import (
 def test_default_min_price_is_70_percent():
     assert default_min_price(50.0) == 35.0
     assert default_min_price(39.99) == 27.99
+    assert default_min_price(9.95) == 6.97  # Proves ROUND_HALF_UP (commercial rounding)
+    assert default_min_price(0.05) == 0.04  # Boundary case for Decimal precision
 
 
 def test_default_price_type_by_platform():

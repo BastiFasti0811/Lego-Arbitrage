@@ -6,13 +6,14 @@ manuelle Lifecycle aus PR 1 braucht.
 """
 
 from datetime import UTC, date, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 
 from app.models.listing import ListingPlatform, ListingPriceChange, PriceType
 
 
 def default_min_price(price: float) -> float:
-    """Schmerzgrenzen-Vorbefuellung: 70 % vom Startpreis (Grill-Entscheid Q5)."""
-    return round(price * 0.7, 2)
+    """Schmerzgrenzen-Vorbefuellung: 70 % vom Startpreis, kaufmaennisch gerundet (Grill-Entscheid Q5)."""
+    return float((Decimal(str(price)) * Decimal("0.7")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
 def default_price_type(platform: str) -> str:
