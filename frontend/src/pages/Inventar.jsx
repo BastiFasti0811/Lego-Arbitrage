@@ -747,7 +747,8 @@ export default function Inventar() {
                       <div className="flex flex-wrap gap-2">
                         <button
                           type="button"
-                          className="px-2 py-1 rounded bg-lego-yellow text-bg-primary font-medium"
+                          disabled={editMutation.isPending}
+                          className="px-2 py-1 rounded bg-lego-yellow text-bg-primary font-medium disabled:opacity-50"
                           onClick={() => {
                             const target = duplicates[0];
                             editMutation.mutate(
