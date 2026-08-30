@@ -424,8 +424,23 @@ export default function Inventar() {
     }
   };
 
+  // Both resets below run only from a plain click handler, never from
+  // inside a mutation's own onSuccess: resetting a mutation from within its
+  // own hook-level onSuccess is reentrant and silently drops the pending
+  // success notification (confirmed against the installed query-core: the
+  // per-call onSuccess never fires and status ends at "idle" instead of
+  // "success"). closeAddModal()/closeEditModal() are each called from their
+  // own mutation's onSuccess, so the resets belong here on open instead —
+  // every fresh modal then starts clean regardless of how the previous one
+  // ended, without touching a mutation while it is still mid-dispatch.
+  function openAddModal() {
+    addMutation.reset();
+    setAddModal(true);
+  }
+
   const openEdit = (item) => {
     closeEditModal();
+    editMutation.reset();
     setEditModal(item);
     setEditForm({
       set_name: item.set_name,
@@ -486,7 +501,7 @@ export default function Inventar() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-text-primary">Inventar</h1>
-        <button onClick={() => setAddModal(true)} className="bg-lego-yellow text-black font-bold px-4 py-2 rounded-lg text-sm hover:bg-lego-yellow/90 transition-colors">
+        <button onClick={openAddModal} className="bg-lego-yellow text-black font-bold px-4 py-2 rounded-lg text-sm hover:bg-lego-yellow/90 transition-colors">
           + Hinzufügen
         </button>
       </div>
@@ -698,6 +713,13 @@ export default function Inventar() {
                       value={addForm.set_number}
                       onChange={(e) => handleSetNumberChange(e.target.value)}
                       onBlur={async (e) => {
+                        // Jeder neue Abgleich ist ein neuer Fall: eine
+                        // fehlgeschlagene "Menge erhoehen" fuer die zuvor
+                        // eingetragene Setnummer darf nicht als Fehler unter
+                        // dem naechsten Hinweis auftauchen (Tippen, Tab raus,
+                        // Nummer korrigieren, wieder raus — alles ohne dass
+                        // der Dialog je zu war).
+                        editMutation.reset();
                         const value = e.target.value.trim();
                         if (!value) { setDuplicates([]); return; }
                         try {
