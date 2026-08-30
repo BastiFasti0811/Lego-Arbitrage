@@ -14,6 +14,18 @@ class InventoryStatus(StrEnum):
     SOLD = "SOLD"
 
 
+class InventoryItemType(StrEnum):
+    LEGO = "LEGO"
+    GENERIC = "GENERIC"
+
+
+LEGO_PRODUCT_GROUP = "Lego"
+
+# Startliste fuer das Warengruppen-Dropdown; per Freitext erweiterbar,
+# gespeicherte Werte kommen per DISTINCT dazu (siehe /product-groups).
+PRODUCT_GROUP_SUGGESTIONS = [LEGO_PRODUCT_GROUP, "Elektronik", "Kleidung", "Haushalt", "Spielzeug", "Diverses"]
+
+
 class InventoryItem(Base):
     __tablename__ = "inventory_items"
     __table_args__ = (
@@ -22,11 +34,17 @@ class InventoryItem(Base):
     )
 
     # Purchase info
-    set_number: Mapped[str] = mapped_column(String(20), nullable=False)
+    # GENERIC-Artikel haben keine Set-Nummer; LEGO-Anlage erzwingt sie im Schema.
+    set_number: Mapped[str | None] = mapped_column(String(20))
+    item_type: Mapped[str] = mapped_column(String(20), nullable=False, server_default=InventoryItemType.LEGO.value)
+    product_group: Mapped[str] = mapped_column(String(100), nullable=False, server_default=LEGO_PRODUCT_GROUP)
+    # eBay-Suchbegriff der Preisrecherche; bei LEGO automatisch "LEGO {set_number}".
+    search_query: Mapped[str | None] = mapped_column(String(300))
     set_name: Mapped[str] = mapped_column(String(300), nullable=False)
     theme: Mapped[str | None] = mapped_column(String(100))
     image_url: Mapped[str | None] = mapped_column(Text)
-    buy_price: Mapped[float] = mapped_column(Float, nullable=False)
+    # Dachbodenfunde haben keinen Kaufpreis; Rechnungen ueberspringen sie dann.
+    buy_price: Mapped[float | None] = mapped_column(Float)
     buy_shipping: Mapped[float] = mapped_column(Float, default=0.0)
     buy_date: Mapped[date] = mapped_column(Date, nullable=False)
     buy_platform: Mapped[str | None] = mapped_column(String(100))
@@ -58,9 +76,16 @@ class InventoryItem(Base):
         cascade="all, delete-orphan",
         order_by="InventoryPhoto.sort_order",
     )
+    listings: Mapped[list["Listing"]] = relationship(
+        back_populates="item",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+        order_by="Listing.created_at",
+    )
 
     def __repr__(self) -> str:
         return f"<InventoryItem {self.set_number} '{self.set_name}' {self.status}>"
 
 
 from app.models.inventory_photo import InventoryPhoto  # noqa: E402
+from app.models.listing import Listing  # noqa: E402

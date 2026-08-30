@@ -6,8 +6,9 @@ from app.models.base import Base, async_session, engine, get_session
 from app.models.dismissal import DismissedOffer
 from app.models.feedback import DealFeedback, WatchlistItem
 from app.models.heartbeat import TaskHeartbeat
-from app.models.inventory import InventoryItem, InventoryStatus
+from app.models.inventory import InventoryItem, InventoryItemType, InventoryStatus
 from app.models.inventory_photo import InventoryPhoto
+from app.models.listing import Listing, ListingPlatform, ListingPriceChange, ListingStatus, PriceType
 from app.models.offer import Offer, OfferCondition, OfferPlatform, OfferStatus
 from app.models.price import PriceRecord, PriceSource
 from app.models.set import EOLStatus, LegoSet, SetCategory, ThemeTier
@@ -35,7 +36,13 @@ __all__ = [
     "WatchlistItem",
     "TaskHeartbeat",
     "InventoryItem",
+    "InventoryItemType",
     "InventoryStatus",
     "InventoryPhoto",
+    "Listing",
+    "ListingPlatform",
+    "ListingPriceChange",
+    "ListingStatus",
+    "PriceType",
     "AppSetting",
 ]
