@@ -1,14 +1,13 @@
 """Posten teilen kopiert Foto-DATEIEN — sonst zeigt der neue Artikel ins Leere,
 sobald der alte geloescht wird (Grill-Entscheid Q17)."""
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
-from app.api.routes.inventory import copy_item_photos, prorate_purchase
-from app.models.inventory import InventoryItem, InventoryStatus
+from app.api.routes.inventory import SplitRequest, copy_item_photos, prorate_purchase, split_inventory_item
 
 
 def _photo(filename, sort_order=0):
@@ -71,98 +70,106 @@ def test_prorate_purchase_with_none_price():
     assert (rest_price, rest_ship) == (None, 0.0)
 
 
-@pytest.mark.asyncio
+class _SplitSession:
+    def __init__(self, item):
+        self._item = item
+        self.added = []
+        self.rolled_back = False
+
+    async def execute(self, _query):
+        item = self._item
+
+        class _Result:
+            def scalar_one_or_none(self):
+                return item
+
+        return _Result()
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    async def flush(self):
+        pass
+
+    async def commit(self):
+        pass
+
+    async def rollback(self):
+        self.rolled_back = True
+
+    async def refresh(self, obj):
+        if getattr(obj, "id", None) is None:
+            obj.id = 2
+        if getattr(obj, "created_at", None) is None:
+            obj.created_at = datetime(2026, 8, 30, tzinfo=UTC)
+
+
+def _source_item(**overrides):
+    base = dict(
+        id=1,
+        item_type="GENERIC",
+        set_number=None,
+        set_name="Posten",
+        product_group="Diverses",
+        search_query=None,
+        theme=None,
+        image_url=None,
+        buy_price=90.0,
+        buy_shipping=6.0,
+        buy_date=date(2026, 8, 1),
+        buy_platform=None,
+        buy_url=None,
+        condition="USED_COMPLETE",
+        quantity=3,
+        notes=None,
+        status="HOLDING",
+        current_market_price=None,
+        market_price_updated_at=None,
+        unrealized_profit=None,
+        unrealized_roi_percent=None,
+        sell_signal_active=False,
+        sell_signal_reason=None,
+        sell_price=None,
+        sell_date=None,
+        sell_platform=None,
+        realized_profit=None,
+        realized_roi_percent=None,
+        photos=[],
+        listings=[],
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
 async def test_split_rejects_sold_item():
-    """Split-Endpunkt lehnt SOLD-Artikel ab."""
-    item = InventoryItem(
-        set_name="Test Set",
-        product_group="Test",
-        quantity=3,
-        buy_price=90.0,
-        buy_shipping=6.0,
-        buy_date=datetime(2026, 8, 30),
-        status=InventoryStatus.SOLD.value,
-        photos=[],
-        listings=[],
-    )
-    item.id = 1
+    session = _SplitSession(_source_item(status="SOLD"))
 
-    try:
-        if item.status == InventoryStatus.SOLD.value:
-            raise HTTPException(status_code=400, detail="Verkaufte Artikel lassen sich nicht teilen")
-    except HTTPException as e:
-        assert e.status_code == 400
+    with pytest.raises(HTTPException) as exc:
+        await split_inventory_item(1, SplitRequest(split_quantity=1), session)
+
+    assert exc.value.status_code == 400
 
 
-@pytest.mark.asyncio
 async def test_split_rejects_bad_quantity():
-    """Split-Endpunkt lehnt ungültige split_quantity ab."""
-    item = InventoryItem(
-        set_name="Test Set",
-        product_group="Test",
-        quantity=3,
-        buy_price=90.0,
-        buy_shipping=6.0,
-        buy_date=datetime(2026, 8, 30),
-        status=InventoryStatus.HOLDING.value,
-        photos=[],
-        listings=[],
-    )
-    item.id = 1
+    for bad in (0, 3):
+        session = _SplitSession(_source_item())
 
-    quantity = item.quantity or 1
-    for split_quantity in [0, 3, 4]:
-        if not 1 <= split_quantity < quantity:
-            assert True  # Valid rejection
-        else:
-            assert False, f"Should reject split_quantity={split_quantity}"
+        with pytest.raises(HTTPException) as exc:
+            await split_inventory_item(1, SplitRequest(split_quantity=bad), session)
+
+        assert exc.value.status_code == 400
 
 
-@pytest.mark.asyncio
 async def test_split_prorates_and_reduces():
-    """Split-Endpunkt proriert Kosten und reduziert Original-Quantity."""
-    item = InventoryItem(
-        set_name="Test Set",
-        product_group="Test",
-        quantity=3,
-        buy_price=90.0,
-        buy_shipping=6.0,
-        buy_date=datetime(2026, 8, 30),
-        status=InventoryStatus.HOLDING.value,
-        current_market_price=100.0,
-        market_price_updated_at=datetime(2026, 8, 30, tzinfo=UTC),
-        photos=[],
-        listings=[],
-    )
-    item.id = 1
+    item = _source_item()
+    session = _SplitSession(item)
 
-    new_item = InventoryItem(
-        set_name="Test Set",
-        product_group="Test",
-        quantity=1,
-        buy_price=30.0,
-        buy_shipping=2.0,
-        buy_date=datetime(2026, 8, 30),
-        status=InventoryStatus.HOLDING.value,
-        current_market_price=100.0,
-        market_price_updated_at=datetime(2026, 8, 30, tzinfo=UTC),
-        photos=[],
-        listings=[],
-    )
-    new_item.id = 2
+    response = await split_inventory_item(1, SplitRequest(split_quantity=1), session)
 
-    quantity = item.quantity or 1
-    split_quantity = 1
-    (new_buy, new_ship), (rest_buy, rest_ship) = prorate_purchase(
-        item.buy_price, item.buy_shipping or 0.0, quantity, split_quantity
-    )
-
-    # Verify new item has prorated costs
-    assert new_buy == 30.0
-    assert new_ship == 2.0
-    # Verify original costs are correct for remainder
-    assert rest_buy == 60.0
-    assert rest_ship == 4.0
-    # Verify quantity math
-    assert split_quantity + (quantity - split_quantity) == quantity
-    assert quantity - split_quantity == 2
+    assert item.quantity == 2
+    assert item.buy_price == 60.0
+    assert item.buy_shipping == 4.0
+    assert response.quantity == 1
+    assert response.buy_price == 30.0
+    assert response.buy_shipping == 2.0
+    assert response.listings == []

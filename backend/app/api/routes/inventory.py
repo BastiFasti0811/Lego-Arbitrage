@@ -544,6 +544,13 @@ async def split_inventory_item(item_id: int, data: SplitRequest, session: AsyncS
         status=item.status,
         current_market_price=item.current_market_price,
         market_price_updated_at=item.market_price_updated_at,
+        sell_signal_active=False,
+        sell_signal_reason=None,
+        sell_price=None,
+        sell_date=None,
+        sell_platform=None,
+        realized_profit=None,
+        realized_roi_percent=None,
     )
     session.add(new_item)
     await session.flush()
