@@ -27,6 +27,7 @@ from app.models.inventory import (
     InventoryStatus,
 )
 from app.models.inventory_photo import InventoryPhoto
+from app.models.listing import OPEN_LISTING_STATUSES, ListingStatus
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -428,6 +429,20 @@ async def update_inventory_item(
     return _to_response(item)
 
 
+def close_sold_listing(item, sell_platform: str | None) -> list:
+    """Schliesst das Listing der Verkaufsplattform; Rest ist die Loesch-Checkliste."""
+    platform_key = (sell_platform or "").strip().upper()
+    remaining = []
+    for listing in item.listings:
+        if listing.status not in OPEN_LISTING_STATUSES:
+            continue
+        if platform_key and listing.platform == platform_key:
+            listing.status = ListingStatus.SOLD.value
+        else:
+            remaining.append(listing)
+    return remaining
+
+
 @router.post("/{item_id}/sell", response_model=InventoryResponse)
 async def mark_as_sold(
     item_id: int,
@@ -443,6 +458,14 @@ async def mark_as_sold(
     item.sell_date = data.sell_date or date.today()
     item.sell_platform = data.sell_platform
     item.sell_signal_active = False
+
+    remaining_open = close_sold_listing(item, data.sell_platform)
+    if remaining_open:
+        logger.info(
+            "inventory.sold_with_open_listings",
+            item_id=item.id,
+            platforms=[x.platform for x in remaining_open],
+        )
 
     if item.buy_price is not None:
         total_invested = item.buy_price + (item.buy_shipping or 0)
