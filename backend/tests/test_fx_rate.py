@@ -6,7 +6,9 @@ Wenn kein Kurs zu holen ist, wird das vermerkt statt verschwiegen.
 """
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from app.services import fx
@@ -79,3 +81,117 @@ def test_stale_note_falls_back_to_unbekannt_without_a_date():
     # korrupter UPDATED_KEY-Eintrag) darf note nicht zum Absturz bringen.
     rate = fx.FxRate(usd_to_eur=0.9, as_of=None, is_fallback=False, is_stale=True)
     assert rate.note == "Kurs veraltet — zuletzt am unbekannt von der EZB bestaetigt"
+
+
+# ---------------------------------------------------------------------------
+# M2: get_usd_to_eur() selbst hatte keinen Test — nur seine Bausteine
+# (parse_ecb_rate, is_fresh, FxRate.note) waren abgedeckt. Genau in dieser
+# Orchestrierung fand eine frühere Review den fehlenden dritten Zustand
+# (is_stale). Fake-Session-Idiom wie im Rest der Suite (siehe
+# test_inventory_valuation_run.py, test_scrape_daily.py): ein Objekt mit
+# execute()/scalars(), keine Datenbank.
+# ---------------------------------------------------------------------------
+
+
+class _FakeScalars:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def __iter__(self):
+        return iter(self._rows)
+
+
+class _FakeResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self):
+        return _FakeScalars(self._rows)
+
+
+class _FakeFxSession:
+    """Bedient nur _load_cached()'s eine SELECT — keiner der drei Tests
+    unten erreicht _store() (siehe jeweilige Vorbedingung)."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    async def execute(self, _statement):
+        return _FakeResult(self._rows)
+
+
+def _setting_rows(*, rate: str | None, updated_at: str | None) -> list:
+    rows = []
+    if rate is not None:
+        rows.append(SimpleNamespace(key=fx.RATE_KEY, value=rate))
+    if updated_at is not None:
+        rows.append(SimpleNamespace(key=fx.UPDATED_KEY, value=updated_at))
+    return rows
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_cached_rate_is_returned_without_a_live_fetch(monkeypatch):
+    now = datetime.now(UTC)
+    rows = _setting_rows(rate="0.93", updated_at=(now - timedelta(hours=2)).isoformat())
+    monkeypatch.setattr(fx, "async_session", lambda: _FakeFxSession(rows))
+
+    async def _must_not_be_called():
+        raise RuntimeError("ein frischer Cache-Kurs darf keinen Live-Abruf ausloesen")
+
+    monkeypatch.setattr(fx, "_fetch_ecb", _must_not_be_called)
+
+    rate = await fx.get_usd_to_eur()
+
+    assert rate.usd_to_eur == pytest.approx(0.93)
+    assert rate.is_fallback is False
+    assert rate.is_stale is False
+    assert rate.note is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_fetch_falls_back_to_a_stale_cached_rate(monkeypatch):
+    # Review-Finding (Critical), hier auf Ebene von get_usd_to_eur() selbst
+    # nachvollzogen statt nur gegen FxRate direkt (siehe
+    # test_stale_cached_rate_is_marked_with_its_date oben): ein Kurs, dessen
+    # Live-Abruf fehlschlaegt, faellt auf den zwischengelagerten Wert zurueck
+    # - und der ist hier bereits laenger als MAX_AGE alt.
+    stale_as_of = datetime.now(UTC) - timedelta(days=10)
+    rows = _setting_rows(rate="0.87", updated_at=stale_as_of.isoformat())
+    monkeypatch.setattr(fx, "async_session", lambda: _FakeFxSession(rows))
+
+    async def _fail():
+        raise httpx.ConnectTimeout("EZB nicht erreichbar")
+
+    monkeypatch.setattr(fx, "_fetch_ecb", _fail)
+
+    rate = await fx.get_usd_to_eur()
+
+    assert rate.usd_to_eur == pytest.approx(0.87)
+    assert rate.as_of == stale_as_of
+    assert rate.is_fallback is False
+    assert rate.is_stale is True
+    assert rate.note == f"Kurs veraltet — zuletzt am {stale_as_of.date().isoformat()} von der EZB bestaetigt"
+
+
+@pytest.mark.asyncio
+async def test_no_cache_and_a_failed_fetch_falls_back_to_the_constant(monkeypatch):
+    monkeypatch.setattr(fx, "async_session", lambda: _FakeFxSession([]))
+
+    async def _fail():
+        raise httpx.ConnectTimeout("EZB nicht erreichbar")
+
+    monkeypatch.setattr(fx, "_fetch_ecb", _fail)
+
+    rate = await fx.get_usd_to_eur()
+
+    assert rate.usd_to_eur == fx.FALLBACK_USD_TO_EUR
+    assert rate.as_of is None
+    assert rate.is_fallback is True
+    assert rate.is_stale is False
+    assert rate.note == "Ersatzkurs — kein EZB-Kurs verfuegbar"
