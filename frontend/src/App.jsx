@@ -8,6 +8,7 @@ const LiveFeed = lazy(() => import("./pages/LiveFeed"));
 const AuctionWatch = lazy(() => import("./pages/AuctionWatch"));
 const DealChecker = lazy(() => import("./pages/DealChecker"));
 const Inventar = lazy(() => import("./pages/Inventar"));
+const ValuationLog = lazy(() => import("./pages/ValuationLog"));
 const History = lazy(() => import("./pages/History"));
 const Settings = lazy(() => import("./pages/Settings"));
 const Login = lazy(() => import("./pages/Login"));
@@ -72,6 +73,7 @@ export default function App() {
               <Route path="auctions" element={<AuctionWatch />} />
               <Route path="checker" element={<DealChecker />} />
               <Route path="inventar" element={<Inventar />} />
+              <Route path="protokoll" element={<ValuationLog />} />
               <Route path="history" element={<History />} />
               <Route path="settings" element={<Settings />} />
               <Route path="*" element={<Navigate to="/" replace />} />
