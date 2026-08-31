@@ -2,7 +2,7 @@
 
 from base64 import b64decode
 from binascii import Error as BinasciiError
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from shutil import rmtree
 from urllib.parse import urlencode
@@ -20,9 +20,18 @@ from app.engine.roi_calculator import calculate_ebay_fees
 from app.models import AnalysisHistoryEntry, DealFeedback, LegoSet, get_session
 from app.models.inventory import InventoryItem, InventoryStatus
 from app.models.inventory_photo import InventoryPhoto
+from app.models.valuation_run import (
+    ValuationRun,
+    ValuationRunItem,
+    ValuationRunStatus,
+    ValuationTrigger,
+)
+from app.tasks.celery_app import celery_app
 
 logger = structlog.get_logger()
 router = APIRouter()
+
+STALE_RUN_MINUTES = 30
 
 PHOTO_STORAGE_ROOT = Path(settings.media_root) / "inventory_photos"
 ALLOWED_IMAGE_TYPES = {
@@ -55,6 +64,7 @@ class InventoryAdd(BaseModel):
     buy_date: date
     buy_platform: str | None = None
     buy_url: str | None = None
+    reference_url: str | None = None
     condition: str = "NEW_SEALED"
     quantity: int = 1
     notes: str | None = None
@@ -69,6 +79,7 @@ class InventoryUpdate(BaseModel):
     buy_date: date | None = None
     buy_platform: str | None = None
     buy_url: str | None = None
+    reference_url: str | None = None
     condition: str | None = None
     quantity: int | None = None
     notes: str | None = None
@@ -101,6 +112,7 @@ class InventoryResponse(BaseModel):
     buy_date: date
     buy_platform: str | None
     buy_url: str | None
+    reference_url: str | None
     condition: str
     quantity: int = 1
     notes: str | None
@@ -141,6 +153,65 @@ class SellLinksResponse(BaseModel):
     kleinanzeigen_text: str
     suggested_price: float
     suggested_title: str
+
+
+class ValuationRunResponse(BaseModel):
+    id: int
+    started_at: datetime
+    finished_at: datetime | None
+    trigger: str
+    status: str
+    items_total: int
+    items_valued: int
+    items_skipped: int
+    items_failed: int
+    error: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class ValuationRunItemResponse(BaseModel):
+    set_number: str
+    item_id: int | None
+    outcome: str
+    reason: str | None
+    detail: str | None
+    sources: list | None
+    consensus_price: float | None
+
+    model_config = {"from_attributes": True}
+
+
+class ValuationRunDetailResponse(ValuationRunResponse):
+    items: list[ValuationRunItemResponse] = []
+
+
+class InventoryLookupResponse(BaseModel):
+    id: int
+    set_number: str
+    set_name: str
+    quantity: int
+    buy_price: float
+    buy_date: date
+    buy_platform: str | None
+
+
+def is_run_blocking(run, now: datetime) -> bool:
+    """Ob ein vorhandener Lauf einen neuen Start verhindert.
+
+    Ein Lauf dauert gemessen elf Minuten; zwei parallele wuerden dieselben
+    Quellen doppelt befragen. Ein abgestuerzter Worker laesst seinen Lauf
+    dagegen auf `running` stehen — ohne Verfallsdatum bliebe der Knopf fuer
+    immer gesperrt.
+    """
+    if run is None or run.status != ValuationRunStatus.RUNNING.value:
+        return False
+    started = run.started_at
+    if started is not None and started.tzinfo is None:
+        started = started.replace(tzinfo=UTC)
+    if started is None:
+        return False
+    return (now - started) < timedelta(minutes=STALE_RUN_MINUTES)
 
 
 @router.get("/platforms")
@@ -192,6 +263,7 @@ async def add_inventory_item(data: InventoryAdd, session: AsyncSession = Depends
         buy_date=data.buy_date,
         buy_platform=data.buy_platform,
         buy_url=data.buy_url,
+        reference_url=data.reference_url,
         condition=data.condition,
         quantity=data.quantity,
         notes=data.notes,
@@ -203,6 +275,110 @@ async def add_inventory_item(data: InventoryAdd, session: AsyncSession = Depends
     await session.refresh(item)
     logger.info("inventory.added", set_number=data.set_number, buy_price=data.buy_price)
     return _to_response(item)
+
+
+# Vor den `/{item_id}/...`-Routen deklariert: sonst schluckt der
+# Pfadparameter "lookup" und "valuation" als item_id.
+@router.get("/lookup", response_model=list[InventoryLookupResponse])
+async def lookup_by_set_number(
+    set_number: str = Query(min_length=1, max_length=20),
+    session: AsyncSession = Depends(get_session),
+):
+    """Gehaltene Eintraege zu einer Setnummer — Grundlage des Dubletten-Hinweises.
+
+    Nur HOLDING: Verkauftes ist keine Dublette.
+    """
+    result = await session.execute(
+        select(InventoryItem)
+        .where(
+            InventoryItem.set_number == set_number.strip(),
+            InventoryItem.status == InventoryStatus.HOLDING.value,
+        )
+        .order_by(InventoryItem.buy_date.desc())
+    )
+    return [
+        InventoryLookupResponse(
+            id=item.id, set_number=item.set_number, set_name=item.set_name,
+            quantity=item.quantity or 1, buy_price=item.buy_price,
+            buy_date=item.buy_date, buy_platform=item.buy_platform,
+        )
+        for item in result.scalars().all()
+    ]
+
+
+@router.post("/valuation/run")
+async def start_valuation_run(session: AsyncSession = Depends(get_session)):
+    """Bewertung von Hand anstossen."""
+    now = datetime.now(UTC)
+    latest = (
+        await session.execute(
+            select(ValuationRun).order_by(ValuationRun.started_at.desc()).limit(1)
+        )
+    ).scalar_one_or_none()
+
+    if is_run_blocking(latest, now):
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "Es läuft bereits eine Aktualisierung.", "run_id": latest.id},
+        )
+
+    if latest is not None and latest.status == ValuationRunStatus.RUNNING.value:
+        # Nicht mehr blockierend, aber noch auf "running": der Worker ist
+        # gestorben. Ohne diesen Abschluss steht der Lauf fuer immer als
+        # laufend in der Statusleiste und der Knopf bleibt gesperrt.
+        latest.status = ValuationRunStatus.FAILED.value
+        latest.finished_at = now
+        latest.error = (
+            f"Kein Abschluss nach {STALE_RUN_MINUTES} Minuten — als abgebrochen gewertet"
+        )
+
+    run = ValuationRun(
+        started_at=now,
+        trigger=ValuationTrigger.MANUAL.value,
+        status=ValuationRunStatus.RUNNING.value,
+    )
+    session.add(run)
+    await session.commit()
+    await session.refresh(run)
+
+    # Der Lauf existiert, bevor er angestossen wird: sonst gaebe es den
+    # Zustand "gestartet, aber nirgends sichtbar".
+    celery_app.send_task(
+        "app.tasks.update_inventory.update_inventory_valuations",
+        kwargs={"run_id": run.id},
+        queue="analysis",
+    )
+    logger.info("inventory.valuation_run_started", run_id=run.id)
+    return {"run_id": run.id}
+
+
+@router.get("/valuation/runs", response_model=list[ValuationRunResponse])
+async def list_valuation_runs(
+    limit: int = Query(default=20, ge=1, le=100),
+    session: AsyncSession = Depends(get_session),
+):
+    result = await session.execute(
+        select(ValuationRun).order_by(ValuationRun.started_at.desc()).limit(limit)
+    )
+    return [ValuationRunResponse.model_validate(run) for run in result.scalars().all()]
+
+
+@router.get("/valuation/runs/{run_id}", response_model=ValuationRunDetailResponse)
+async def get_valuation_run(run_id: int, session: AsyncSession = Depends(get_session)):
+    run = await session.get(ValuationRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Lauf {run_id} nicht gefunden")
+    items = (
+        await session.execute(
+            select(ValuationRunItem)
+            .where(ValuationRunItem.run_id == run_id)
+            .order_by(ValuationRunItem.outcome.asc(), ValuationRunItem.set_number.asc())
+        )
+    ).scalars().all()
+    return ValuationRunDetailResponse(
+        **ValuationRunResponse.model_validate(run).model_dump(),
+        items=[ValuationRunItemResponse.model_validate(i) for i in items],
+    )
 
 
 @router.post("/{item_id}/photos", response_model=list[InventoryPhotoResponse])
@@ -693,6 +869,7 @@ def _to_response(item: InventoryItem) -> InventoryResponse:
         buy_date=item.buy_date,
         buy_platform=item.buy_platform,
         buy_url=item.buy_url,
+        reference_url=item.reference_url,
         condition=item.condition,
         quantity=item.quantity or 1,
         notes=item.notes,

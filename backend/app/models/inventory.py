@@ -31,6 +31,9 @@ class InventoryItem(Base):
     buy_date: Mapped[date] = mapped_column(Date, nullable=False)
     buy_platform: Mapped[str | None] = mapped_column(String(100))
     buy_url: Mapped[str | None] = mapped_column(Text)
+    # Nachschlage-Link, den der Nutzer selbst setzt. BrickMerge und Idealo
+    # werden aus der Setnummer erzeugt und brauchen keinen Speicher.
+    reference_url: Mapped[str | None] = mapped_column(Text)
     condition: Mapped[str] = mapped_column(String(20), default="NEW_SEALED")
     quantity: Mapped[int] = mapped_column(Integer, default=1)
     notes: Mapped[str | None] = mapped_column(Text)

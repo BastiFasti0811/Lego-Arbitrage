@@ -2,10 +2,17 @@
 
 import re
 
+import httpx
 import structlog
 from bs4 import BeautifulSoup
 
-from app.scrapers.base import BaseScraper, ScrapedOffer, ScrapedPrice, ScrapedSetInfo
+from app.scrapers.base import (
+    BaseScraper,
+    ScrapedOffer,
+    ScrapedPrice,
+    ScrapedSetInfo,
+    UndecodableResponseError,
+)
 
 logger = structlog.get_logger()
 
@@ -250,6 +257,13 @@ class EbaySoldScraper(BaseScraper):
 
         try:
             return await self._price_from_active_listings(set_number)
+        except (UndecodableResponseError, httpx.HTTPError):
+            # Anders als der Sold-Suche-Fang oben: hier gibt es keinen
+            # weiteren Fallback mehr. Ein Bot-Block oder Verbindungsabbruch
+            # an der letzten Quelle ist "eBay ist tot", nicht "kein Preis
+            # gefunden" - die beiden sahen vor diesem Fix in _collect_prices
+            # identisch aus.
+            raise
         except Exception as e:
             logger.error("ebay_sold.price_failed", set_number=set_number, error=str(e))
             return None

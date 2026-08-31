@@ -2,15 +2,16 @@
 
 import re
 
+import httpx
 import structlog
 from bs4 import BeautifulSoup
 
-from app.scrapers.base import BaseScraper, ScrapedPrice, ScrapedSetInfo
+from app.scrapers.base import BaseScraper, ScrapedPrice, ScrapedSetInfo, UndecodableResponseError
+from app.services.fx import get_usd_to_eur
 
 logger = structlog.get_logger()
 
 BASE_URL = "https://www.brickeconomy.com"
-USD_TO_EUR = 0.92  # Approximate conversion rate
 
 
 class BrickEconomyScraper(BaseScraper):
@@ -37,6 +38,13 @@ class BrickEconomyScraper(BaseScraper):
                     return href if href.startswith("http") else f"{BASE_URL}{href}"
 
             return None
+        except (UndecodableResponseError, httpx.HTTPError):
+            # Die Quelle hat versagt (kaputte Antwort, Bot-Block, Verbindung
+            # weg) - etwas anderes als "die Suche fand nichts" (der obige
+            # return None). get_price faengt das in seinem eigenen except
+            # ebenso durch, bis es bei _collect_prices als Probe mit dem
+            # echten Grund ankommt statt als "kein Preis gefunden".
+            raise
         except Exception as e:
             logger.error("brickeconomy.search_failed", set_number=set_number, error=str(e))
             return None
@@ -88,7 +96,22 @@ class BrickEconomyScraper(BaseScraper):
             retail_match = re.search(r"(?:Retail|RRP|MSRP)[:\s]*\$?([\d,.]+)", page_text)
             if retail_match:
                 usd_price = float(retail_match.group(1).replace(",", ""))
-                info.uvp_eur = round(usd_price * USD_TO_EUR, 2)
+                fx_rate = await get_usd_to_eur()
+                info.uvp_eur = round(usd_price * fx_rate.usd_to_eur, 2)
+                # ScrapedSetInfo hat kein notes-Feld — es ist von jedem Scraper
+                # geteilt, und diese Aufgabe erweitert seine Form nicht (anders
+                # als ScrapedPrice.notes, siehe get_price unten). Ein veralteter
+                # oder Ersatz-Kurs ginge hier sonst spurlos verloren. uvp_eur
+                # dient als Plausibilitaets-Anker fuer den Konsenspreis, nicht
+                # als Geldwert im Bestand — die Herkunft bleibt trotzdem ueber
+                # das Log auffindbar, mit Set-Nummer und Kursdatum.
+                if fx_rate.note:
+                    logger.warning(
+                        "brickeconomy.uvp_fx_note",
+                        set_number=set_number,
+                        note=fx_rate.note,
+                        as_of=fx_rate.as_of.isoformat() if fx_rate.as_of else None,
+                    )
 
             # EOL Status
             if re.search(r"Retired|Discontinued", page_text, re.I):
@@ -116,6 +139,7 @@ class BrickEconomyScraper(BaseScraper):
         try:
             url = await self._search_set(set_number)
             if not url:
+                logger.warning("brickeconomy.set_not_found", set_number=set_number)
                 return None
 
             html = await self._fetch(url)
@@ -136,22 +160,37 @@ class BrickEconomyScraper(BaseScraper):
                 return None
 
             usd_price = float(value_match.group(1).replace(",", ""))
-            eur_price = round(usd_price * USD_TO_EUR, 2)
+            fx_rate = await get_usd_to_eur()
+            eur_price = round(usd_price * fx_rate.usd_to_eur, 2)
 
             # Growth info
             growth_match = re.search(r"Growth[:\s]+([-+]?\d+[.,]?\d*)%", page_text)
-            notes = None
+            notes_parts = []
             if growth_match:
-                notes = f"Growth: {growth_match.group(1)}%"
+                notes_parts.append(f"Growth: {growth_match.group(1)}%")
+            # ScrapedPrice hat kein price_original-Feld (siehe base.py) — ein
+            # frueherer Versuch, es dort mitzugeben, warf TypeError bei jedem
+            # Treffer und liess get_price() still None zurueckgeben. currency
+            # "USD" allein sagt nicht mehr, welcher Dollarbetrag dahinter
+            # steckt, darum landet er hier im einzigen Freitextfeld, das bis
+            # ins Lauf-Protokoll durchschlaegt.
+            notes_parts.append(f"USD {usd_price:.2f}")
+            if fx_rate.note:
+                notes_parts.append(fx_rate.note)
+            notes = " | ".join(notes_parts)
 
             return ScrapedPrice(
                 source="BRICKECONOMY",
                 price_eur=eur_price,
-                price_original=usd_price,
                 currency="USD",
                 source_url=url,
                 notes=notes,
             )
+        except (UndecodableResponseError, httpx.HTTPError):
+            # Siehe _search_set oben: eine tote Quelle darf nicht als
+            # "kein Preis gefunden" ankommen. Deckt beide _fetch-Aufrufe in
+            # dieser Methode ab (ueber _search_set und die Detailseite).
+            raise
         except Exception as e:
             logger.error("brickeconomy.price_failed", set_number=set_number, error=str(e))
             return None

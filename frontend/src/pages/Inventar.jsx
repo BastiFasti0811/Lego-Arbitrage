@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import StatCard from "../components/StatCard";
+import ValuationStatus from "../components/ValuationStatus";
+import { referenceLinks } from "./inventoryLinks";
 
 const EURO = "\u20ac";
 const PHOTO_ICON = "\u{1F4F8}";
@@ -262,6 +264,7 @@ export default function Inventar() {
   const [editModal, setEditModal] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [lookupLoading, setLookupLoading] = useState(false);
+  const [duplicates, setDuplicates] = useState([]);
   const [addForm, setAddForm] = useState(emptyAddForm());
   const [addPhotoEntries, setAddPhotoEntries] = useState([]);
   const [editPhotoEntries, setEditPhotoEntries] = useState([]);
@@ -294,6 +297,7 @@ export default function Inventar() {
     setAddPhotoEntries([]);
     setAddForm(emptyAddForm());
     setAddModal(false);
+    setDuplicates([]);
   }
 
   function closeEditModal() {
@@ -420,8 +424,23 @@ export default function Inventar() {
     }
   };
 
+  // Both resets below run only from a plain click handler, never from
+  // inside a mutation's own onSuccess: resetting a mutation from within its
+  // own hook-level onSuccess is reentrant and silently drops the pending
+  // success notification (confirmed against the installed query-core: the
+  // per-call onSuccess never fires and status ends at "idle" instead of
+  // "success"). closeAddModal()/closeEditModal() are each called from their
+  // own mutation's onSuccess, so the resets belong here on open instead —
+  // every fresh modal then starts clean regardless of how the previous one
+  // ended, without touching a mutation while it is still mid-dispatch.
+  function openAddModal() {
+    addMutation.reset();
+    setAddModal(true);
+  }
+
   const openEdit = (item) => {
     closeEditModal();
+    editMutation.reset();
     setEditModal(item);
     setEditForm({
       set_name: item.set_name,
@@ -431,6 +450,7 @@ export default function Inventar() {
       buy_date: item.buy_date,
       buy_platform: item.buy_platform || "",
       buy_url: item.buy_url || "",
+      reference_url: item.reference_url || "",
       image_url: item.image_url || "",
       condition: item.condition,
       quantity: String(item.quantity || 1),
@@ -450,6 +470,7 @@ export default function Inventar() {
         buy_date: editForm.buy_date,
         buy_platform: editForm.buy_platform || null,
         buy_url: editForm.buy_url || null,
+        reference_url: editForm.reference_url || null,
         image_url: editForm.image_url || null,
         condition: editForm.condition,
         quantity: parseInt(editForm.quantity || "1", 10),
@@ -480,7 +501,7 @@ export default function Inventar() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-text-primary">Inventar</h1>
-        <button onClick={() => setAddModal(true)} className="bg-lego-yellow text-black font-bold px-4 py-2 rounded-lg text-sm hover:bg-lego-yellow/90 transition-colors">
+        <button onClick={openAddModal} className="bg-lego-yellow text-black font-bold px-4 py-2 rounded-lg text-sm hover:bg-lego-yellow/90 transition-colors">
           + Hinzufügen
         </button>
       </div>
@@ -494,7 +515,7 @@ export default function Inventar() {
         </div>
       )}
 
-      {summary && <p className="text-text-muted text-xs mb-4">Marktwerte werden automatisch alle 6 Stunden aktualisiert.</p>}
+      <ValuationStatus />
 
       {summary?.sell_signals_active > 0 && (
         <div className="bg-sell-signal/10 border border-sell-signal/30 rounded-xl p-4 mb-6 flex items-center gap-3">
@@ -539,6 +560,17 @@ export default function Inventar() {
                     {item.buy_platform && <span>{item.buy_platform}</span>}
                     {item.buy_url && <a href={item.buy_url} target="_blank" rel="noreferrer" className="text-lego-yellow hover:text-lego-yellow/80 transition-colors">Original-Link</a>}
                     {item.image_url && <a href={item.image_url} target="_blank" rel="noreferrer" className="text-lego-blue hover:text-lego-blue/80 transition-colors">Externer Foto-Link</a>}
+                    {referenceLinks(item).map((link) => (
+                      <a
+                        key={link.label}
+                        href={link.href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-lego-yellow hover:underline"
+                      >
+                        {link.label} ↗
+                      </a>
+                    ))}
                   </div>
                   {item.notes && <p className="text-text-muted text-xs mt-2">{item.notes}</p>}
                   {item.sell_signal_active && item.sell_signal_reason && <p className="text-sell-signal text-xs mt-2">{item.sell_signal_reason}</p>}
@@ -620,6 +652,16 @@ export default function Inventar() {
                   </div>
                   <datalist id="platforms-list">{platforms.map((platform) => <option key={platform} value={platform} />)}</datalist>
                   <input type="url" value={editForm.buy_url} onChange={(e) => setEditForm({ ...editForm, buy_url: e.target.value })} placeholder="Original-Link" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
+                  <div>
+                    <label className="block text-xs text-text-muted mb-1">Eigener Referenz-Link</label>
+                    <input
+                      type="url"
+                      value={editForm.reference_url || ""}
+                      onChange={(e) => setEditForm({ ...editForm, reference_url: e.target.value })}
+                      placeholder="https://…"
+                      className="w-full px-3 py-2 rounded-lg bg-bg-primary border border-border text-sm"
+                    />
+                  </div>
                   <div className="grid grid-cols-2 gap-3">
                     <select value={editForm.condition} onChange={(e) => setEditForm({ ...editForm, condition: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm">
                       <option value="NEW_SEALED">Neu & Versiegelt</option>
@@ -665,9 +707,81 @@ export default function Inventar() {
               <div className="grid md:grid-cols-2 gap-4">
                 <div className="space-y-3">
                   <div className="relative">
-                    <input type="text" placeholder="Set-Nummer *" value={addForm.set_number} onChange={(e) => handleSetNumberChange(e.target.value)} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
+                    <input
+                      type="text"
+                      placeholder="Set-Nummer *"
+                      value={addForm.set_number}
+                      onChange={(e) => handleSetNumberChange(e.target.value)}
+                      onBlur={async (e) => {
+                        // Jeder neue Abgleich ist ein neuer Fall: eine
+                        // fehlgeschlagene "Menge erhoehen" fuer die zuvor
+                        // eingetragene Setnummer darf nicht als Fehler unter
+                        // dem naechsten Hinweis auftauchen (Tippen, Tab raus,
+                        // Nummer korrigieren, wieder raus — alles ohne dass
+                        // der Dialog je zu war).
+                        editMutation.reset();
+                        const value = e.target.value.trim();
+                        if (!value) { setDuplicates([]); return; }
+                        try {
+                          setDuplicates(await api.lookupInventory(value));
+                        } catch {
+                          // Der Hinweis ist eine Hilfe, kein Tor: faellt die Abfrage aus,
+                          // laesst sich trotzdem einbuchen.
+                          setDuplicates([]);
+                        }
+                      }}
+                      required
+                      className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]"
+                    />
                     {lookupLoading && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-lego-yellow text-xs animate-pulse">Suche...</span>}
                   </div>
+                  {duplicates.length > 0 && (
+                    <div className="mt-2 p-3 rounded-lg border border-lego-yellow/40 bg-lego-yellow/5 text-xs">
+                      <p className="mb-2">
+                        <strong>{duplicates[0].set_number}</strong> liegt bereits{" "}
+                        {duplicates.reduce((sum, d) => sum + (d.quantity || 1), 0)}× im Bestand
+                        {" "}({duplicates
+                          .map((d) => `${new Date(d.buy_date).toLocaleDateString("de-DE")}, ${d.buy_price} €`)
+                          .join(" · ")}).
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          disabled={editMutation.isPending}
+                          className="px-2 py-1 rounded bg-lego-yellow text-bg-primary font-medium disabled:opacity-50"
+                          onClick={() => {
+                            const target = duplicates[0];
+                            editMutation.mutate(
+                              {
+                                id: target.id,
+                                data: { quantity: (target.quantity || 1) + 1 },
+                                photoFiles: [],
+                                deletedPhotoIds: [],
+                              },
+                              {
+                                // Nur bei Erfolg schliessen: sonst behauptet der
+                                // Dialog eine Mengenerhoehung, die nie ankam.
+                                onSuccess: () => {
+                                  setDuplicates([]);
+                                  closeAddModal();
+                                },
+                              },
+                            );
+                          }}
+                        >
+                          Menge erhöhen
+                        </button>
+                        <button
+                          type="button"
+                          className="px-2 py-1 rounded border border-bg-hover"
+                          onClick={() => setDuplicates([])}
+                        >
+                          Trotzdem neu anlegen
+                        </button>
+                      </div>
+                      {editMutation.isError && <p className="text-no-go text-sm mt-2">{editMutation.error.message}</p>}
+                    </div>
+                  )}
                   <input type="text" placeholder="Set-Name *" value={addForm.set_name} onChange={(e) => setAddForm({ ...addForm, set_name: e.target.value })} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
                   <input type="text" placeholder="Theme" value={addForm.theme} onChange={(e) => setAddForm({ ...addForm, theme: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
                   <div className="grid grid-cols-2 gap-3">
