@@ -14,13 +14,33 @@ def test_median_of_two_sources_is_the_midpoint_not_the_higher():
     assert result.consensus_price == 410.0
 
 
-def test_ebay_active_fallback_counts_as_a_source():
-    # Bei blockierter Sold-Suche liefert der Scraper EBAY_ACTIVE. Ohne Gewicht
-    # verwarf der Konsens diese Quelle lautlos.
+def test_ebay_active_is_not_a_consensus_source():
+    # eBays Verkaufspreis-Suche antwortet 403; was einspringt, ist der Median
+    # offener Angebote — Forderungen, keine Verkaeufe. Als zweites Standbein
+    # eines Konsenses, der die Geldzahlen des Bestands schreibt, taugt das nicht.
+    #
+    # Frueher zaehlte die Quelle mit (Finding M1), und das war damals richtig:
+    # BrickEconomy lieferte seit Projektbeginn nichts, eBay-aktiv war die einzige
+    # verfuegbare zweite Quelle, und ohne sie waere `current_market_price`
+    # dauerhaft leer geblieben. Seit BrickEconomy wieder antwortet, faellt diese
+    # Begruendung weg — gemessen an einem echten Lauf kostet der Ausbau ein Set.
     result = calculate_consensus([_price("EBAY_ACTIVE", 380.0), _price("BRICKECONOMY", 420.0)])
-    assert result.num_sources == 2
-    assert "EBAY_ACTIVE" in result.source_prices
-    assert result.consensus_price > 0
+    assert "EBAY_ACTIVE" not in result.source_prices
+    assert result.num_sources == 1
+    assert result.is_reliable is False
+
+
+def test_excluding_a_source_is_not_the_same_as_weighting_it_zero():
+    # Die Falle beim Ausbauen: eine Quelle mit Gewicht 0.0 steht weiterhin in
+    # `_source_weights()`, landet damit in `raw_prices` und zaehlt sowohl fuer
+    # `num_sources` als auch fuer den Median. Das Gewicht wirkt erst im
+    # gewichteten Mittel. Nur wer ganz aus der Gewichtstabelle faellt, ist
+    # wirklich draussen — deshalb reicht ZERO_WEIGHT_SOURCES hier nicht.
+    zero_weighted = calculate_consensus([_price("AMAZON", 380.0), _price("BRICKECONOMY", 420.0)])
+    assert zero_weighted.num_sources == 2
+
+    excluded = calculate_consensus([_price("EBAY_ACTIVE", 380.0), _price("BRICKECONOMY", 420.0)])
+    assert excluded.num_sources == 1
 
 
 def test_single_source_consensus_is_flagged_unreliable():
@@ -94,20 +114,29 @@ async def test_unreliable_consensus_is_not_persisted_as_market_price(monkeypatch
 
 
 def test_unreliable_source_is_included_but_flags_the_consensus():
-    # Review-Finding M1: EBAY_ACTIVE traegt is_reliable=False und wurde
-    # deshalb vor der Gewichtung aussortiert — das Gewicht war wirkungslos.
-    active = ScrapedPrice(source="EBAY_ACTIVE", price_eur=380.0, is_reliable=False)
-    result = calculate_consensus([active, _price("BRICKECONOMY", 420.0)])
-    assert "EBAY_ACTIVE" in result.source_prices
+    # Review-Finding M1: eine Quelle mit is_reliable=False wurde vor der
+    # Gewichtung aussortiert — ihr Gewicht war damit wirkungslos. Unsicherheit
+    # ist ein Qualitaetsmerkmal, kein Ausschlusskriterium; sie markiert den
+    # Konsens, statt die Quelle verschwinden zu lassen.
+    #
+    # Das Beispiel war frueher EBAY_ACTIVE. Diese Quelle ist inzwischen ganz aus
+    # dem Konsens genommen, der hier gepruefte Mechanismus gilt unveraendert.
+    soft = ScrapedPrice(source="EBAY_SOLD", price_eur=380.0, is_reliable=False)
+    result = calculate_consensus([soft, _price("BRICKECONOMY", 420.0)])
+    assert "EBAY_SOLD" in result.source_prices
     assert result.num_sources == 2
     assert result.is_reliable is False
 
 
 @pytest.mark.asyncio
 async def test_two_source_consensus_is_persisted_even_if_one_source_is_soft(monkeypatch):
-    # Produktionsbefund: mit BRICKMERGE + EBAY_ACTIVE (unsicher) wurde NIE ein
-    # Marktpreis geschrieben — die Sperre auf is_reliable war zu grob und haette
-    # current_market_price dauerhaft leer gelassen.
+    # Produktionsbefund: mit einer sicheren und einer unsicheren Quelle wurde NIE
+    # ein Marktpreis geschrieben — die Sperre auf is_reliable war zu grob und
+    # haette current_market_price dauerhaft leer gelassen.
+    #
+    # Das Paar war frueher BRICKMERGE + EBAY_ACTIVE. Letzteres zaehlt seit dem
+    # Ausbau nicht mehr im Konsens, also steht hier ein anderes unsicheres Paar;
+    # geprueft wird weiterhin, dass Unsicherheit die Speicherung nicht blockiert.
     from types import SimpleNamespace
 
     lego_set = SimpleNamespace(id=1, set_number="42143", uvp_eur=None, current_market_price=None,
@@ -130,7 +159,7 @@ async def test_two_source_consensus_is_persisted_even_if_one_source_is_soft(monk
             pass
 
     reliable = ScrapedPrice(source="BRICKMERGE", price_eur=376.99)
-    soft = ScrapedPrice(source="EBAY_ACTIVE", price_eur=390.0, is_reliable=False)
+    soft = ScrapedPrice(source="EBAY_SOLD", price_eur=390.0, is_reliable=False)
 
     monkeypatch.setattr(scrape_daily, "async_session", lambda: _Session())
     monkeypatch.setattr(scrape_daily, "PRICE_SCRAPERS", [lambda: _Scraper(reliable), lambda: _Scraper(soft)])
