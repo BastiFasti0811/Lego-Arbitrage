@@ -16,7 +16,10 @@ async function request(path, options = {}) {
       return;
     }
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || `API Error ${res.status}`);
+    // detail ist meistens ein String, beim 409 auf /valuation/run aber ein
+    // Objekt ({message, run_id}) — sonst landet "[object Object]" im UI.
+    const detailMessage = typeof err.detail === "string" ? err.detail : err.detail?.message;
+    throw new Error(detailMessage || `API Error ${res.status}`);
   }
   return res.json();
 }
@@ -173,6 +176,11 @@ export const api = {
   splitInventory: (itemId, splitQuantity) =>
     request(`/inventory/${itemId}/split`, { method: "POST", body: JSON.stringify({ split_quantity: splitQuantity }) }),
   listProductGroups: () => request("/inventory/product-groups"),
+  startValuationRun: () => request("/inventory/valuation/run", { method: "POST" }),
+  listValuationRuns: (limit = 20) => request(`/inventory/valuation/runs?limit=${limit}`),
+  getValuationRun: (id) => request(`/inventory/valuation/runs/${id}`),
+  lookupInventory: (setNumber) =>
+    request(`/inventory/lookup?set_number=${encodeURIComponent(setNumber)}`),
 
   // Settings
   listSettings: (category) => request(`/settings/${category ? `?category=${category}` : ""}`),

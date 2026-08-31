@@ -3,6 +3,7 @@
 import re
 from html import unescape
 
+import httpx
 import structlog
 from bs4 import BeautifulSoup
 
@@ -12,6 +13,7 @@ from app.scrapers.base import (
     ScrapedOffer,
     ScrapedPrice,
     ScrapedSetInfo,
+    UndecodableResponseError,
     parse_de_price,
 )
 
@@ -58,8 +60,6 @@ class BrickMergeScraper(BaseScraper):
         the body undecoded (compression mismatch), so this client forces
         Accept-Encoding: identity.
         """
-        import httpx
-
         await self._delay()
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -163,6 +163,14 @@ class BrickMergeScraper(BaseScraper):
                 source_url=f"{BASE_URL}/?find={set_number}",
                 notes="BrickMerge Bestpreis (ab-Preis der Detailseite)",
             )
+        except (UndecodableResponseError, httpx.HTTPError):
+            # _fetch_detail_page haengt nicht am gemeinsamen _fetch (siehe
+            # dort) und kennt darum kein UndecodableResponseError selbst -
+            # der Typ bleibt trotzdem hier stehen, falls das je zusammengeht.
+            # httpx.HTTPError ist der eigentliche Treffer: ein Timeout oder
+            # abgebrochener Verbindungsaufbau beim eigenen Client dieser
+            # Methode war bisher ununterscheidbar von "keine Angebote".
+            raise
         except Exception as e:
             logger.error("brickmerge.price_failed", set_number=set_number, error=str(e))
             return None

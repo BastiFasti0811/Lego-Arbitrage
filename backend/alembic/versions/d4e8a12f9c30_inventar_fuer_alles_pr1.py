@@ -6,7 +6,7 @@ Backfill: Bestand ist ausnahmslos Lego — item_type/product_group kommen
 per server_default, search_query wird aus der Set-Nummer erzeugt.
 
 Revision ID: d4e8a12f9c30
-Revises: b8e5c30d7f14
+Revises: d3a91c2f80b7
 Create Date: 2026-08-30 12:00:00.000000
 """
 
@@ -17,7 +17,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "d4e8a12f9c30"
-down_revision: str | None = "b8e5c30d7f14"
+down_revision: str | None = "d3a91c2f80b7"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

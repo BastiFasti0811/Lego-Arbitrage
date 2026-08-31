@@ -13,6 +13,14 @@ from app.models.offer import Offer, OfferCondition, OfferPlatform, OfferStatus
 from app.models.price import PriceRecord, PriceSource
 from app.models.set import EOLStatus, LegoSet, SetCategory, ThemeTier
 from app.models.settings import AppSetting
+from app.models.valuation_run import (
+    ValuationOutcome,
+    ValuationRun,
+    ValuationRunItem,
+    ValuationRunStatus,
+    ValuationSkipReason,
+    ValuationTrigger,
+)
 
 __all__ = [
     "Base",
@@ -45,4 +53,10 @@ __all__ = [
     "ListingStatus",
     "PriceType",
     "AppSetting",
+    "ValuationRun",
+    "ValuationRunItem",
+    "ValuationTrigger",
+    "ValuationRunStatus",
+    "ValuationOutcome",
+    "ValuationSkipReason",
 ]

@@ -60,5 +60,5 @@ test-results/
 .playwright-cli/
 output/
 
-# SDD-Arbeitsverzeichnis (Session-Scratch, nie committen)
+# Scratch der Subagent-Ausfuehrung (Ledger, Briefs, Review-Pakete)
 .superpowers/

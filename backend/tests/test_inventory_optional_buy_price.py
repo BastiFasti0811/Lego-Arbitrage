@@ -31,6 +31,7 @@ def _item(**overrides):
         buy_date=date(2026, 8, 1),
         buy_platform=None,
         buy_url=None,
+        reference_url=None,
         condition="USED_COMPLETE",
         quantity=1,
         notes=None,

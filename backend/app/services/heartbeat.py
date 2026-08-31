@@ -10,6 +10,7 @@ loop would otherwise raise "attached to a different loop".
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 import structlog
 from sqlalchemy import select
@@ -19,6 +20,12 @@ from sqlalchemy.pool import NullPool
 
 from app.config import settings
 from app.models.heartbeat import TaskHeartbeat
+
+# Nur für den Typ gebraucht: heartbeat.py ist Service-Schicht, ValuationRun
+# ist Modell-Schicht. Ein echter Import würde das zur Laufzeit koppeln, ohne
+# dass die Funktion darunter je etwas anderes als den Typ braucht.
+if TYPE_CHECKING:
+    from app.models.valuation_run import ValuationRun
 
 logger = structlog.get_logger()
 
@@ -257,6 +264,47 @@ def evaluate_data_freshness(
         age_seconds=age,
         max_age_seconds=max_age,
         detail=f"Letzter Preis vor {age / 3600:.1f} h",
+    )
+
+
+# Unterhalb dieser Anzahl sagt der Anteil nichts: bei zwei Sets ist ein
+# Übersprung schon die Hälfte.
+MIN_ITEMS_FOR_COVERAGE_CHECK = 5
+MAX_SKIPPED_SHARE = 0.5
+
+
+def evaluate_valuation_coverage(run: "ValuationRun | None", now: datetime) -> TaskHealth | None:
+    """Nutzarbeit der Bewertung: ein Lauf muss Werte erzeugen, nicht nur laufen.
+
+    Der Heartbeat sieht nur, dass der Task durchlief. Ein Set bleibt auf zwei
+    Wegen ohne Marktwert — übersprungen (Quellenlage reicht nicht) oder
+    fehlgeschlagen (Exception im Bewertungscode) —, und beide zählen hier
+    gegen den Anteil: ein Lauf, der nur noch fehlschlägt statt überspringt,
+    ist derselbe Ausfall wie der, der fünf Monate unbemerkt blieb, nur mit
+    anderer Fehlerart. Rein (kein I/O); gibt ein synthetisches Problem oder
+    None zurück.
+    """
+    if run is None or run.items_total < MIN_ITEMS_FOR_COVERAGE_CHECK:
+        return None
+
+    without_value = run.items_skipped + run.items_failed
+    share = without_value / run.items_total
+    if share <= MAX_SKIPPED_SHARE:
+        return None
+
+    return TaskHealth(
+        task_name="pipeline.valuation_coverage",
+        status="stale",
+        last_success_at=run.started_at,
+        last_run_at=run.started_at,
+        last_status=None,
+        age_seconds=(now - run.started_at).total_seconds() if run.started_at else None,
+        max_age_seconds=0,
+        detail=(
+            f"Letzter Bewertungslauf: {without_value} von {run.items_total} Sets ohne "
+            f"Marktwert ({run.items_skipped} übersprungen, {run.items_failed} "
+            f"fehlgeschlagen) — Quellenlage im Protokoll prüfen"
+        ),
     )
 
 
