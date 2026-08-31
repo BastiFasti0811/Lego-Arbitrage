@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import StatCard from "../components/StatCard";
+import ListingBadges from "../components/ListingBadges";
+import ListingManager from "../components/ListingManager";
 import ValuationStatus from "../components/ValuationStatus";
 import { referenceLinks } from "./inventoryLinks";
 
@@ -10,11 +12,17 @@ const PHOTO_ICON = "\u{1F4F8}";
 const BOX_ICON = "\u{1F4E6}";
 const LINK_ICON = "\u2197";
 const MAX_PREVIEW_PHOTOS = 4;
+const SELL_PLATFORM_QUICK_PICKS = [
+  { value: "KLEINANZEIGEN", label: "Kleinanzeigen" },
+  { value: "EBAY", label: "eBay" },
+];
 
 const emptyAddForm = () => ({
+  item_type: "LEGO",
   set_number: "",
   set_name: "",
   theme: "",
+  product_group: "",
   buy_price: "",
   buy_shipping: "0",
   buy_date: new Date().toISOString().split("T")[0],
@@ -266,6 +274,9 @@ export default function Inventar() {
   const [lookupLoading, setLookupLoading] = useState(false);
   const [duplicates, setDuplicates] = useState([]);
   const [addForm, setAddForm] = useState(emptyAddForm());
+  const [listingItem, setListingItem] = useState(null);
+  const [typeFilter, setTypeFilter] = useState("");
+  const [groupFilter, setGroupFilter] = useState("");
   const [addPhotoEntries, setAddPhotoEntries] = useState([]);
   const [editPhotoEntries, setEditPhotoEntries] = useState([]);
   const [editRemovedPhotoIds, setEditRemovedPhotoIds] = useState([]);
@@ -286,10 +297,16 @@ export default function Inventar() {
   }, []);
 
   const { data: platforms = [] } = useQuery({ queryKey: ["platforms"], queryFn: api.listPlatforms });
+  const { data: productGroups = [] } = useQuery({ queryKey: ["productGroups"], queryFn: api.listProductGroups });
   const { data: summary } = useQuery({ queryKey: ["portfolio"], queryFn: api.portfolioSummary });
   const { data: items, isLoading } = useQuery({
-    queryKey: ["inventory"],
-    queryFn: () => api.listInventory({ status: "HOLDING" }),
+    queryKey: ["inventory", typeFilter, groupFilter],
+    queryFn: () =>
+      api.listInventory({
+        status: "HOLDING",
+        ...(typeFilter && { item_type: typeFilter }),
+        ...(groupFilter && { product_group: groupFilter }),
+      }),
   });
 
   function closeAddModal() {
@@ -328,12 +345,23 @@ export default function Inventar() {
 
   const sellMutation = useMutation({
     mutationFn: ({ id, data }) => api.sellInventory(id, data),
-    onSuccess: () => {
+    onSuccess: (response) => {
       setSellModal(null);
       setSellPrice("");
       queryClient.invalidateQueries({ queryKey: ["inventory"] });
       queryClient.invalidateQueries({ queryKey: ["portfolio"] });
       queryClient.invalidateQueries({ queryKey: ["history"] });
+      const stillOpen = (response?.listings || []).some((x) => x.status === "ACTIVE" || x.status === "PAUSED");
+      if (stillOpen) {
+        setListingItem(response);
+      }
+    },
+  });
+
+  const splitMutation = useMutation({
+    mutationFn: (id) => api.splitInventory(id, 1),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["inventory"] });
     },
   });
 
@@ -445,7 +473,9 @@ export default function Inventar() {
     setEditForm({
       set_name: item.set_name,
       theme: item.theme || "",
-      buy_price: String(item.buy_price),
+      product_group: item.product_group || "",
+      search_query: item.search_query || "",
+      buy_price: item.buy_price != null ? String(item.buy_price) : "",
       buy_shipping: String(item.buy_shipping),
       buy_date: item.buy_date,
       buy_platform: item.buy_platform || "",
@@ -464,8 +494,15 @@ export default function Inventar() {
       id: editModal.id,
       data: {
         set_name: editForm.set_name,
+        // Warengruppe ist bei Lego-Artikeln Invariante ("Lego", siehe CONTEXT.md) - den Key
+        // fuer Lego gar nicht senden, dann laesst exclude_unset den gespeicherten Wert in Ruhe.
+        // Bei GENERIC nie explizit null schicken (Backend lehnt das ab): leeres Feld -> undefined
+        // weglassen statt null senden.
+        product_group:
+          editModal.item_type === "GENERIC" ? editForm.product_group.trim() || undefined : undefined,
+        search_query: editForm.search_query || null,
         theme: editForm.theme || null,
-        buy_price: parseFloat(editForm.buy_price),
+        buy_price: editForm.buy_price === "" ? null : Number(editForm.buy_price),
         buy_shipping: parseFloat(editForm.buy_shipping || "0"),
         buy_date: editForm.buy_date,
         buy_platform: editForm.buy_platform || null,
@@ -485,7 +522,7 @@ export default function Inventar() {
     e.preventDefault();
     addMutation.mutate({
       ...addForm,
-      buy_price: parseFloat(addForm.buy_price),
+      buy_price: addForm.buy_price === "" ? null : Number(addForm.buy_price),
       buy_shipping: parseFloat(addForm.buy_shipping || "0"),
       quantity: parseInt(addForm.quantity || "1", 10),
       buy_url: addForm.buy_url || null,
@@ -526,6 +563,34 @@ export default function Inventar() {
         </div>
       )}
 
+      <div className="bg-bg-card border border-border rounded-xl p-4 mb-6 flex flex-wrap items-center gap-4">
+        <div>
+          <label className="block text-text-muted text-xs mb-1">Typ</label>
+          <select
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value)}
+            className="bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm"
+          >
+            <option value="">Alle</option>
+            <option value="LEGO">Lego</option>
+            <option value="GENERIC">Sonstiges</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-text-muted text-xs mb-1">Warengruppe</label>
+          <select
+            value={groupFilter}
+            onChange={(e) => setGroupFilter(e.target.value)}
+            className="bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm"
+          >
+            <option value="">Alle</option>
+            {productGroups.map((group) => (
+              <option key={group} value={group}>{group}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
       {isLoading ? (
         <div className="space-y-3">
           {[...Array(3)].map((_, i) => (
@@ -548,7 +613,7 @@ export default function Inventar() {
               <div className="flex items-start justify-between gap-4">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
-                    <span className="text-lego-yellow font-[family-name:var(--font-mono)] text-sm font-semibold">{item.set_number}</span>
+                    <span className="text-lego-yellow font-[family-name:var(--font-mono)] text-sm font-semibold">{item.set_number ?? item.product_group}</span>
                     {item.quantity > 1 && <span className="bg-lego-blue/20 text-lego-blue text-xs px-1.5 py-0.5 rounded font-[family-name:var(--font-mono)] font-bold">x{item.quantity}</span>}
                     {item.photos?.length > 0 && <span className="bg-lego-blue/10 text-lego-blue text-xs px-2 py-0.5 rounded-full">{PHOTO_ICON} {item.photos.length}</span>}
                     {item.sell_signal_active && <span className="bg-sell-signal/20 text-sell-signal text-xs px-2 py-0.5 rounded-full animate-pulse font-medium">SELL</span>}
@@ -578,7 +643,9 @@ export default function Inventar() {
                 </div>
                 <div className="text-right shrink-0">
                   <div className="text-text-muted text-xs">Kaufpreis</div>
-                  <div className="text-text-primary font-[family-name:var(--font-mono)] font-semibold">{formatMoney(item.total_invested)}</div>
+                  <div className="text-text-primary font-[family-name:var(--font-mono)] font-semibold">
+                    {item.total_invested != null ? formatMoney(item.total_invested) : "—"}
+                  </div>
                   {item.current_market_price && (
                     <>
                       <div className="text-text-muted text-xs mt-2">Marktwert</div>
@@ -589,11 +656,24 @@ export default function Inventar() {
                       </div>
                     </>
                   )}
+                  <div className="mt-2 flex justify-end">
+                    <ListingBadges item={item} />
+                  </div>
                 </div>
               </div>
               <div className="flex gap-2 mt-3 pt-3 border-t border-border/50">
                 <button onClick={() => openEdit(item)} className="bg-lego-blue/10 text-lego-blue text-xs px-3 py-1.5 rounded-lg hover:bg-lego-blue/20 transition-colors">Bearbeiten</button>
                 <SellDropdown item={item} onMarkSold={() => { setSellModal(item); setSellPrice(""); setSellPlatform(""); }} />
+                <button onClick={() => setListingItem(item)} className="bg-lego-yellow/10 text-lego-yellow text-xs px-3 py-1.5 rounded-lg hover:bg-lego-yellow/20 transition-colors">Listings</button>
+                {item.quantity > 1 && (
+                  <button
+                    onClick={() => splitMutation.mutate(item.id)}
+                    disabled={splitMutation.isPending}
+                    className="bg-lego-blue/10 text-lego-blue text-xs px-3 py-1.5 rounded-lg hover:bg-lego-blue/20 transition-colors disabled:opacity-50"
+                  >
+                    Teilen
+                  </button>
+                )}
                 <button onClick={() => { if (confirm(`${item.set_name} entfernen?`)) deleteMutation.mutate(item.id); }} className="bg-no-go/10 text-no-go text-xs px-3 py-1.5 rounded-lg hover:bg-no-go/20 transition-colors">Entfernen</button>
               </div>
             </div>
@@ -606,7 +686,7 @@ export default function Inventar() {
           <div className="bg-bg-card border border-border rounded-xl p-6 w-full max-w-md my-6">
             <h2 className="text-text-primary text-lg font-bold mb-4">Verkauft markieren</h2>
             <div className="text-text-muted text-sm mb-4">
-              <span className="text-lego-yellow font-[family-name:var(--font-mono)]">{sellModal.set_number}</span> - {sellModal.set_name}
+              <span className="text-lego-yellow font-[family-name:var(--font-mono)]">{sellModal.set_number ?? sellModal.product_group}</span> - {sellModal.set_name}
             </div>
             <div className="space-y-3">
               <div>
@@ -619,6 +699,20 @@ export default function Inventar() {
               </div>
               <div>
                 <label className="block text-text-muted text-xs mb-1">Plattform</label>
+                {sellModal.listings?.length > 0 && (
+                  <div className="flex gap-2 mb-2">
+                    {SELL_PLATFORM_QUICK_PICKS.map((p) => (
+                      <button
+                        key={p.value}
+                        type="button"
+                        onClick={() => setSellPlatform(p.label)}
+                        className="text-xs px-2 py-1 rounded bg-bg-hover text-text-primary border border-border"
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <input type="text" value={sellPlatform} onChange={(e) => setSellPlatform(e.target.value)} placeholder="z.B. eBay" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
               </div>
             </div>
@@ -636,14 +730,29 @@ export default function Inventar() {
         <div className="fixed inset-0 z-50 flex items-start justify-center md:items-center bg-black/60 backdrop-blur-sm overflow-y-auto p-4">
           <div className="bg-bg-card border border-border rounded-xl p-6 w-full max-w-2xl my-6">
             <h2 className="text-text-primary text-lg font-bold mb-2">Set bearbeiten</h2>
-            <p className="text-lego-yellow font-[family-name:var(--font-mono)] text-sm mb-4">{editModal.set_number}</p>
+            <p className="text-lego-yellow font-[family-name:var(--font-mono)] text-sm mb-4">{editModal.set_number ?? editModal.product_group}</p>
             <form onSubmit={handleEdit} className="space-y-4">
               <div className="grid md:grid-cols-2 gap-4">
                 <div className="space-y-3">
                   <input type="text" value={editForm.set_name} onChange={(e) => setEditForm({ ...editForm, set_name: e.target.value })} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
                   <input type="text" value={editForm.theme} onChange={(e) => setEditForm({ ...editForm, theme: e.target.value })} placeholder="Theme" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
+                  {editModal.item_type === "GENERIC" && (
+                    <>
+                      <input type="text" list="product-groups-edit-list" value={editForm.product_group} onChange={(e) => setEditForm({ ...editForm, product_group: e.target.value })} placeholder="Warengruppe" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
+                      <datalist id="product-groups-edit-list">{productGroups.map((group) => <option key={group} value={group} />)}</datalist>
+                    </>
+                  )}
+                  <input type="text" value={editForm.search_query} onChange={(e) => setEditForm({ ...editForm, search_query: e.target.value })} placeholder="Such-Query fuer Marktpreis-Recherche" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
                   <div className="grid grid-cols-2 gap-3">
-                    <input type="number" step="0.01" value={editForm.buy_price} onChange={(e) => setEditForm({ ...editForm, buy_price: e.target.value })} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={editForm.buy_price}
+                      onChange={(e) => setEditForm({ ...editForm, buy_price: e.target.value })}
+                      required={editModal.item_type !== "GENERIC"}
+                      placeholder={editModal.item_type === "GENERIC" ? "unbekannt" : undefined}
+                      className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]"
+                    />
                     <input type="number" step="0.01" value={editForm.buy_shipping} onChange={(e) => setEditForm({ ...editForm, buy_shipping: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
                   </div>
                   <div className="grid grid-cols-2 gap-3">
@@ -706,86 +815,130 @@ export default function Inventar() {
             <form onSubmit={handleAdd} className="space-y-4">
               <div className="grid md:grid-cols-2 gap-4">
                 <div className="space-y-3">
-                  <div className="relative">
-                    <input
-                      type="text"
-                      placeholder="Set-Nummer *"
-                      value={addForm.set_number}
-                      onChange={(e) => handleSetNumberChange(e.target.value)}
-                      onBlur={async (e) => {
-                        // Jeder neue Abgleich ist ein neuer Fall: eine
-                        // fehlgeschlagene "Menge erhoehen" fuer die zuvor
-                        // eingetragene Setnummer darf nicht als Fehler unter
-                        // dem naechsten Hinweis auftauchen (Tippen, Tab raus,
-                        // Nummer korrigieren, wieder raus — alles ohne dass
-                        // der Dialog je zu war).
-                        editMutation.reset();
-                        const value = e.target.value.trim();
-                        if (!value) { setDuplicates([]); return; }
-                        try {
-                          setDuplicates(await api.lookupInventory(value));
-                        } catch {
-                          // Der Hinweis ist eine Hilfe, kein Tor: faellt die Abfrage aus,
-                          // laesst sich trotzdem einbuchen.
-                          setDuplicates([]);
-                        }
-                      }}
-                      required
-                      className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]"
-                    />
-                    {lookupLoading && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-lego-yellow text-xs animate-pulse">Suche...</span>}
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setAddForm((prev) => ({ ...prev, item_type: "LEGO" }))}
+                      className={`flex-1 text-sm px-3 py-2 rounded-lg font-medium transition-colors ${
+                        addForm.item_type === "LEGO" ? "bg-lego-yellow text-black" : "bg-bg-hover text-text-secondary hover:text-text-primary"
+                      }`}
+                    >
+                      Lego
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAddForm((prev) => ({ ...prev, item_type: "GENERIC" }))}
+                      className={`flex-1 text-sm px-3 py-2 rounded-lg font-medium transition-colors ${
+                        addForm.item_type === "GENERIC" ? "bg-lego-yellow text-black" : "bg-bg-hover text-text-secondary hover:text-text-primary"
+                      }`}
+                    >
+                      Sonstiges
+                    </button>
                   </div>
-                  {duplicates.length > 0 && (
-                    <div className="mt-2 p-3 rounded-lg border border-lego-yellow/40 bg-lego-yellow/5 text-xs">
-                      <p className="mb-2">
-                        <strong>{duplicates[0].set_number}</strong> liegt bereits{" "}
-                        {duplicates.reduce((sum, d) => sum + (d.quantity || 1), 0)}× im Bestand
-                        {" "}({duplicates
-                          .map((d) => `${new Date(d.buy_date).toLocaleDateString("de-DE")}, ${d.buy_price} €`)
-                          .join(" · ")}).
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          disabled={editMutation.isPending}
-                          className="px-2 py-1 rounded bg-lego-yellow text-bg-primary font-medium disabled:opacity-50"
-                          onClick={() => {
-                            const target = duplicates[0];
-                            editMutation.mutate(
-                              {
-                                id: target.id,
-                                data: { quantity: (target.quantity || 1) + 1 },
-                                photoFiles: [],
-                                deletedPhotoIds: [],
-                              },
-                              {
-                                // Nur bei Erfolg schliessen: sonst behauptet der
-                                // Dialog eine Mengenerhoehung, die nie ankam.
-                                onSuccess: () => {
-                                  setDuplicates([]);
-                                  closeAddModal();
-                                },
-                              },
-                            );
+                  {addForm.item_type === "LEGO" ? (
+                    <>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          placeholder="Set-Nummer *"
+                          value={addForm.set_number}
+                          onChange={(e) => handleSetNumberChange(e.target.value)}
+                          onBlur={async (e) => {
+                            // Jeder neue Abgleich ist ein neuer Fall: eine
+                            // fehlgeschlagene "Menge erhoehen" fuer die zuvor
+                            // eingetragene Setnummer darf nicht als Fehler unter
+                            // dem naechsten Hinweis auftauchen (Tippen, Tab raus,
+                            // Nummer korrigieren, wieder raus — alles ohne dass
+                            // der Dialog je zu war).
+                            editMutation.reset();
+                            const value = e.target.value.trim();
+                            if (!value) { setDuplicates([]); return; }
+                            try {
+                              setDuplicates(await api.lookupInventory(value));
+                            } catch {
+                              // Der Hinweis ist eine Hilfe, kein Tor: faellt die Abfrage aus,
+                              // laesst sich trotzdem einbuchen.
+                              setDuplicates([]);
+                            }
                           }}
-                        >
-                          Menge erhöhen
-                        </button>
-                        <button
-                          type="button"
-                          className="px-2 py-1 rounded border border-bg-hover"
-                          onClick={() => setDuplicates([])}
-                        >
-                          Trotzdem neu anlegen
-                        </button>
+                          required
+                          className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]"
+                        />
+                        {lookupLoading && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-lego-yellow text-xs animate-pulse">Suche...</span>}
                       </div>
-                      {editMutation.isError && <p className="text-no-go text-sm mt-2">{editMutation.error.message}</p>}
-                    </div>
+                      {duplicates.length > 0 && (
+                        <div className="mt-2 p-3 rounded-lg border border-lego-yellow/40 bg-lego-yellow/5 text-xs">
+                          <p className="mb-2">
+                            <strong>{duplicates[0].set_number}</strong> liegt bereits{" "}
+                            {duplicates.reduce((sum, d) => sum + (d.quantity || 1), 0)}× im Bestand
+                            {" "}({duplicates
+                              .map((d) => `${new Date(d.buy_date).toLocaleDateString("de-DE")}, ${d.buy_price != null ? `${d.buy_price} €` : "ohne Kaufpreis"}`)
+                              .join(" · ")}).
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              disabled={editMutation.isPending}
+                              className="px-2 py-1 rounded bg-lego-yellow text-bg-primary font-medium disabled:opacity-50"
+                              onClick={() => {
+                                const target = duplicates[0];
+                                editMutation.mutate(
+                                  {
+                                    id: target.id,
+                                    data: { quantity: (target.quantity || 1) + 1 },
+                                    photoFiles: [],
+                                    deletedPhotoIds: [],
+                                  },
+                                  {
+                                    // Nur bei Erfolg schliessen: sonst behauptet der
+                                    // Dialog eine Mengenerhoehung, die nie ankam.
+                                    onSuccess: () => {
+                                      setDuplicates([]);
+                                      closeAddModal();
+                                    },
+                                  },
+                                );
+                              }}
+                            >
+                              Menge erhöhen
+                            </button>
+                            <button
+                              type="button"
+                              className="px-2 py-1 rounded border border-bg-hover"
+                              onClick={() => setDuplicates([])}
+                            >
+                              Trotzdem neu anlegen
+                            </button>
+                          </div>
+                          {editMutation.isError && <p className="text-no-go text-sm mt-2">{editMutation.error.message}</p>}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <input
+                        type="text"
+                        list="product-groups-add-list"
+                        placeholder="Warengruppe"
+                        value={addForm.product_group}
+                        onChange={(e) => setAddForm({ ...addForm, product_group: e.target.value })}
+                        className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm"
+                      />
+                      <datalist id="product-groups-add-list">{productGroups.map((group) => <option key={group} value={group} />)}</datalist>
+                    </>
                   )}
                   <input type="text" placeholder="Set-Name *" value={addForm.set_name} onChange={(e) => setAddForm({ ...addForm, set_name: e.target.value })} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
                   <input type="text" placeholder="Theme" value={addForm.theme} onChange={(e) => setAddForm({ ...addForm, theme: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
                   <div className="grid grid-cols-2 gap-3">
-                    <input type="number" step="0.01" placeholder={`Kaufpreis (${EURO})`} value={addForm.buy_price} onChange={(e) => setAddForm({ ...addForm, buy_price: e.target.value })} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
+                    <input
+                      type="number"
+                      step="0.01"
+                      placeholder={addForm.item_type === "GENERIC" ? "unbekannt" : `Kaufpreis (${EURO})`}
+                      value={addForm.buy_price}
+                      onChange={(e) => setAddForm({ ...addForm, buy_price: e.target.value })}
+                      required={addForm.item_type !== "GENERIC"}
+                      className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]"
+                    />
                     <input type="number" step="0.01" placeholder={`Versand (${EURO})`} value={addForm.buy_shipping} onChange={(e) => setAddForm({ ...addForm, buy_shipping: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
                   </div>
                   <div className="grid grid-cols-2 gap-3">
@@ -828,6 +981,14 @@ export default function Inventar() {
             </form>
           </div>
         </div>
+      )}
+
+      {listingItem && (
+        <ListingManager
+          item={listingItem}
+          onClose={() => setListingItem(null)}
+          onChanged={() => queryClient.invalidateQueries({ queryKey: ["inventory"] })}
+        />
       )}
     </div>
   );

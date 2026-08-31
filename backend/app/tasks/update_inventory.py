@@ -220,7 +220,13 @@ async def _update_valuations_async(run_id: int | None = None) -> dict:
             uvp_by_set = {row.set_number: row.uvp_eur for row in set_rows}
 
             result = await session.execute(
-                select(InventoryItem).where(InventoryItem.status == InventoryStatus.HOLDING.value)
+                # Nur Artikel mit Set-Nummer: der Lauf bewertet ueber die
+                # Lego-Preisquellen; GENERIC-Artikel (set_number NULL) werden
+                # laut Spec nie automatisch bewertet (PR 1).
+                select(InventoryItem).where(
+                    InventoryItem.status == InventoryStatus.HOLDING.value,
+                    InventoryItem.set_number.is_not(None),
+                )
             )
             items = result.scalars().all()
 

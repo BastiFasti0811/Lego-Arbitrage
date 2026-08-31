@@ -4,22 +4,30 @@ from base64 import b64decode
 from binascii import Error as BinasciiError
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from shutil import rmtree
+from shutil import copy2, rmtree
 from urllib.parse import urlencode
 from uuid import uuid4
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.routes.listings import ListingResponse, open_listing_responses
 from app.config import settings
 from app.engine.roi_calculator import calculate_ebay_fees
 from app.models import AnalysisHistoryEntry, DealFeedback, LegoSet, get_session
-from app.models.inventory import InventoryItem, InventoryStatus
+from app.models.inventory import (
+    LEGO_PRODUCT_GROUP,
+    PRODUCT_GROUP_SUGGESTIONS,
+    InventoryItem,
+    InventoryItemType,
+    InventoryStatus,
+)
 from app.models.inventory_photo import InventoryPhoto
+from app.models.listing import OPEN_LISTING_STATUSES, ListingStatus
 from app.models.valuation_run import (
     ValuationRun,
     ValuationRunItem,
@@ -55,11 +63,14 @@ class InventoryPhotoUploadRequest(BaseModel):
 
 
 class InventoryAdd(BaseModel):
-    set_number: str
+    item_type: str = InventoryItemType.LEGO.value
+    set_number: str | None = None
     set_name: str
+    product_group: str | None = None
+    search_query: str | None = None
     theme: str | None = None
     image_url: str | None = None
-    buy_price: float
+    buy_price: float | None = None
     buy_shipping: float = 0.0
     buy_date: date
     buy_platform: str | None = None
@@ -69,9 +80,26 @@ class InventoryAdd(BaseModel):
     quantity: int = 1
     notes: str | None = None
 
+    @model_validator(mode="after")
+    def _apply_type_rules(self):
+        if self.item_type not in (t.value for t in InventoryItemType):
+            raise ValueError(f"Unbekannter item_type: {self.item_type}")
+        if self.item_type == InventoryItemType.LEGO.value:
+            if not (self.set_number or "").strip():
+                raise ValueError("Set-Nummer ist bei Lego-Artikeln Pflicht")
+            self.product_group = LEGO_PRODUCT_GROUP
+            if not self.search_query:
+                self.search_query = f"LEGO {self.set_number}"
+        else:
+            self.set_number = None
+            self.product_group = (self.product_group or "").strip() or "Diverses"
+        return self
+
 
 class InventoryUpdate(BaseModel):
     set_name: str | None = None
+    product_group: str | None = None
+    search_query: str | None = None
     theme: str | None = None
     image_url: str | None = None
     buy_price: float | None = None
@@ -84,11 +112,21 @@ class InventoryUpdate(BaseModel):
     quantity: int | None = None
     notes: str | None = None
 
+    @model_validator(mode="after")
+    def _reject_null_product_group(self):
+        if "product_group" in self.model_fields_set and self.product_group is None:
+            raise ValueError("product_group darf nicht null sein")
+        return self
+
 
 class SellRequest(BaseModel):
     sell_price: float
     sell_date: date | None = None
     sell_platform: str | None = None
+
+
+class SplitRequest(BaseModel):
+    split_quantity: int
 
 
 class InventoryPhotoResponse(BaseModel):
@@ -102,13 +140,16 @@ class InventoryPhotoResponse(BaseModel):
 
 class InventoryResponse(BaseModel):
     id: int
-    set_number: str
+    set_number: str | None
     set_name: str
     theme: str | None
     image_url: str | None
-    buy_price: float
+    item_type: str
+    product_group: str
+    search_query: str | None
+    buy_price: float | None
     buy_shipping: float
-    total_invested: float
+    total_invested: float | None
     buy_date: date
     buy_platform: str | None
     buy_url: str | None
@@ -117,6 +158,7 @@ class InventoryResponse(BaseModel):
     quantity: int = 1
     notes: str | None
     photos: list[InventoryPhotoResponse] = []
+    listings: list[ListingResponse] = []
     current_market_price: float | None
     market_price_updated_at: datetime | None
     unrealized_profit: float | None
@@ -191,7 +233,8 @@ class InventoryLookupResponse(BaseModel):
     set_number: str
     set_name: str
     quantity: int
-    buy_price: float
+    # Kaufpreis ist seit der Inventar-Generalisierung optional — auch bei Lego.
+    buy_price: float | None
     buy_date: date
     buy_platform: str | None
 
@@ -234,9 +277,21 @@ async def list_platforms(session: AsyncSession = Depends(get_session)):
     return sorted(set(buy_platforms + sell_platforms))
 
 
+@router.get("/product-groups")
+async def list_product_groups(session: AsyncSession = Depends(get_session)):
+    """Warengruppen fuers Dropdown: Startliste plus alles bereits Vergebene."""
+    result = await session.execute(
+        select(InventoryItem.product_group).where(InventoryItem.product_group.is_not(None)).distinct()
+    )
+    stored = {row[0] for row in result.all() if row[0]}
+    return sorted(stored | set(PRODUCT_GROUP_SUGGESTIONS))
+
+
 @router.get("/", response_model=list[InventoryResponse])
 async def list_inventory(
     status: str | None = Query(default=None),
+    item_type: str | None = Query(default=None),
+    product_group: str | None = Query(default=None),
     sort_by: str = Query(default="buy_date"),
     limit: int = Query(default=100, le=500),
     offset: int = 0,
@@ -245,6 +300,10 @@ async def list_inventory(
     query = select(InventoryItem)
     if status:
         query = query.where(InventoryItem.status == status)
+    if item_type:
+        query = query.where(InventoryItem.item_type == item_type)
+    if product_group:
+        query = query.where(InventoryItem.product_group == product_group)
     query = query.order_by(InventoryItem.created_at.desc()).offset(offset).limit(limit)
     result = await session.execute(query)
     items = result.scalars().all()
@@ -254,8 +313,11 @@ async def list_inventory(
 @router.post("/", response_model=InventoryResponse)
 async def add_inventory_item(data: InventoryAdd, session: AsyncSession = Depends(get_session)):
     item = InventoryItem(
+        item_type=data.item_type,
         set_number=data.set_number,
         set_name=data.set_name,
+        product_group=data.product_group,
+        search_query=data.search_query,
         theme=data.theme,
         image_url=data.image_url,
         buy_price=data.buy_price,
@@ -270,7 +332,8 @@ async def add_inventory_item(data: InventoryAdd, session: AsyncSession = Depends
         status=InventoryStatus.HOLDING.value,
     )
     session.add(item)
-    await _hydrate_market_snapshot(item, session)
+    if data.item_type == InventoryItemType.LEGO.value:
+        await _hydrate_market_snapshot(item, session)
     await session.commit()
     await session.refresh(item)
     logger.info("inventory.added", set_number=data.set_number, buy_price=data.buy_price)
@@ -491,20 +554,32 @@ async def get_sell_links(item_id: int, session: AsyncSession = Depends(get_sessi
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
 
-    suggested_price = item.current_market_price or (item.buy_price * 1.5)
-    title = f"LEGO {item.set_number} {item.set_name} NEU OVP"
+    if item.current_market_price is not None:
+        suggested_price = item.current_market_price
+    elif item.buy_price is not None:
+        suggested_price = item.buy_price * 1.5
+    else:
+        suggested_price = 0.0
+
+    if item.set_number:
+        title = f"LEGO {item.set_number} {item.set_name} NEU OVP"
+        ebay_keyword = f"LEGO {item.set_number}"
+    else:
+        title = item.set_name
+        ebay_keyword = item.set_name
     if len(title) > 80:
         title = title[:77] + "..."
 
     ebay_params = {
-        "keyword": f"LEGO {item.set_number}",
+        "keyword": ebay_keyword,
         "LH_BIN": "1",
     }
     ebay_url = f"https://www.ebay.de/sell/create?{urlencode(ebay_params)}"
 
+    set_line = f"LEGO Set {item.set_number} - {item.set_name}\n" if item.set_number else f"{item.set_name}\n"
     kleinanzeigen_text = (
         f"{title}\n\n"
-        f"LEGO Set {item.set_number} - {item.set_name}\n"
+        f"{set_line}"
         f"Zustand: Neu & Originalverpackt (OVP)\n"
         f"Preis: {suggested_price:.0f}\u20ac\n\n"
         f"Versand m\u00f6glich."
@@ -535,6 +610,20 @@ async def update_inventory_item(
     return _to_response(item)
 
 
+def close_sold_listing(item, sell_platform: str | None) -> list:
+    """Schliesst das Listing der Verkaufsplattform; Rest ist die Loesch-Checkliste."""
+    platform_key = (sell_platform or "").strip().upper()
+    remaining = []
+    for listing in item.listings:
+        if listing.status not in OPEN_LISTING_STATUSES:
+            continue
+        if platform_key and listing.platform == platform_key:
+            listing.status = ListingStatus.SOLD.value
+        else:
+            remaining.append(listing)
+    return remaining
+
+
 @router.post("/{item_id}/sell", response_model=InventoryResponse)
 async def mark_as_sold(
     item_id: int,
@@ -545,44 +634,123 @@ async def mark_as_sold(
     if item.status == InventoryStatus.SOLD.value:
         raise HTTPException(status_code=400, detail="Item already sold")
 
-    total_invested = item.buy_price + item.buy_shipping
-    selling_costs = sum(calculate_ebay_fees(data.sell_price))
-    realized_profit = data.sell_price - total_invested - selling_costs
-
     item.status = InventoryStatus.SOLD.value
     item.sell_price = data.sell_price
     item.sell_date = data.sell_date or date.today()
     item.sell_platform = data.sell_platform
-    item.realized_profit = round(realized_profit, 2)
-    item.realized_roi_percent = round((realized_profit / total_invested) * 100, 1) if total_invested > 0 else 0
     item.sell_signal_active = False
 
-    analysis_match = await _find_matching_analysis(item, session)
-    feedback_set = await _ensure_feedback_set(item, analysis_match, session)
-    if feedback_set:
-        feedback = DealFeedback(
-            set_id=feedback_set.id,
-            purchase_price=item.buy_price,
-            purchase_shipping=item.buy_shipping or 0.0,
-            purchase_date=item.buy_date,
-            purchase_platform=item.buy_platform or "UNKNOWN",
-            sale_price=item.sell_price,
-            sale_fees=round(selling_costs, 2),
-            sale_shipping=0.0,
-            sale_packaging=0.0,
-            sale_date=item.sell_date,
-            sale_platform=item.sell_platform,
-            predicted_roi=analysis_match.roi_percent if analysis_match else None,
-            predicted_risk_score=analysis_match.risk_score if analysis_match else None,
-            notes=_build_feedback_notes(item, analysis_match),
+    remaining_open = close_sold_listing(item, data.sell_platform)
+    if remaining_open:
+        logger.info(
+            "inventory.sold_with_open_listings",
+            item_id=item.id,
+            platforms=[x.platform for x in remaining_open],
         )
-        feedback.calculate_outcomes()
-        session.add(feedback)
+
+    if item.buy_price is not None:
+        total_invested = item.buy_price + (item.buy_shipping or 0)
+        selling_costs = sum(calculate_ebay_fees(data.sell_price))
+        realized_profit = data.sell_price - total_invested - selling_costs
+        item.realized_profit = round(realized_profit, 2)
+        item.realized_roi_percent = (
+            round((realized_profit / total_invested) * 100, 1) if total_invested > 0 else 0
+        )
+
+        analysis_match = await _find_matching_analysis(item, session)
+        feedback_set = await _ensure_feedback_set(item, analysis_match, session)
+        if feedback_set:
+            feedback = DealFeedback(
+                set_id=feedback_set.id,
+                purchase_price=item.buy_price,
+                purchase_shipping=item.buy_shipping or 0.0,
+                purchase_date=item.buy_date,
+                purchase_platform=item.buy_platform or "UNKNOWN",
+                sale_price=item.sell_price,
+                sale_fees=round(selling_costs, 2),
+                sale_shipping=0.0,
+                sale_packaging=0.0,
+                sale_date=item.sell_date,
+                sale_platform=item.sell_platform,
+                predicted_roi=analysis_match.roi_percent if analysis_match else None,
+                predicted_risk_score=analysis_match.risk_score if analysis_match else None,
+                notes=_build_feedback_notes(item, analysis_match),
+            )
+            feedback.calculate_outcomes()
+            session.add(feedback)
+    else:
+        item.realized_profit = None
+        item.realized_roi_percent = None
 
     await session.commit()
     await session.refresh(item)
     logger.info("inventory.sold", set_number=item.set_number, profit=item.realized_profit)
     return _to_response(item)
+
+
+@router.post("/{item_id}/split", response_model=InventoryResponse)
+async def split_inventory_item(item_id: int, data: SplitRequest, session: AsyncSession = Depends(get_session)):
+    """Teilt einen Posten (quantity 3 -> 2+1). Listings bleiben beim Original."""
+    item = await _get_item(item_id, session)
+    if item.status == InventoryStatus.SOLD.value:
+        raise HTTPException(status_code=400, detail="Verkaufte Artikel lassen sich nicht teilen")
+    quantity = item.quantity or 1
+    if not 1 <= data.split_quantity < quantity:
+        raise HTTPException(status_code=400, detail=f"split_quantity muss zwischen 1 und {quantity - 1} liegen")
+
+    (new_buy, new_ship), (rest_buy, rest_ship) = prorate_purchase(
+        item.buy_price, item.buy_shipping or 0.0, quantity, data.split_quantity
+    )
+
+    new_item = InventoryItem(
+        item_type=item.item_type,
+        set_number=item.set_number,
+        set_name=item.set_name,
+        product_group=item.product_group,
+        search_query=item.search_query,
+        theme=item.theme,
+        image_url=item.image_url,
+        buy_price=new_buy,
+        buy_shipping=new_ship,
+        buy_date=item.buy_date,
+        buy_platform=item.buy_platform,
+        buy_url=item.buy_url,
+        reference_url=item.reference_url,
+        condition=item.condition,
+        quantity=data.split_quantity,
+        notes=item.notes,
+        status=item.status,
+        current_market_price=item.current_market_price,
+        market_price_updated_at=item.market_price_updated_at,
+        sell_signal_active=False,
+        sell_signal_reason=None,
+        sell_price=None,
+        sell_date=None,
+        sell_platform=None,
+        realized_profit=None,
+        realized_roi_percent=None,
+    )
+    session.add(new_item)
+    await session.flush()
+
+    try:
+        for payload in copy_item_photos(item.photos, _photo_dir(item.id), _photo_dir(new_item.id)):
+            session.add(InventoryPhoto(item_id=new_item.id, **payload))
+
+        item.quantity = quantity - data.split_quantity
+        item.buy_price = rest_buy
+        item.buy_shipping = rest_ship
+        _recalculate_unrealized_metrics(new_item)
+        _recalculate_unrealized_metrics(item)
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        rmtree(_photo_dir(new_item.id), ignore_errors=True)
+        raise
+
+    await session.refresh(new_item)
+    logger.info("inventory.split", source=item.id, new=new_item.id, split=data.split_quantity)
+    return _to_response(new_item)
 
 
 @router.delete("/{item_id}")
@@ -604,9 +772,17 @@ async def portfolio_summary(session: AsyncSession = Depends(get_session)):
     holding = [i for i in items if i.status == InventoryStatus.HOLDING.value]
     sold = [i for i in items if i.status == InventoryStatus.SOLD.value]
 
-    total_invested = sum(i.buy_price + i.buy_shipping for i in holding)
-    current_value = sum(i.current_market_price or (i.buy_price + i.buy_shipping) for i in holding)
-    unrealized = current_value - total_invested
+    priced_holding = [i for i in holding if i.buy_price is not None]
+    total_invested = sum(i.buy_price + (i.buy_shipping or 0) for i in priced_holding)
+    current_value = sum(
+        i.current_market_price
+        if i.current_market_price is not None
+        else (i.buy_price + (i.buy_shipping or 0)) if i.buy_price is not None else 0
+        for i in holding
+    )
+    unrealized = current_value - total_invested - sum(
+        i.current_market_price or 0 for i in holding if i.buy_price is None
+    )
 
     return PortfolioSummary(
         total_items=len(items),
@@ -663,6 +839,9 @@ async def _find_matching_analysis(
 
 
 async def _hydrate_market_snapshot(item: InventoryItem, session: AsyncSession) -> bool:
+    if item.set_number is None:
+        return False
+
     market_price: float | None = None
     updated_at: datetime | None = None
 
@@ -695,7 +874,7 @@ async def _hydrate_market_snapshot(item: InventoryItem, session: AsyncSession) -
 
 
 def _recalculate_unrealized_metrics(item: InventoryItem) -> None:
-    if item.current_market_price is None:
+    if item.current_market_price is None or item.buy_price is None:
         item.unrealized_profit = None
         item.unrealized_roi_percent = None
         return
@@ -822,6 +1001,46 @@ def _cleanup_photo_dir(item_id: int) -> None:
         photo_dir.rmdir()
 
 
+def prorate_purchase(
+    buy_price: float | None, buy_shipping: float, quantity: int, split_quantity: int
+) -> tuple[tuple[float | None, float], tuple[float | None, float]]:
+    """Teilt Kaufkosten eines Postens exakt auf: (neuer Posten, Rest-Posten).
+
+    Kaufpreis/Versand sind Zeilen-Gesamtwerte; der Rest wird als Differenz
+    gerechnet, nie separat gerundet — die Summe bleibt centgenau erhalten.
+    """
+    def _split_total(total: float) -> tuple[float, float]:
+        part = round(total * split_quantity / quantity, 2)
+        return part, round(total - part, 2)
+
+    new_ship, rest_ship = _split_total(buy_shipping)
+    if buy_price is None:
+        return (None, new_ship), (None, rest_ship)
+    new_price, rest_price = _split_total(buy_price)
+    return (new_price, new_ship), (rest_price, rest_ship)
+
+
+def copy_item_photos(photos, source_dir: Path, target_dir: Path) -> list[dict]:
+    """Kopiert Foto-Dateien fuer einen geteilten Posten; fehlende Dateien werden uebersprungen."""
+    copied: list[dict] = []
+    for photo in photos:
+        source = source_dir / photo.filename
+        if not source.exists():
+            continue
+        target_dir.mkdir(parents=True, exist_ok=True)
+        new_name = f"{uuid4().hex}{Path(photo.filename).suffix}"
+        copy2(source, target_dir / new_name)
+        copied.append(
+            {
+                "filename": new_name,
+                "original_filename": photo.original_filename,
+                "content_type": photo.content_type,
+                "sort_order": photo.sort_order,
+            }
+        )
+    return copied
+
+
 async def _reindex_photos(
     item_id: int,
     session: AsyncSession,
@@ -854,7 +1073,8 @@ def _to_photo_response(photo: InventoryPhoto) -> InventoryPhotoResponse:
 
 
 def _to_response(item: InventoryItem) -> InventoryResponse:
-    total_invested = item.buy_price + (item.buy_shipping or 0)
+    has_buy_price = item.buy_price is not None
+    total_invested = round(item.buy_price + (item.buy_shipping or 0), 2) if has_buy_price else None
     holding_days = (date.today() - item.buy_date).days if item.buy_date else 0
 
     return InventoryResponse(
@@ -863,9 +1083,12 @@ def _to_response(item: InventoryItem) -> InventoryResponse:
         set_name=item.set_name,
         theme=item.theme,
         image_url=item.image_url,
+        item_type=item.item_type,
+        product_group=item.product_group,
+        search_query=item.search_query,
         buy_price=item.buy_price,
         buy_shipping=item.buy_shipping or 0,
-        total_invested=round(total_invested, 2),
+        total_invested=total_invested,
         buy_date=item.buy_date,
         buy_platform=item.buy_platform,
         buy_url=item.buy_url,
@@ -874,6 +1097,7 @@ def _to_response(item: InventoryItem) -> InventoryResponse:
         quantity=item.quantity or 1,
         notes=item.notes,
         photos=[_to_photo_response(photo) for photo in item.photos],
+        listings=open_listing_responses(item),
         current_market_price=item.current_market_price,
         market_price_updated_at=item.market_price_updated_at,
         unrealized_profit=item.unrealized_profit,

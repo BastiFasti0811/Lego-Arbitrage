@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from app.api.routes import analysis, auctions, auth, feedback, inventory, scout, sets, system, watchlist
+from app.api.routes import analysis, auctions, auth, feedback, inventory, listings, scout, sets, system, watchlist
 from app.api.routes import settings as settings_routes
 from app.api.routes.auth import COOKIE_NAME, verify_cookie
 from app.config import settings
@@ -83,6 +83,7 @@ app.include_router(scout.router, prefix="/api/scout", tags=["Scout"])
 app.include_router(watchlist.router, prefix="/api/watchlist", tags=["Watchlist"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["Feedback"])
 app.include_router(inventory.router, prefix="/api/inventory", tags=["Inventory"])
+app.include_router(listings.router, prefix="/api/inventory", tags=["Listings"])
 app.include_router(settings_routes.router, prefix="/api/settings", tags=["Settings"])
 app.include_router(system.router, prefix="/api/system", tags=["System"])
 

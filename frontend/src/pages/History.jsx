@@ -53,7 +53,13 @@ export default function History() {
   }
 
   const totalProfit = items.reduce((sum, item) => sum + (item.realized_profit || 0), 0);
-  const avgRoi = items.reduce((sum, item) => sum + (item.realized_roi_percent || 0), 0) / items.length;
+  // Verkaeufe ohne buy_price liefern realized_roi_percent/realized_profit = null;
+  // die zaehlen wir aus Quote und Schnitt raus statt sie als 0%/Nicht-Gewinn zu werten.
+  const itemsWithRoi = items.filter((item) => item.realized_roi_percent != null);
+  const avgRoi =
+    itemsWithRoi.length > 0
+      ? itemsWithRoi.reduce((sum, item) => sum + item.realized_roi_percent, 0) / itemsWithRoi.length
+      : null;
   const bestDeal = items.reduce(
     (best, item) => ((item.realized_profit || 0) > (best.realized_profit || 0) ? item : best),
     items[0],
@@ -62,7 +68,10 @@ export default function History() {
     (worst, item) => ((item.realized_profit || 0) < (worst.realized_profit || 0) ? item : worst),
     items[0],
   );
-  const winRate = (items.filter((item) => (item.realized_profit || 0) > 0).length / items.length) * 100;
+  const winRate =
+    itemsWithRoi.length > 0
+      ? (itemsWithRoi.filter((item) => (item.realized_profit || 0) > 0).length / itemsWithRoi.length) * 100
+      : null;
 
   const monthlyMap = {};
   items.forEach((item) => {
@@ -93,20 +102,24 @@ export default function History() {
           value={`${totalProfit >= 0 ? "+" : ""}${formatMoney(totalProfit)}`}
           color={profitColor(totalProfit)}
         />
-        <StatCard label={`${AVG_PREFIX} ROI`} value={`${avgRoi.toFixed(1)}%`} color={avgRoi >= 0 ? "text-go" : "text-no-go"} />
+        <StatCard
+          label={`${AVG_PREFIX} ROI`}
+          value={avgRoi != null ? `${avgRoi.toFixed(1)}%` : "—"}
+          color={avgRoi == null ? "text-text-primary" : avgRoi >= 0 ? "text-go" : "text-no-go"}
+        />
         <StatCard
           label="Bester Deal"
           value={`+${formatMoney(bestDeal.realized_profit || 0)}`}
-          sub={bestDeal.set_number}
+          sub={bestDeal.set_number ?? bestDeal.product_group}
           color="text-go-star"
         />
         <StatCard
           label="Schlechtester"
           value={formatMoney(worstDeal.realized_profit || 0)}
-          sub={worstDeal.set_number}
+          sub={worstDeal.set_number ?? worstDeal.product_group}
           color="text-no-go"
         />
-        <StatCard label="Win Rate" value={`${winRate.toFixed(0)}%`} sub={`${items.length} Deals`} />
+        <StatCard label="Win Rate" value={winRate != null ? `${winRate.toFixed(0)}%` : "—"} sub={`${items.length} Deals`} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
@@ -155,7 +168,7 @@ export default function History() {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="text-lego-yellow font-[family-name:var(--font-mono)] text-sm font-semibold">
-                    {item.set_number}
+                    {item.set_number ?? item.product_group}
                   </span>
                   <span className="text-text-primary text-sm truncate">{item.set_name}</span>
                 </div>
@@ -167,7 +180,7 @@ export default function History() {
               </div>
               <div className="text-right shrink-0">
                 <div className="text-text-muted text-xs">
-                  {formatMoney(item.total_invested)} {RIGHT_ARROW} {formatMoney(item.sell_price || 0)}
+                  {item.total_invested != null ? formatMoney(item.total_invested) : "—"} {RIGHT_ARROW} {formatMoney(item.sell_price || 0)}
                 </div>
                 <div className={`font-[family-name:var(--font-mono)] font-bold ${profitColor(item.realized_profit || 0)}`}>
                   {(item.realized_profit || 0) > 0 ? "+" : ""}
