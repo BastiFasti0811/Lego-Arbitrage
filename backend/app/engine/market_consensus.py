@@ -46,6 +46,22 @@ ZERO_WEIGHT_SOURCES = {
     "LEGO_COM": 0.0,
 }
 
+# Quellen, die den Konsens gar nicht erst erreichen — nicht im Median, nicht in
+# der Quellenzahl. Sie stehen bewusst NICHT in ZERO_WEIGHT_SOURCES: ein Gewicht
+# von 0.0 laesst die Quelle mitzaehlen und wirkt erst im gewichteten Mittel.
+#
+# EBAY_ACTIVE ist der Median offener Angebote. Der Scraper greift darauf
+# zurueck, sobald die Sold-Suche nichts liefert — ob wegen des 403, wegen eines
+# geschluckten Fehlers oder weil zu diesem Set schlicht nichts verkauft wurde.
+# In allen drei Faellen misst der Wert Forderungen, nicht Verkaeufe, und darf
+# die Geldzahlen des gehaltenen Bestands nicht mittragen.
+#
+# Die Quelle zaehlte frueher mit, und das war richtig, solange BrickEconomy
+# nichts lieferte — sie war die einzige verfuegbare zweite Quelle. Seit
+# BrickEconomy wieder antwortet (22 von 41 Sets im Lauf vom 31.08.2026), traegt
+# diese Begruendung nicht mehr: der Ausbau kostet gemessen ein einziges Set.
+EXCLUDED_FROM_CONSENSUS = frozenset({"EBAY_ACTIVE"})
+
 
 @dataclass
 class MarketConsensus:
@@ -64,15 +80,26 @@ class MarketConsensus:
 
 
 def _source_weights() -> dict[str, float]:
-    """Return runtime-configurable consensus source weights."""
-    return {
+    """Return runtime-configurable consensus source weights.
+
+    Membership in this table decides whether a source reaches the consensus at
+    all — `calculate_consensus` keeps exactly the prices whose source is a key
+    here. Ein Gewicht von 0.0 schliesst deshalb nichts aus: so eine Quelle
+    zaehlt weiterhin fuer `num_sources` und den Median, und nur das gewichtete
+    Mittel ignoriert sie. Wer wirklich draussen sein soll, darf hier nicht
+    auftauchen — siehe EBAY_ACTIVE.
+    """
+    weights = {
         "EBAY_SOLD": settings.weight_ebay_sold,
-        "EBAY_ACTIVE": settings.weight_ebay_active,
         "BRICKECONOMY": settings.weight_brickeconomy,
         "IDEALO": settings.weight_idealo,
         "BRICKMERGE": settings.weight_brickmerge,
         **ZERO_WEIGHT_SOURCES,
     }
+    # Der Filter ist die Durchsetzung, nicht das Weglassen oben: wer eine
+    # ausgeschlossene Quelle spaeter wieder eintraegt, wird hier ueberstimmt,
+    # statt sie unbemerkt zurueck in die Geldzahlen zu holen.
+    return {src: weight for src, weight in weights.items() if src not in EXCLUDED_FROM_CONSENSUS}
 
 
 def _remove_outliers(

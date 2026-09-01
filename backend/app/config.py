@@ -56,7 +56,13 @@ class Settings(BaseSettings):
     weight_brickeconomy: float = 0.30
     weight_idealo: float = 0.20
     weight_brickmerge: float = 0.10
-    # Fallback bei blockierter Sold-Suche: Angebotspreise, kein Verkaufsbeleg
+    # Ohne Wirkung, absichtlich behalten: EBAY_ACTIVE steht in
+    # EXCLUDED_FROM_CONSENSUS und erreicht den Konsens gar nicht mehr, weil es
+    # Angebotspreise misst statt Verkaeufe. Das Feld bleibt trotzdem stehen,
+    # weil `Settings` auf `extra="forbid"` steht: ein WEIGHT_EBAY_ACTIVE in
+    # einer .env wuerde den Start sonst mit einem ValidationError abbrechen.
+    # (Ein app_settings-Eintrag koennte das nicht — die Tabelle wird nirgends
+    # gegen diese Klasse validiert.)
     weight_ebay_active: float = 0.15
     # Price divergence warning threshold
     price_divergence_warning: float = 0.20  # 20%
