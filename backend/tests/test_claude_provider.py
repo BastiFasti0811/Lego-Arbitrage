@@ -75,6 +75,9 @@ async def test_analyze_photos_returns_parsed_item_draft():
     prompt_text = content[-1]["text"]
     assert content[-1]["type"] == "text"
     assert "LEGO, Sonstiges Spielzeug" in prompt_text
+    # Kanonischer Zustandswert aus app/domain/condition.py, nicht "NEW_OPEN" -
+    # der generische PATCH-Pfad normalisiert das Feld nicht nach.
+    assert "NEW_OPEN_BOX" in prompt_text
 
 
 @pytest.mark.asyncio
@@ -99,6 +102,20 @@ async def test_analyze_photos_refusal_raises_german_error():
         await provider.analyze_photos([(b"data", "image/jpeg")], hints=None, product_groups=["LEGO"])
 
     assert "abgelehnt" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_analyze_photos_incomplete_response_raises_german_error():
+    # stop_reason != "refusal", aber parsed_output ist trotzdem None - z. B.
+    # Abbruch mitten im JSON durch max_tokens. Ohne eigenen Guard wuerde das
+    # als AttributeError statt als sauberer AIProviderError durchschlagen.
+    fake_client = _FakeClient(_FakeParseResponse(None, stop_reason="max_tokens"))
+    provider = ClaudeProvider(client=fake_client)
+
+    with pytest.raises(AIProviderError) as exc_info:
+        await provider.analyze_photos([(b"data", "image/jpeg")], hints=None, product_groups=["LEGO"])
+
+    assert "unvollstaendig" in exc_info.value.detail
 
 
 @pytest.mark.asyncio
@@ -143,6 +160,19 @@ async def test_write_listing_refusal_raises_german_error():
         )
 
     assert "abgelehnt" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_write_listing_incomplete_response_raises_german_error():
+    fake_client = _FakeClient(_FakeParseResponse(None, stop_reason="max_tokens"))
+    provider = ClaudeProvider(client=fake_client)
+
+    with pytest.raises(AIProviderError) as exc_info:
+        await provider.write_listing(
+            name="Testartikel", condition="USED_COMPLETE", notes=None, platform="ebay", price=10.0, price_type="VB"
+        )
+
+    assert "unvollstaendig" in exc_info.value.detail
 
 
 def test_get_provider_without_key_raises(monkeypatch):

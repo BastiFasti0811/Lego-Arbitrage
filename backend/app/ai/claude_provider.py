@@ -60,7 +60,7 @@ class ClaudeProvider:
         prompt = (
             "Analysiere den Artikel auf den Fotos.\n"
             f"Waehle product_group aus genau dieser Liste: {', '.join(product_groups)}.\n"
-            "condition: NEW_SEALED, NEW_OPEN, USED_COMPLETE oder USED_INCOMPLETE.\n"
+            "condition: NEW_SEALED, NEW_OPEN_BOX, USED_COMPLETE oder USED_INCOMPLETE.\n"
             "search_query: der eBay-Suchbegriff, mit dem man verkaufte Exemplare "
             "dieses Artikels findet (Marke + Modell, ohne Zustand).\n"
             "platform_category: passende Kleinanzeigen-Kategorie als Pfad, "
@@ -83,8 +83,13 @@ class ClaudeProvider:
             raise AIProviderError(f"KI-Analyse fehlgeschlagen (HTTP {exc.status_code})") from exc
         except anthropic.APIConnectionError as exc:
             raise AIProviderError("KI-Dienst nicht erreichbar") from exc
+        except anthropic.AnthropicError as exc:
+            logger.error("ai.analyze_failed", error_type=type(exc).__name__)
+            raise AIProviderError("KI-Aufruf fehlgeschlagen") from exc
         if response.stop_reason == "refusal":
             raise AIProviderError("Die KI hat die Analyse dieser Fotos abgelehnt")
+        if response.parsed_output is None:
+            raise AIProviderError("Die KI-Antwort war unvollstaendig — bitte erneut versuchen")
         return response.parsed_output
 
     async def write_listing(
@@ -107,9 +112,15 @@ class ClaudeProvider:
                 output_format=ListingText,
             )
         except anthropic.APIStatusError as exc:
+            logger.error("ai.write_listing_failed", status=exc.status_code)
             raise AIProviderError(f"Textgenerierung fehlgeschlagen (HTTP {exc.status_code})") from exc
         except anthropic.APIConnectionError as exc:
             raise AIProviderError("KI-Dienst nicht erreichbar") from exc
+        except anthropic.AnthropicError as exc:
+            logger.error("ai.write_listing_failed", error_type=type(exc).__name__)
+            raise AIProviderError("KI-Aufruf fehlgeschlagen") from exc
         if response.stop_reason == "refusal":
             raise AIProviderError("Die KI hat die Texterstellung abgelehnt")
+        if response.parsed_output is None:
+            raise AIProviderError("Die KI-Antwort war unvollstaendig — bitte erneut versuchen")
         return response.parsed_output
