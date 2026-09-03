@@ -134,7 +134,12 @@ async def test_write_listing_refusal_raises_german_error():
 
     with pytest.raises(AIProviderError) as exc_info:
         await provider.write_listing(
-            name="Testartikel", condition="USED_COMPLETE", notes=None, platform="ebay", price=10.0, price_type="FEST"
+            name="Testartikel",
+            condition="USED_COMPLETE",
+            notes=None,
+            platform="ebay",
+            price=10.0,
+            price_type="FIXED",
         )
 
     assert "abgelehnt" in exc_info.value.detail
