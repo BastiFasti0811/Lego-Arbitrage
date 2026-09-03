@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import AIProviderError, get_provider
 from app.models import get_session
 from app.models.inventory import InventoryItem, InventoryStatus
 from app.models.listing import OPEN_LISTING_STATUSES, Listing, ListingStatus
@@ -50,6 +51,11 @@ class ListingUpdate(BaseModel):
     price_drop_percent: float | None = None
     title: str | None = None
     body: str | None = None
+
+
+class ListingDraftRequest(BaseModel):
+    platform: str
+    price: float | None = None
 
 
 class PriceChangeResponse(BaseModel):
@@ -139,6 +145,29 @@ async def _get_listing(item_id: int, listing_id: int, session: AsyncSession) -> 
     return listing
 
 
+def _draft_price(item: InventoryItem, listing: Listing | None, body_price: float | None) -> float | None:
+    """Preis-Fallback-Kette fuer KI-Anzeigentexte (Draft-Erzeugung und -Refresh).
+
+    Reihenfolge: expliziter Preis aus dem Request-Body, dann der laufende
+    Anzeigenpreis eines schon eingestellten Listings (ACTIVE/PAUSED — beim
+    Text-Refresh gibt es keinen Body-Preis), dann der Marktpreis der Position,
+    dann die Mitte der KI-Preisspanne (nur wenn beide Grenzen bekannt sind),
+    dann der 1,5-fache Einkaufspreis. None, wenn keine Quelle greift — der
+    Aufrufer antwortet dann mit 400.
+    """
+    if body_price is not None:
+        return body_price
+    if listing is not None and listing.status in (ListingStatus.ACTIVE.value, ListingStatus.PAUSED.value):
+        return listing.current_price
+    if item.current_market_price is not None:
+        return item.current_market_price
+    if item.ai_price_min is not None and item.ai_price_max is not None:
+        return (item.ai_price_min + item.ai_price_max) / 2
+    if item.buy_price is not None:
+        return item.buy_price * 1.5
+    return None
+
+
 @router.get("/{item_id}/listings", response_model=list[ListingResponse])
 async def list_listings(item_id: int, session: AsyncSession = Depends(get_session)):
     """Alle Listings inkl. Historie, neueste zuerst."""
@@ -147,9 +176,111 @@ async def list_listings(item_id: int, session: AsyncSession = Depends(get_sessio
     return [to_listing_response(x) for x in ordered]
 
 
+@router.post("/{item_id}/listings/draft", response_model=ListingResponse)
+async def draft_listing(item_id: int, data: ListingDraftRequest, session: AsyncSession = Depends(get_session)):
+    """KI schreibt den Anzeigentext: legt eine DRAFT-Zeile an oder ersetzt die
+    Texte einer schon vorhandenen. Der partial-unique-Index laesst ohnehin nur
+    eine offene Zeile je Artikel+Plattform zu (uq_listings_open_per_platform) —
+    ist die vorhandene offene Zeile schon ACTIVE/PAUSED, gibt's stattdessen 400."""
+    item = await _get_item(item_id, session)
+    platform = data.platform.strip().upper()
+    existing = next(
+        (x for x in item.listings if x.platform == platform and x.status in OPEN_LISTING_STATUSES), None
+    )
+    if existing is not None and existing.status != ListingStatus.DRAFT.value:
+        raise HTTPException(status_code=400, detail="Schon eingestellt — Text-Refresh nutzen")
+
+    price = _draft_price(item, existing, data.price)
+    if price is None:
+        raise HTTPException(status_code=400, detail="Kein Preis ermittelbar — bitte Preis angeben")
+
+    price_type = existing.price_type if existing is not None else default_price_type(platform)
+    try:
+        provider = get_provider()
+        text = await provider.write_listing(
+            name=item.set_name,
+            condition=item.condition,
+            notes=item.notes,
+            platform=platform,
+            price=price,
+            price_type=price_type,
+        )
+    except AIProviderError as exc:
+        raise HTTPException(status_code=503, detail=exc.detail) from exc
+
+    if existing is not None:
+        listing = existing
+        listing.title = text.title
+        listing.body = text.body
+        listing.platform_category = text.platform_category
+    else:
+        listing = Listing(
+            item_id=item.id,
+            platform=platform,
+            status=ListingStatus.DRAFT.value,
+            price_type=price_type,
+            title=text.title,
+            body=text.body,
+            platform_category=text.platform_category,
+            check_interval_days=14,
+            price_drop_percent=10.0,
+        )
+        session.add(listing)
+
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=f"Es gibt schon ein offenes Listing auf {platform}") from None
+    await session.refresh(listing)
+    logger.info("listing.draft_generated", item_id=item.id, platform=platform, overwritten=existing is not None)
+    return to_listing_response(listing)
+
+
+@router.post("/{item_id}/listings/{listing_id}/refresh-text", response_model=ListingResponse)
+async def refresh_listing_text(item_id: int, listing_id: int, session: AsyncSession = Depends(get_session)):
+    """KI schreibt Titel/Body neu — nur fuer offene Listings. Preis kommt vom
+    laufenden Listing (ACTIVE/PAUSED) oder sonst aus derselben Fallback-Kette
+    wie beim Draft-Erzeugen (DRAFT hat noch keinen eigenen Anzeigenpreis)."""
+    listing = await _get_listing(item_id, listing_id, session)
+    if listing.status not in OPEN_LISTING_STATUSES:
+        raise HTTPException(status_code=400, detail="Beendete Listings sind Historie und unveraenderlich")
+    item = await _get_item(item_id, session)
+
+    price = _draft_price(item, listing, None)
+    if price is None:
+        raise HTTPException(status_code=400, detail="Kein Preis ermittelbar — bitte Preis angeben")
+
+    try:
+        provider = get_provider()
+        text = await provider.write_listing(
+            name=item.set_name,
+            condition=item.condition,
+            notes=item.notes,
+            platform=listing.platform,
+            price=price,
+            price_type=listing.price_type,
+        )
+    except AIProviderError as exc:
+        raise HTTPException(status_code=503, detail=exc.detail) from exc
+
+    listing.title = text.title
+    listing.body = text.body
+    listing.platform_category = text.platform_category
+    await session.commit()
+    await session.refresh(listing)
+    logger.info("listing.text_refreshed", item_id=item_id, listing_id=listing_id, platform=listing.platform)
+    return to_listing_response(listing)
+
+
 @router.post("/{item_id}/listings", response_model=ListingResponse)
 async def create_listing(item_id: int, data: ListingCreate, session: AsyncSession = Depends(get_session)):
-    """Als eingestellt markieren: Mensch hat die Anzeige angelegt, wir merken sie."""
+    """Als eingestellt markieren: Mensch hat die Anzeige angelegt, wir merken sie.
+
+    Gibt es dafuer schon eine offene DRAFT-Zeile (KI-Text vorbereitet), wird
+    SIE aktiviert statt eine zweite Zeile anzulegen — der partial-unique-Index
+    liesse das ohnehin nicht zu. Titel/Body/platform_category bleiben dabei
+    unangetastet. Bei ACTIVE/PAUSED bleibt es bei 400."""
     item = await _get_item(item_id, session)
     if item.status == InventoryStatus.SOLD.value:
         raise HTTPException(status_code=400, detail="Verkaufte Artikel lassen sich nicht neu einstellen")
@@ -162,31 +293,52 @@ async def create_listing(item_id: int, data: ListingCreate, session: AsyncSessio
         raise HTTPException(status_code=400, detail="check_interval_days muss mindestens 1 sein")
     if not 0 <= data.price_drop_percent < 100:
         raise HTTPException(status_code=400, detail="price_drop_percent muss zwischen 0 und 99 liegen")
-    if any(x.platform == platform and x.status in OPEN_LISTING_STATUSES for x in item.listings):
+    existing = next(
+        (x for x in item.listings if x.platform == platform and x.status in OPEN_LISTING_STATUSES), None
+    )
+    if existing is not None and existing.status != ListingStatus.DRAFT.value:
         raise HTTPException(status_code=400, detail=f"Es gibt schon ein offenes Listing auf {platform}")
 
     listed_at = data.listed_at or date.today()
-    listing = Listing(
-        item_id=item.id,
-        platform=platform,
-        status=ListingStatus.ACTIVE.value,
-        price_type=(data.price_type or default_price_type(platform)),
-        listed_at=listed_at,
-        current_price=data.current_price,
-        url=(data.url or "").strip() or None,
-        min_price=min_price,
-        check_interval_days=data.check_interval_days,
-        price_drop_percent=data.price_drop_percent,
-        next_check_at=compute_next_check(listed_at, data.check_interval_days),
-    )
-    session.add(listing)
+    if existing is not None:
+        listing = existing
+        listing.status = ListingStatus.ACTIVE.value
+        listing.price_type = data.price_type or default_price_type(platform)
+        listing.listed_at = listed_at
+        listing.current_price = data.current_price
+        listing.url = (data.url or "").strip() or None
+        listing.min_price = min_price
+        listing.check_interval_days = data.check_interval_days
+        listing.price_drop_percent = data.price_drop_percent
+        listing.next_check_at = compute_next_check(listed_at, data.check_interval_days)
+    else:
+        listing = Listing(
+            item_id=item.id,
+            platform=platform,
+            status=ListingStatus.ACTIVE.value,
+            price_type=(data.price_type or default_price_type(platform)),
+            listed_at=listed_at,
+            current_price=data.current_price,
+            url=(data.url or "").strip() or None,
+            min_price=min_price,
+            check_interval_days=data.check_interval_days,
+            price_drop_percent=data.price_drop_percent,
+            next_check_at=compute_next_check(listed_at, data.check_interval_days),
+        )
+        session.add(listing)
     try:
         await session.commit()
     except IntegrityError:
         await session.rollback()
         raise HTTPException(status_code=400, detail=f"Es gibt schon ein offenes Listing auf {platform}") from None
     await session.refresh(listing)
-    logger.info("listing.activated", item_id=item.id, platform=platform, price=data.current_price)
+    logger.info(
+        "listing.activated",
+        item_id=item.id,
+        platform=platform,
+        price=data.current_price,
+        reactivated=existing is not None,
+    )
     return to_listing_response(listing)
 
 
