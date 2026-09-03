@@ -432,9 +432,10 @@ class EbaySoldScraper(BaseScraper):
         """Marktpreis fuer einen freien Suchbegriff (GENERIC-Artikel, PR 2).
 
         Strategy: eine Sold-Suche (ohne Zustandsfilter, kein narrow/broad
-        Zweitversuch), bei <3 Treffern/Bot-Wall Fallback auf aktive
-        BIN-Listungen. Fehler werden geloggt und verschluckt — kein Preis
-        gefunden ist kein Absturz.
+        Zweitversuch). Liefert die Sold-Suche gar nichts — Bot-Wall oder
+        genuinely leer — Fallback auf aktive BIN-Listungen (1-2 Treffer
+        zaehlen als Erfolg und werden mit einer Low-Count-Warnung als
+        EBAY_SOLD zurueckgegeben, kein Fallback-Trigger).
         """
         prices: list[float] = []
         html = ""
@@ -468,6 +469,11 @@ class EbaySoldScraper(BaseScraper):
 
         try:
             return await self._query_active_fallback(query)
+        except (UndecodableResponseError, httpx.HTTPError):
+            # Bot-Wall oder Verbindungsabbruch an der letzten Quelle heisst "eBay ist
+            # tot", nicht "keine Verkaeufe gefunden" — der Aufrufer muss das
+            # unterscheiden koennen (siehe get_price, Commit e500dfa).
+            raise
         except Exception as e:
             logger.error("ebay_sold.query_price_failed", query=query, error=str(e))
             return None

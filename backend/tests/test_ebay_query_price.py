@@ -2,8 +2,10 @@
 
 from pathlib import Path
 
+import httpx
 import pytest
 
+from app.scrapers.base import UndecodableResponseError
 from app.scrapers.ebay_sold import EbaySoldScraper
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -90,6 +92,38 @@ async def test_query_price_returns_none_when_both_searches_are_empty(monkeypatch
     price = await scraper.get_price_for_query("Nonexistent Query Xyzzy")
 
     assert price is None
+
+
+@pytest.mark.asyncio
+async def test_query_price_reraises_http_error_from_active_fallback(monkeypatch):
+    # Sold-Suche genuinely leer (kein Bot-Wall) — der Fallback-Fetch selbst
+    # stirbt dann per Transportfehler. Das ist "eBay ist tot", nicht "keine
+    # Verkaeufe gefunden", und muss beim Aufrufer ankommen statt in None
+    # verschluckt zu werden (siehe get_price, Commit e500dfa).
+    async def fake_fetch(url):
+        if "LH_BIN=1" in url:
+            raise httpx.HTTPError("boom")
+        return EMPTY_HTML
+
+    scraper = EbaySoldScraper()
+    monkeypatch.setattr(scraper, "_fetch", fake_fetch)
+
+    with pytest.raises(httpx.HTTPError):
+        await scraper.get_price_for_query("Bosch PSB 500")
+
+
+@pytest.mark.asyncio
+async def test_query_price_reraises_undecodable_response_from_active_fallback(monkeypatch):
+    async def fake_fetch(url):
+        if "LH_BIN=1" in url:
+            raise UndecodableResponseError("boom")
+        return EMPTY_HTML
+
+    scraper = EbaySoldScraper()
+    monkeypatch.setattr(scraper, "_fetch", fake_fetch)
+
+    with pytest.raises(UndecodableResponseError):
+        await scraper.get_price_for_query("Bosch PSB 500")
 
 
 def test_query_sold_url_has_no_lego_prefix_or_condition_filter():
