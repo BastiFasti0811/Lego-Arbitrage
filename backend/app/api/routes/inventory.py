@@ -700,7 +700,17 @@ async def analyze_inventory_item(
         path = photo_dir / photo.filename
         if not path.exists():
             continue
-        prepared.append(prepare_photo(path, photo.content_type))
+        try:
+            prepared.append(prepare_photo(path, photo.content_type))
+        except OSError:
+            # UnidentifiedImageError (Pillow) ist eine OSError-Unterklasse:
+            # _decode_photo_payload prueft beim Upload nur Base64/Content-Type/
+            # Groesse, nie ob die Bytes wirklich ein Bild ergeben. Eine defekte
+            # oder Content-Type-vorgetaeuschte Datei darf die Analyse nicht mit
+            # einem rohen 500 abbrechen -- sie wird wie eine fehlende Datei
+            # behandelt und uebersprungen.
+            logger.warning("inventory.analyze_photo_undecodable", item_id=item.id, photo_id=photo.id)
+            continue
     if not prepared:
         raise HTTPException(status_code=400, detail="Bitte zuerst Fotos hochladen")
 

@@ -214,8 +214,8 @@ def _make_db_item(status, **overrides):
     return InventoryItem(**defaults)
 
 
-def _photo(filename="a.jpg", content_type="image/jpeg"):
-    return SimpleNamespace(filename=filename, content_type=content_type)
+def _photo(filename="a.jpg", content_type="image/jpeg", id=1):  # noqa: A002 -- matches InventoryPhoto.id
+    return SimpleNamespace(filename=filename, content_type=content_type, id=id)
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +301,54 @@ async def test_analyze_skips_missing_photo_files_and_400s_when_none_remain(monke
         await inventory.analyze_inventory_item(1, inventory.AnalyzeRequest(hints=None), session)
 
     assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_analyze_skips_undecodable_photo(monkeypatch, tmp_path):
+    # Reale prepare_photo() -- bewusst nicht gemockt --, damit Pillows echtes
+    # UnidentifiedImageError (eine OSError-Unterklasse) tatsaechlich durch den
+    # Handler laeuft, statt nur eine Attrappe zu bestaetigen. Ein gueltiges
+    # Bild neben der Datenmuell-Datei zeigt, dass nur die kaputte uebersprungen
+    # wird, nicht die ganze Analyse abbricht.
+    from PIL import Image
+
+    monkeypatch.setattr("app.api.routes.inventory.PHOTO_STORAGE_ROOT", tmp_path)
+    photo_dir = tmp_path / "1"
+    photo_dir.mkdir()
+    Image.new("RGB", (50, 50), color=(10, 20, 30)).save(photo_dir / "good.jpg", "JPEG")
+    (photo_dir / "bad.jpg").write_bytes(b"not an image")
+
+    fake_provider = _FakeProvider(draft=_ITEM_DRAFT)
+    monkeypatch.setattr("app.api.routes.inventory.get_provider", lambda: fake_provider)
+    monkeypatch.setattr("app.api.routes.inventory.EbaySoldScraper", lambda: _FakeScraper(price=None))
+
+    item = _item(photos=[_photo("good.jpg", id=1), _photo("bad.jpg", id=2)])
+    session = _ItemSession(item)
+
+    response = await inventory.analyze_inventory_item(1, inventory.AnalyzeRequest(hints=None), session)
+
+    assert response.draft.name == _ITEM_DRAFT.name
+    assert len(fake_provider.calls) == 1
+    assert len(fake_provider.calls[0]["photos"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_analyze_rejects_when_all_photos_are_undecodable(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.api.routes.inventory.PHOTO_STORAGE_ROOT", tmp_path)
+    photo_dir = tmp_path / "1"
+    photo_dir.mkdir()
+    (photo_dir / "bad.jpg").write_bytes(b"not an image")
+
+    item = _item(photos=[_photo("bad.jpg", id=1)])
+    session = _ItemSession(item)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await inventory.analyze_inventory_item(1, inventory.AnalyzeRequest(hints=None), session)
+
+    # Dieselbe deutsche Meldung wie der "gar keine Fotos"-Fall -- fuer den
+    # Aufrufer ist "alle Dateien kaputt" ununterscheidbar von "keine da".
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Bitte zuerst Fotos hochladen"
 
 
 @pytest.mark.asyncio
