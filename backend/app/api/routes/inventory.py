@@ -8,13 +8,15 @@ from shutil import copy2, rmtree
 from urllib.parse import urlencode
 from uuid import uuid4
 
+import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import AIProviderError, ItemDraft, get_provider, prepare_photo
 from app.api.routes.listings import ListingResponse, open_listing_responses
 from app.config import settings
 from app.engine.roi_calculator import calculate_ebay_fees
@@ -34,6 +36,8 @@ from app.models.valuation_run import (
     ValuationRunStatus,
     ValuationTrigger,
 )
+from app.scrapers import EbaySoldScraper
+from app.scrapers.base import UndecodableResponseError
 from app.tasks.celery_app import celery_app
 
 logger = structlog.get_logger()
@@ -244,6 +248,29 @@ class InventoryLookupResponse(BaseModel):
     buy_platform: str | None
 
 
+class AnalyzeRequest(BaseModel):
+    # Fliesst ungeprueft in den KI-Prompt ein — ohne Deckel waere das ein
+    # unbegrenztes Prompt-Injection/Kosten-Ventil ueber ein einzelnes Feld.
+    hints: str | None = Field(default=None, max_length=500)
+
+
+class EbayPriceSummary(BaseModel):
+    median: float
+    sold_count: int | None
+    is_reliable: bool
+    source_url: str | None
+
+
+class AnalyzeResponse(BaseModel):
+    draft: ItemDraft
+    ebay: EbayPriceSummary | None = None
+    # Nur bei totem eBay gesetzt (Bot-Wall/Verbindungsabbruch) — anders als
+    # ebay=None (echtes "keine Verkaeufe") darf dieser Fall nicht wie ein
+    # stilles Fehlen aussehen, sonst verschwindet das Signal aus e500dfa/
+    # b647429 genau an der Stelle, die es ausdruecklich erhalten sollte.
+    ebay_error: str | None = None
+
+
 def is_run_blocking(run, now: datetime) -> bool:
     """Ob ein vorhandener Lauf einen neuen Start verhindert.
 
@@ -282,14 +309,23 @@ async def list_platforms(session: AsyncSession = Depends(get_session)):
     return sorted(set(buy_platforms + sell_platforms))
 
 
-@router.get("/product-groups")
-async def list_product_groups(session: AsyncSession = Depends(get_session)):
-    """Warengruppen fuers Dropdown: Startliste plus alles bereits Vergebene."""
+async def _product_group_choices(session: AsyncSession) -> list[str]:
+    """Warengruppen-Liste: Startliste plus alles bereits Vergebene.
+
+    Gemeinsam fuer /product-groups (Dropdown) und /analyze (KI-Prompt) --
+    beide sollen dieselbe Auswahl sehen, keine zwei gepflegten Kopien.
+    """
     result = await session.execute(
         select(InventoryItem.product_group).where(InventoryItem.product_group.is_not(None)).distinct()
     )
     stored = {row[0] for row in result.all() if row[0]}
     return sorted(stored | set(PRODUCT_GROUP_SUGGESTIONS))
+
+
+@router.get("/product-groups")
+async def list_product_groups(session: AsyncSession = Depends(get_session)):
+    """Warengruppen fuers Dropdown: Startliste plus alles bereits Vergebene."""
+    return await _product_group_choices(session)
 
 
 @router.get("/", response_model=list[InventoryResponse])
@@ -305,6 +341,12 @@ async def list_inventory(
     query = select(InventoryItem)
     if status:
         query = query.where(InventoryItem.status == status)
+    else:
+        # Ohne expliziten Status-Filter bleiben DRAFT-Entwuerfe unsichtbar --
+        # das sind Foto-first-Anlagen, die den Assistenten noch nicht
+        # durchlaufen haben und gehoeren nicht neben fertigen Eintraegen.
+        # Ein expliziter ?status=DRAFT funktioniert weiterhin (Zweig oben).
+        query = query.where(InventoryItem.status != InventoryStatus.DRAFT.value)
     if item_type:
         query = query.where(InventoryItem.item_type == item_type)
     if product_group:
@@ -447,6 +489,26 @@ async def get_valuation_run(run_id: int, session: AsyncSession = Depends(get_ses
         **ValuationRunResponse.model_validate(run).model_dump(),
         items=[ValuationRunItemResponse.model_validate(i) for i in items],
     )
+
+
+# Vor den `/{item_id}/...`-Routen deklariert, aus demselben Grund wie
+# `/lookup` und `/valuation/*` oben: sonst schluckt der Pfadparameter
+# "draft" als item_id.
+@router.post("/draft", response_model=InventoryResponse)
+async def create_draft_item(session: AsyncSession = Depends(get_session)):
+    """Foto-first-Einstieg: leerer Entwurf, den /analyze und /confirm fuellen."""
+    item = InventoryItem(
+        item_type=InventoryItemType.GENERIC.value,
+        set_name="Neuer Artikel",
+        product_group="Diverses",
+        status=InventoryStatus.DRAFT.value,
+        buy_date=date.today(),
+    )
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+    logger.info("inventory.draft_created", item_id=item.id)
+    return _to_response(item)
 
 
 @router.post("/{item_id}/photos", response_model=list[InventoryPhotoResponse])
@@ -614,6 +676,123 @@ async def update_inventory_item(
         _recalculate_unrealized_metrics(item)
     await session.commit()
     await session.refresh(item)
+    return _to_response(item)
+
+
+@router.post("/{item_id}/analyze", response_model=AnalyzeResponse)
+async def analyze_inventory_item(
+    item_id: int,
+    data: AnalyzeRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """KI-Foto-Analyse: fuellt einen Entwurf, reichert ihn optional um einen eBay-Preis an.
+
+    eBay ist hier eine Anreicherung, nicht der Zweck des Aufrufs -- anders als
+    bei /revalue geht bei einer toten Quelle der bereits bezahlte KI-Entwurf
+    nicht verloren; der Fehler kommt als `ebay_error` mit, der Entwurf bleibt
+    nutzbar (siehe AnalyzeResponse.ebay_error).
+    """
+    item = await _get_item(item_id, session)
+
+    photo_dir = _photo_dir(item.id)
+    prepared: list[tuple[bytes, str]] = []
+    for photo in item.photos[:4]:
+        path = photo_dir / photo.filename
+        if not path.exists():
+            continue
+        prepared.append(prepare_photo(path, photo.content_type))
+    if not prepared:
+        raise HTTPException(status_code=400, detail="Bitte zuerst Fotos hochladen")
+
+    product_groups = await _product_group_choices(session)
+    try:
+        provider = get_provider()
+        draft = await provider.analyze_photos(prepared, data.hints, product_groups)
+    except AIProviderError as exc:
+        raise HTTPException(status_code=503, detail=exc.detail) from exc
+
+    ebay_summary: EbayPriceSummary | None = None
+    ebay_error: str | None = None
+    try:
+        async with EbaySoldScraper() as scraper:
+            price = await scraper.get_price_for_query(draft.search_query)
+    except (UndecodableResponseError, httpx.HTTPError):
+        ebay_error = "eBay ist derzeit nicht erreichbar"
+    else:
+        if price is not None:
+            median = price.median_price if price.median_price is not None else price.price_eur
+            ebay_summary = EbayPriceSummary(
+                median=round(median, 2),
+                sold_count=price.sold_count,
+                is_reliable=price.is_reliable,
+                source_url=price.source_url,
+            )
+
+    item.ai_price_min = draft.price_min
+    item.ai_price_max = draft.price_max
+    item.ai_analysis_at = datetime.now(UTC)
+    await session.commit()
+    await session.refresh(item)
+
+    logger.info("inventory.analyzed", item_id=item.id, confidence=draft.confidence)
+    return AnalyzeResponse(draft=draft, ebay=ebay_summary, ebay_error=ebay_error)
+
+
+@router.post("/{item_id}/confirm", response_model=InventoryResponse)
+async def confirm_draft_item(item_id: int, session: AsyncSession = Depends(get_session)):
+    """Schliesst den Foto-first-Entwurf ab: DRAFT -> HOLDING.
+
+    Felder kommen vorher per bestehendem PATCH /{item_id} -- dieser Endpoint
+    setzt nur den Status um, sofern der Entwurf ueberhaupt schon bearbeitet
+    wurde (set_name ist nicht mehr der Platzhalter).
+    """
+    item = await _get_item(item_id, session)
+    if item.status != InventoryStatus.DRAFT.value:
+        raise HTTPException(status_code=400, detail="Nur Entwuerfe koennen bestaetigt werden")
+    if item.set_name.strip() in ("", "Neuer Artikel"):
+        raise HTTPException(status_code=400, detail="Bitte erst Artikeldaten speichern")
+
+    item.status = InventoryStatus.HOLDING.value
+    await session.commit()
+    await session.refresh(item)
+    logger.info("inventory.confirmed", item_id=item.id)
+    return _to_response(item)
+
+
+@router.post("/{item_id}/revalue", response_model=InventoryResponse)
+async def revalue_inventory_item(item_id: int, session: AsyncSession = Depends(get_session)):
+    """Manuelle Neubewertung eines GENERIC-Artikels ueber die eBay-Freitextsuche.
+
+    Lego laeuft ueber die automatische Bewertungs-Pipeline (_hydrate_market_snapshot
+    / update_inventory_valuations) und hat hier nichts verloren. Eine tote Quelle
+    (Bot-Wall/Verbindungsabbruch) ist ausdruecklich kein "nichts gefunden" -- die
+    beiden sahen vor Commit e500dfa/b647429 fuer den Aufrufer identisch aus.
+    """
+    item = await _get_item(item_id, session)
+    if item.item_type != InventoryItemType.GENERIC.value:
+        raise HTTPException(
+            status_code=400,
+            detail="Neubewertung ist nur fuer sonstige Artikel verfuegbar — Lego wird automatisch aktualisiert",
+        )
+    if not (item.search_query or "").strip():
+        raise HTTPException(status_code=400, detail="search_query fehlt")
+
+    try:
+        async with EbaySoldScraper() as scraper:
+            price = await scraper.get_price_for_query(item.search_query)
+    except (UndecodableResponseError, httpx.HTTPError) as exc:
+        raise HTTPException(status_code=503, detail="eBay ist derzeit nicht erreichbar") from exc
+
+    if price is None:
+        raise HTTPException(status_code=404, detail="Keine eBay-Verkaeufe zu dieser Suche gefunden")
+
+    median = price.median_price if price.median_price is not None else price.price_eur
+    item.current_market_price = round(median, 2)
+    item.market_price_updated_at = datetime.now(UTC)
+    _recalculate_unrealized_metrics(item)
+    await session.commit()
+    await session.refresh(item)
+    logger.info("inventory.revalued", item_id=item.id, price=item.current_market_price)
     return _to_response(item)
 
 
