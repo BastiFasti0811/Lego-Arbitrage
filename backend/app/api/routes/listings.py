@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai import AIProviderError, get_provider
 from app.models import get_session
 from app.models.inventory import InventoryItem, InventoryStatus
-from app.models.listing import OPEN_LISTING_STATUSES, Listing, ListingStatus
+from app.models.listing import OPEN_LISTING_STATUSES, Listing, ListingPlatform, ListingStatus
 from app.services.listing_rules import (
     apply_price_change,
     compute_next_check,
@@ -183,7 +183,11 @@ async def draft_listing(item_id: int, data: ListingDraftRequest, session: AsyncS
     eine offene Zeile je Artikel+Plattform zu (uq_listings_open_per_platform) —
     ist die vorhandene offene Zeile schon ACTIVE/PAUSED, gibt's stattdessen 400."""
     item = await _get_item(item_id, session)
+    if item.status == InventoryStatus.SOLD.value:
+        raise HTTPException(status_code=400, detail="Verkaufte Artikel lassen sich nicht neu einstellen")
     platform = data.platform.strip().upper()
+    if platform not in (p.value for p in ListingPlatform):
+        raise HTTPException(status_code=400, detail=f"Unbekannte Plattform: {platform}")
     existing = next(
         (x for x in item.listings if x.platform == platform and x.status in OPEN_LISTING_STATUSES), None
     )
@@ -246,6 +250,8 @@ async def refresh_listing_text(item_id: int, listing_id: int, session: AsyncSess
     if listing.status not in OPEN_LISTING_STATUSES:
         raise HTTPException(status_code=400, detail="Beendete Listings sind Historie und unveraenderlich")
     item = await _get_item(item_id, session)
+    if item.status == InventoryStatus.SOLD.value:
+        raise HTTPException(status_code=400, detail="Verkaufte Artikel lassen sich nicht neu einstellen")
 
     price = _draft_price(item, listing, None)
     if price is None:

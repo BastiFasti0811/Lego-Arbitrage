@@ -342,6 +342,38 @@ async def test_draft_rejects_when_already_active(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_draft_rejects_unknown_platform(monkeypatch):
+    item = _item()
+    session = _FakeSession(fetch_result=item)
+    fake = _FakeProvider(text=ListingText(title="x", body="y", platform_category="z"))
+    monkeypatch.setattr("app.api.routes.listings.get_provider", lambda: fake)
+    data = ListingDraftRequest(platform="GARBAGE", price=45.0)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await draft_listing(item_id=1, data=data, session=session)
+
+    assert exc_info.value.status_code == 400
+    assert fake.calls == []  # kein bezahlter KI-Aufruf fuer eine unbekannte Plattform
+    assert session.added == []  # keine unaktivierbare Geisterzeile
+
+
+@pytest.mark.asyncio
+async def test_draft_rejects_sold_item(monkeypatch):
+    item = _item(status="SOLD")
+    session = _FakeSession(fetch_result=item)
+    fake = _FakeProvider(text=ListingText(title="x", body="y", platform_category="z"))
+    monkeypatch.setattr("app.api.routes.listings.get_provider", lambda: fake)
+    data = ListingDraftRequest(platform="KLEINANZEIGEN", price=45.0)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await draft_listing(item_id=1, data=data, session=session)
+
+    assert exc_info.value.status_code == 400
+    assert fake.calls == []
+    assert session.added == []
+
+
+@pytest.mark.asyncio
 async def test_draft_overwrites_existing_draft_instead_of_new_row(monkeypatch):
     existing = _listing(
         status=ListingStatus.DRAFT.value,
@@ -413,6 +445,21 @@ async def test_refresh_text_rejects_ended_listing():
         await refresh_listing_text(item_id=1, listing_id=1, session=session)
 
     assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_refresh_text_rejects_sold_item(monkeypatch):
+    listing = _listing(status=ListingStatus.ACTIVE.value, current_price=80.0)
+    item = _item(status="SOLD")
+    session = _FakeSession(fetch_results=[listing, item])
+    fake = _FakeProvider(text=ListingText(title="x", body="y", platform_category="z"))
+    monkeypatch.setattr("app.api.routes.listings.get_provider", lambda: fake)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await refresh_listing_text(item_id=1, listing_id=1, session=session)
+
+    assert exc_info.value.status_code == 400
+    assert fake.calls == []
 
 
 @pytest.mark.asyncio
