@@ -1,6 +1,7 @@
 """eBay.de Sold Items scraper — actual German market prices from completed sales."""
 
 import re
+from urllib.parse import quote_plus
 
 import httpx
 import structlog
@@ -380,3 +381,93 @@ class EbaySoldScraper(BaseScraper):
             logger.error("ebay_sold.offers_failed", set_number=set_number, error=str(e))
 
         return offers
+
+    # ------------------------------------------------------------------
+    # Freie Suchbegriffe (GENERIC-Artikel, PR 2) — kein Set-Nummer-Query,
+    # kein "neu versiegelt"-Zustandsfilter, kein narrow/broad-Zweitversuch.
+    # Der Lego-Pfad oben bleibt unveraendert; das hier sind eigenstaendige
+    # Methoden fuer beliebige Produktbezeichnungen.
+    # ------------------------------------------------------------------
+
+    def _build_query_sold_url(self, query: str) -> str:
+        """Build eBay search URL for sold items matching a free-text query."""
+        params = (
+            f"_nkw={quote_plus(query)}"
+            f"&LH_Complete=1&LH_Sold=1&LH_PrefLoc=1&_sop=13&rt=nc"
+        )
+        return f"{EBAY_BASE}/sch/i.html?{params}"
+
+    def _build_query_active_url(self, query: str) -> str:
+        """Build eBay search URL for active (Buy It Now) listings matching a free-text query."""
+        params = f"_nkw={quote_plus(query)}&LH_PrefLoc=1&LH_BIN=1&_sop=15"
+        return f"{EBAY_BASE}/sch/i.html?{params}"
+
+    async def _query_active_fallback(self, query: str) -> ScrapedPrice | None:
+        """Fallback-Preis aus aktiven BIN-Listungen fuer einen freien Suchbegriff.
+
+        Analog zu `_price_from_active_listings`, aber ohne Set-Nummer im Query —
+        fuer GENERIC-Artikel, bei denen die Sold-Suche nichts liefert oder
+        blockiert ist. Wie dort: nie als reliable markiert.
+        """
+        url = self._build_query_active_url(query)
+        html = await self._fetch(url)
+        soup = BeautifulSoup(html, "lxml")
+        prices = [card["price"] for card in _extract_card_offers(soup)]
+        if len(prices) < 3:
+            return None
+        median = _calculate_median(prices)
+        return ScrapedPrice(
+            source="EBAY_ACTIVE",
+            price_eur=median,
+            median_price=median,
+            min_price=min(prices),
+            max_price=max(prices),
+            sold_count=len(prices),
+            source_url=url,
+            is_reliable=False,
+            notes=f"Fallback: Median aus {len(prices)} aktiven BIN-Listungen (Sold-Suche ohne Treffer/blockiert)",
+        )
+
+    async def get_price_for_query(self, query: str) -> ScrapedPrice | None:
+        """Marktpreis fuer einen freien Suchbegriff (GENERIC-Artikel, PR 2).
+
+        Strategy: eine Sold-Suche (ohne Zustandsfilter, kein narrow/broad
+        Zweitversuch), bei <3 Treffern/Bot-Wall Fallback auf aktive
+        BIN-Listungen. Fehler werden geloggt und verschluckt — kein Preis
+        gefunden ist kein Absturz.
+        """
+        prices: list[float] = []
+        html = ""
+        url = self._build_query_sold_url(query)
+        try:
+            html = await self._fetch(url)
+            prices = self._extract_sold_prices(BeautifulSoup(html, "lxml"))
+        except Exception as e:
+            logger.warning("ebay_sold.query_sold_search_failed", query=query, error=str(e)[:160])
+
+        if prices:
+            if len(prices) < 3:
+                logger.warning("ebay_sold.query_too_few_results", query=query, count=len(prices))
+            median = _calculate_median(prices)
+            return ScrapedPrice(
+                source="EBAY_SOLD",
+                price_eur=median,
+                median_price=median,
+                min_price=min(prices),
+                max_price=max(prices),
+                sold_count=len(prices),
+                source_url=url,
+                is_reliable=len(prices) >= 5,
+                notes=f"Median from {len(prices)} sold items (query search, outliers filtered)",
+            )
+
+        if html and _is_challenge_page(html):
+            logger.warning("ebay_sold.query_blocked", query=query)
+        else:
+            logger.warning("ebay_sold.query_no_sold_results", query=query)
+
+        try:
+            return await self._query_active_fallback(query)
+        except Exception as e:
+            logger.error("ebay_sold.query_price_failed", query=query, error=str(e))
+            return None
