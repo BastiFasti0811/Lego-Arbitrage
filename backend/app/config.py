@@ -92,8 +92,13 @@ class Settings(BaseSettings):
     max_risk_score_go: int = 6  # Max risk for GO recommendation
     max_risk_score_go_star: int = 5  # Max risk for GO ⭐
 
-    # ── AI Agent (Phase 3) ───────────────────────────────
+    # ── KI-Anbindung (Foto-Analyse + Anzeigentexte) ──────
+    # Key NUR aus .env, nie aus app_settings
+    ai_provider: str = "claude"
+    ai_model: str = "claude-opus-5"
     anthropic_api_key: str | None = None
+
+    # ── AI Agent (Phase 3) ───────────────────────────────
     anthropic_model_analysis: str = "claude-sonnet-4-20250514"
     anthropic_model_simple: str = "claude-haiku-4-5-20251001"
     ai_monthly_budget_eur: float = 100.0
