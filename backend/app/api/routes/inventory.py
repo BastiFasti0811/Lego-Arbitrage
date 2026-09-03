@@ -147,6 +147,9 @@ class InventoryResponse(BaseModel):
     item_type: str
     product_group: str
     search_query: str | None
+    ai_price_min: float | None
+    ai_price_max: float | None
+    ai_analysis_at: datetime | None
     buy_price: float | None
     buy_shipping: float
     total_invested: float | None
@@ -768,6 +771,7 @@ async def delete_inventory_item(item_id: int, session: AsyncSession = Depends(ge
 async def portfolio_summary(session: AsyncSession = Depends(get_session)):
     result = await session.execute(select(InventoryItem))
     items = result.scalars().all()
+    items = [i for i in items if i.status != InventoryStatus.DRAFT.value]
 
     holding = [i for i in items if i.status == InventoryStatus.HOLDING.value]
     sold = [i for i in items if i.status == InventoryStatus.SOLD.value]
@@ -1086,6 +1090,9 @@ def _to_response(item: InventoryItem) -> InventoryResponse:
         item_type=item.item_type,
         product_group=item.product_group,
         search_query=item.search_query,
+        ai_price_min=item.ai_price_min,
+        ai_price_max=item.ai_price_max,
+        ai_analysis_at=item.ai_analysis_at,
         buy_price=item.buy_price,
         buy_shipping=item.buy_shipping or 0,
         total_invested=total_invested,

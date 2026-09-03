@@ -26,6 +26,9 @@ def _item(**overrides):
         item_type="GENERIC",
         product_group="Elektronik",
         search_query="Bosch PSB 500",
+        ai_price_min=None,
+        ai_price_max=None,
+        ai_analysis_at=None,
         buy_price=None,
         buy_shipping=0.0,
         buy_date=date(2026, 8, 1),
@@ -115,6 +118,23 @@ async def test_portfolio_summary_mixes_priced_and_unpriced():
     assert summary.unrealized_profit == 45.0
     assert summary.holding_items == 3
     assert summary.sold_items == 0
+
+
+@pytest.mark.asyncio
+async def test_portfolio_summary_ignores_drafts():
+    holding_item = _item(status="HOLDING", buy_price=100.0, buy_shipping=5.0, current_market_price=150.0)
+    draft_item = _item(status="DRAFT", buy_price=999.0, buy_shipping=0.0, current_market_price=999.0)
+    session = _SummarySession([holding_item, draft_item])
+
+    summary = await portfolio_summary(session=session)
+
+    # Das DRAFT-Item darf in keiner Zahl auftauchen, auch nicht in total_items.
+    assert summary.total_items == 1
+    assert summary.holding_items == 1
+    assert summary.sold_items == 0
+    assert summary.total_invested == 105.0
+    assert summary.current_value == 150.0
+    assert summary.unrealized_profit == 45.0
 
 
 class _ScalarOneResult:
