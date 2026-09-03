@@ -88,11 +88,13 @@ class InventoryAdd(BaseModel):
             if not (self.set_number or "").strip():
                 raise ValueError("Set-Nummer ist bei Lego-Artikeln Pflicht")
             self.product_group = LEGO_PRODUCT_GROUP
-            if not self.search_query:
+            if not (self.search_query or "").strip():
                 self.search_query = f"LEGO {self.set_number}"
+            self.search_query = (self.search_query or "").strip() or None
         else:
             self.set_number = None
             self.product_group = (self.product_group or "").strip() or "Diverses"
+            self.search_query = (self.search_query or "").strip() or None
         return self
 
 
@@ -604,6 +606,8 @@ async def update_inventory_item(
     session: AsyncSession = Depends(get_session),
 ):
     item = await _get_item(item_id, session)
+    if item.item_type == InventoryItemType.LEGO.value and "product_group" in data.model_fields_set:
+        raise HTTPException(status_code=400, detail="Warengruppe ist bei Lego-Artikeln fest 'Lego'")
     for key, value in data.model_dump(exclude_unset=True).items():
         setattr(item, key, value)
     if not await _hydrate_market_snapshot(item, session):

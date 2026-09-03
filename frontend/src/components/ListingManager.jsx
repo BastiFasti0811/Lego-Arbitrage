@@ -96,7 +96,7 @@ function OpenListing({ itemId, listing, onDone }) {
     <div className="space-y-2">
       <div className="flex items-center justify-between text-sm text-text-primary">
         <span>
-          {Math.round(listing.current_price)}€ {listing.price_type === "VB" ? "VB" : ""} · {STATUS_LABELS[listing.status]}
+          {listing.current_price != null ? `${Math.round(listing.current_price)}€` : "—"} {listing.price_type === "VB" ? "VB" : ""} · {STATUS_LABELS[listing.status]}
           {" seit "}{formatDate(listing.listed_at)}
           {listing.at_floor && <span className="text-no-go"> · an der Schmerzgrenze</span>}
         </span>

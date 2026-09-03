@@ -55,3 +55,8 @@ def test_update_rejects_explicit_null_product_group():
 def test_update_without_product_group_is_fine():
     InventoryUpdate(set_name="X")
     assert "product_group" not in InventoryUpdate(set_name="X").model_fields_set
+
+
+def test_lego_strips_whitespace_search_query():
+    item = InventoryAdd(**_payload(item_type="LEGO", set_number="75331", buy_price=10.0, search_query="   "))
+    assert item.search_query == "LEGO 75331"
