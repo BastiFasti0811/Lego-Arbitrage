@@ -774,7 +774,7 @@ export default function Inventar() {
                   <div className="grid grid-cols-2 gap-3">
                     <select value={editForm.condition} onChange={(e) => setEditForm({ ...editForm, condition: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm">
                       <option value="NEW_SEALED">Neu & Versiegelt</option>
-                      <option value="NEW_OPEN">Neu & Geöffnet</option>
+                      <option value="NEW_OPEN_BOX">Neu & Geöffnet</option>
                       <option value="USED_COMPLETE">Gebraucht (komplett)</option>
                       <option value="USED_INCOMPLETE">Gebraucht (unvollständig)</option>
                     </select>
@@ -950,7 +950,7 @@ export default function Inventar() {
                   <div className="grid grid-cols-2 gap-3">
                     <select value={addForm.condition} onChange={(e) => setAddForm({ ...addForm, condition: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm">
                       <option value="NEW_SEALED">Neu & Versiegelt</option>
-                      <option value="NEW_OPEN">Neu & Geöffnet</option>
+                      <option value="NEW_OPEN_BOX">Neu & Geöffnet</option>
                       <option value="USED_COMPLETE">Gebraucht (komplett)</option>
                       <option value="USED_INCOMPLETE">Gebraucht (unvollständig)</option>
                     </select>
