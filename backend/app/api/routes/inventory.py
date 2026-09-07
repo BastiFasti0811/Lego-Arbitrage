@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes.listings import ListingResponse, open_listing_responses
 from app.config import settings
+from app.domain.condition import condition_ad_label, condition_ad_title_suffix
 from app.engine.roi_calculator import calculate_ebay_fees
 from app.models import AnalysisHistoryEntry, DealFeedback, LegoSet, get_session
 from app.models.inventory import (
@@ -561,12 +562,15 @@ async def get_sell_links(item_id: int, session: AsyncSession = Depends(get_sessi
     else:
         suggested_price = 0.0
 
+    title_suffix = condition_ad_title_suffix(item.condition)
     if item.set_number:
-        title = f"LEGO {item.set_number} {item.set_name} NEU OVP"
+        title = f"LEGO {item.set_number} {item.set_name}"
         ebay_keyword = f"LEGO {item.set_number}"
     else:
         title = item.set_name
         ebay_keyword = item.set_name
+    if title_suffix:
+        title = f"{title} {title_suffix}"
     if len(title) > 80:
         title = title[:77] + "..."
 
@@ -577,10 +581,12 @@ async def get_sell_links(item_id: int, session: AsyncSession = Depends(get_sessi
     ebay_url = f"https://www.ebay.de/sell/create?{urlencode(ebay_params)}"
 
     set_line = f"LEGO Set {item.set_number} - {item.set_name}\n" if item.set_number else f"{item.set_name}\n"
+    ad_label = condition_ad_label(item.condition)
+    condition_line = f"Zustand: {ad_label}\n" if ad_label else ""
     kleinanzeigen_text = (
         f"{title}\n\n"
         f"{set_line}"
-        f"Zustand: Neu & Originalverpackt (OVP)\n"
+        f"{condition_line}"
         f"Preis: {suggested_price:.0f}\u20ac\n\n"
         f"Versand m\u00f6glich."
     )
