@@ -90,6 +90,43 @@ def condition_value_factor(condition: str | None, box_damage: bool = False) -> f
     return round(factor, 4)
 
 
+# ── Zustand in der eigenen Verkaufsanzeige ───────────────────
+
+# Was in der eigenen Anzeige ueber den Zustand steht. Bewusst getrennt von den
+# Wertfaktoren oben: dort steht eine Schaetzung fuer die eigene Kalkulation,
+# hier eine Zusage an einen Kaeufer.
+#
+# UNKNOWN bekommt keinen Text. Eine Anzeige darf nichts behaupten, was niemand
+# geprueft hat, und beim eigenen Verkauf ist "Zustand unbekannt" keine Aussage,
+# sondern eine Luecke, die der Verkaeufer selbst schliessen muss.
+_AD_LABEL_BY_CONDITION = {
+    "NEW_SEALED": "Neu & Originalverpackt (OVP)",
+    "NEW_OPEN_BOX": "Neu, geöffnet",
+    "USED_COMPLETE": "Gebraucht, komplett",
+    "USED_INCOMPLETE": "Gebraucht, unvollständig",
+    "UNKNOWN": None,
+}
+
+# Kurzform fuer den Titel, wo die Zeichen knapp sind: eBay kappt bei 80.
+_AD_TITLE_SUFFIX_BY_CONDITION = {
+    "NEW_SEALED": "NEU OVP",
+    "NEW_OPEN_BOX": "NEU geöffnet",
+    "USED_COMPLETE": "gebraucht",
+    "USED_INCOMPLETE": "gebraucht, unvollständig",
+    "UNKNOWN": None,
+}
+
+
+def condition_ad_label(condition: str | None) -> str | None:
+    """Zustandszeile fuer die Anzeigenbeschreibung, oder None fuer keine Zeile."""
+    return _AD_LABEL_BY_CONDITION[normalize_condition(condition)]
+
+
+def condition_ad_title_suffix(condition: str | None) -> str | None:
+    """Zustand als Titelzusatz, oder None fuer keinen Zusatz."""
+    return _AD_TITLE_SUFFIX_BY_CONDITION[normalize_condition(condition)]
+
+
 # ── Zustand aus der Anzeige lesen ────────────────────────────────────
 
 # Die Auswahlwerte, die kleinanzeigen.de im Feld "Zustand" anbietet.
