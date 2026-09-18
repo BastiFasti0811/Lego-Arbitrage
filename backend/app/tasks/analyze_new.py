@@ -8,6 +8,7 @@ from sqlalchemy import and_, select
 from app.engine.decision_engine import Recommendation, analyze_deal
 from app.models import LegoSet, Offer, PriceRecord
 from app.models.base import async_session
+from app.notifications.delivery import require_delivery
 from app.notifications.telegram_bot import send_daily_summary, send_deal_alert
 from app.scrapers.base import ScrapedPrice
 from app.tasks.async_runner import run_async as _run_async
@@ -112,7 +113,7 @@ async def _analyze_new_async() -> dict:
 @celery_app.task(name="app.tasks.analyze_new.send_daily_summary_task")
 def send_daily_summary_task() -> dict:
     """Send daily summary of found deals. Runs at 20:00."""
-    return _run_async(_send_summary_async())
+    return require_delivery(_run_async(_send_summary_async()), "Tagesbericht")
 
 
 async def _send_summary_async() -> dict:

@@ -2,13 +2,16 @@
 
 import re
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AppSetting, get_session
+from app.models.heartbeat import TaskHeartbeat
 from app.runtime_settings import get_settings_map
+from app.tasks.celery_app import celery_app
 
 router = APIRouter()
 SECRET_MASK = "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
@@ -224,17 +227,24 @@ async def update_settings(updates: list[SettingUpdate], session: AsyncSession = 
     return await list_settings(session=session)
 
 
+# Berichte, deren Heartbeat bei totem Telegram auf "error" steht. Ohne
+# Neuauslosung blieben sie bis zum naechsten planmaessigen Lauf rot — beim
+# Wochenreport bis zu sieben Tage, mit Watchdog-Alarmen im Sechs-Stunden-Takt.
+NOTIFICATION_TASKS = (
+    "app.tasks.weekly_report.send_weekly_report_task",
+    "app.tasks.analyze_new.send_daily_summary_task",
+)
+
+
 @router.post("/test-telegram")
-async def test_telegram():
-    """Send a test message via Telegram."""
+async def test_telegram(session: AsyncSession = Depends(get_session)):
+    """Send a test message via Telegram; on success re-run reports that failed."""
     runtime_settings = await get_settings_map(["telegram_bot_token", "telegram_chat_id"])
     token = runtime_settings.get("telegram_bot_token")
     chat_id = runtime_settings.get("telegram_chat_id")
 
     if not token or not chat_id:
         raise HTTPException(status_code=400, detail="Telegram Bot Token und Chat ID muessen gesetzt sein")
-
-    import httpx
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
@@ -244,4 +254,19 @@ async def test_telegram():
         if response.status_code != 200:
             raise HTTPException(status_code=500, detail=f"Telegram Fehler: {response.text}")
 
-    return {"success": True, "message": "Test-Nachricht gesendet!"}
+    failing = (
+        await session.execute(
+            select(TaskHeartbeat.task_name).where(
+                TaskHeartbeat.task_name.in_(NOTIFICATION_TASKS),
+                TaskHeartbeat.last_status == "error",
+            )
+        )
+    ).scalars().all()
+    requeued = list(failing)
+    for task_name in requeued:
+        celery_app.send_task(task_name)
+
+    message = "Test-Nachricht gesendet!"
+    if requeued:
+        message += f" {len(requeued)} fehlgeschlagene(r) Bericht(e) werden jetzt neu gesendet."
+    return {"success": True, "message": message, "requeued": requeued}

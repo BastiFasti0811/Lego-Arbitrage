@@ -92,6 +92,7 @@ export const api = {
 
   // Health
   health: () => fetch(HEALTH_URL).then((r) => r.json()),
+  pipelineStatus: () => request("/system/status"),
 
   // Analysis
   analyze: (data) => request("/analysis/analyze", { method: "POST", body: JSON.stringify(data) }),
