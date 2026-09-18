@@ -7,13 +7,14 @@ from datetime import datetime
 import structlog
 from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.condition import classify_listing_condition
 from app.domain.platforms import detect_source_platform as infer_source_platform
 from app.models import AnalysisHistoryEntry, async_session, get_session
+from app.runtime_settings import get_settings_map
 from app.scrapers.kleinanzeigen import _parse_ka_price
 from app.security.url_policy import UnsafeUrlError, validate_marketplace_url
 from app.services.auction_watch import evaluate_auction
@@ -123,14 +124,16 @@ class AuctionMaxBidRequest(BaseModel):
     """Calculate the highest auction hammer price worth paying."""
 
     set_number: str
-    current_bid: float
-    purchase_shipping: float | None = None
+    current_bid: float = Field(ge=0, allow_inf_nan=False)
+    purchase_shipping: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     source_url: str | None = None
     source_platform: str = "CATAWIKI"
-    desired_roi_percent: float | None = None
-    buyer_fee_rate: float | None = None
-    buyer_fee_fixed: float | None = None
+    desired_roi_percent: float | None = Field(default=None, ge=0, le=1000, allow_inf_nan=False)
+    buyer_fee_rate: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    buyer_fee_fixed: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     fee_applies_to_shipping: bool = False
+    condition: str = "UNKNOWN"
+    box_damage: bool = False
     set_name: str | None = None
     theme: str | None = None
     release_year: int | None = None
@@ -488,6 +491,8 @@ async def calculate_auction_max_bid(request: AuctionMaxBidRequest):
         buyer_fee_rate=request.buyer_fee_rate,
         buyer_fee_fixed=request.buyer_fee_fixed,
         fee_applies_to_shipping=request.fee_applies_to_shipping,
+        condition=request.condition,
+        box_damage=request.box_damage,
         set_name=request.set_name,
         theme=request.theme,
         release_year=request.release_year,
@@ -505,8 +510,8 @@ async def calculate_auction_max_bid(request: AuctionMaxBidRequest):
         source_platform=evaluation.detected_platform,
         source_url=request.source_url,
         market_price=evaluation.analysis.market_consensus.consensus_price,
-        reference_price=evaluation.analysis.reference_price,
-        reference_label=evaluation.analysis.reference_label,
+        reference_price=evaluation.bid_result.expected_sale_price,
+        reference_label="MARKT_ZUSTAND",
         target_roi_percent=evaluation.bid_result.target_roi_percent,
         current_bid=round(request.current_bid, 2),
         recommended_max_bid=evaluation.bid_result.max_bid,
@@ -653,7 +658,10 @@ async def parse_listing_url(request: ParseUrlRequest):
     # Try to fetch the page for more details
     try:
         if platform == "CATAWIKI":
-            async with CatawikiScraper() as scraper:
+            config = await get_settings_map(["catawiki_cookie_header", "catawiki_user_agent"])
+            async with CatawikiScraper(
+                cookie_header=config.get("catawiki_cookie_header"), user_agent=config.get("catawiki_user_agent"),
+            ) as scraper:
                 html = await scraper._fetch(url)
         elif platform == "WHATNOT":
             async with WhatnotScraper() as scraper:
@@ -732,6 +740,7 @@ async def parse_listing_url(request: ParseUrlRequest):
         title = lot.title
         price = lot.current_bid
         shipping = lot.shipping_eur
+        condition = lot.condition
     elif platform == "WHATNOT":
         lot = parse_whatnot_listing_page(html, url)
         title = lot.title
@@ -750,7 +759,7 @@ async def parse_listing_url(request: ParseUrlRequest):
     # Extract LEGO set numbers from title (4-6 digit numbers)
     title_set_numbers: list[str] = []
     if title:
-        title_set_numbers = re.findall(r"\b(\d{4,6})\b", title)
+        title_set_numbers = (lot.set_numbers or []) if platform == "CATAWIKI" else re.findall(r"\b(\d{4,6})\b", title)
         if title_set_numbers:
             set_number = title_set_numbers[0]
 
@@ -759,14 +768,16 @@ async def parse_listing_url(request: ParseUrlRequest):
         # NEW_SEALED und kostete damit seit der Zustandsbewertung nicht mehr
         # nur 2 Risikopunkte, sondern den vollen Faktor 1.0.
         detected, _box_damage = classify_listing_condition(None, title)
-        if detected != "UNKNOWN":
+        if detected != "UNKNOWN" and platform != "CATAWIKI":
             condition = detected
 
     # Merge set numbers from title and URL, deduplicate preserving order
-    all_set_numbers = list(dict.fromkeys(title_set_numbers + url_set_numbers))
+    all_set_numbers = list(dict.fromkeys(
+        title_set_numbers if platform == "CATAWIKI" else title_set_numbers + url_set_numbers
+    ))
 
     # Fallback: use set number extracted from URL if HTML parsing didn't find one
-    if not set_number and url_set_number:
+    if not set_number and url_set_number and platform != "CATAWIKI":
         set_number = url_set_number
 
     is_konvolut = len(all_set_numbers) > 1

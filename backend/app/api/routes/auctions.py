@@ -1,20 +1,25 @@
 """Auction watchlist and discovery routes."""
 
-from datetime import UTC, datetime
+import asyncio
 
+import httpx
 import structlog
+from billiard.exceptions import SoftTimeLimitExceeded
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.platforms import detect_source_platform
-from app.models import AuctionWatchItem, LegoSet, get_session
+from app.models import AuctionScanState, AuctionWatchItem, LegoSet, get_session
 from app.runtime_settings import get_settings_map
+from app.scrapers.brickmerge import BrickMergeScraper
 from app.security.url_policy import UnsafeUrlError, validate_marketplace_url
+from app.services.auction_scan_state import save_scan
+from app.services.auction_tracking import refresh_watch_item
 from app.services.auction_watch import evaluate_auction
 from app.services.bricklink import BrickLinkScraper
-from app.services.catawiki import CatawikiScraper
+from app.services.catawiki import CatawikiParseError, CatawikiScraper, canonical_lot_url, lot_review_reasons
 from app.services.whatnot import WhatnotScraper
 
 logger = structlog.get_logger()
@@ -43,26 +48,26 @@ DISCOVERY_SETTINGS_BY_PLATFORM = {
 
 
 class AuctionWatchCreate(BaseModel):
-    set_number: str
+    set_number: str = Field(pattern=r"^\d{4,6}$")
     source_url: str
     source_platform: str = "CATAWIKI"
     lot_title: str | None = None
-    current_bid: float
-    purchase_shipping: float | None = None
-    desired_roi_percent: float | None = None
-    buyer_fee_rate: float | None = None
-    buyer_fee_fixed: float | None = None
+    current_bid: float = Field(ge=0, allow_inf_nan=False)
+    purchase_shipping: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    desired_roi_percent: float | None = Field(default=None, ge=0, le=1000, allow_inf_nan=False)
+    buyer_fee_rate: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    buyer_fee_fixed: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     fee_applies_to_shipping: bool = False
     notes: str | None = None
 
 
 class AuctionWatchUpdate(BaseModel):
     lot_title: str | None = None
-    current_bid: float | None = None
-    purchase_shipping: float | None = None
-    desired_roi_percent: float | None = None
-    buyer_fee_rate: float | None = None
-    buyer_fee_fixed: float | None = None
+    current_bid: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    purchase_shipping: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    desired_roi_percent: float | None = Field(default=None, ge=0, le=1000, allow_inf_nan=False)
+    buyer_fee_rate: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    buyer_fee_fixed: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     fee_applies_to_shipping: bool | None = None
     notes: str | None = None
     is_active: bool | None = None
@@ -106,8 +111,8 @@ class AuctionWatchResponse(BaseModel):
 
 class AuctionDiscoverRequest(BaseModel):
     source_platform: str = "CATAWIKI"
-    category_urls: list[str] = []
-    max_results_per_url: int = 20
+    category_urls: list[str] = Field(default_factory=list, max_length=10)
+    max_results_per_url: int = Field(default=20, ge=1, le=50)
 
 
 class AuctionDiscoverResult(BaseModel):
@@ -128,11 +133,18 @@ class AuctionDiscoverResult(BaseModel):
     market_price: float | None = None
     reference_price: float | None = None
     warning_text: str | None = None
+    bid_status: str = "NEEDS_REVIEW"
+    condition: str = "UNKNOWN"
+    all_in_cost_current: float | None = None
+    buyer_fee_current: float | None = None
+    source_prices: dict[str, float] = Field(default_factory=dict)
 
 
 def _normalize_platform(platform: str | None) -> str:
     normalized = (platform or "CATAWIKI").upper()
-    return normalized if normalized in DISCOVERY_SETTINGS_BY_PLATFORM else "CATAWIKI"
+    if normalized not in DISCOVERY_SETTINGS_BY_PLATFORM:
+        raise HTTPException(status_code=400, detail="Unbekannte Auktionsplattform")
+    return normalized
 
 
 async def _get_scan_settings(platform: str) -> dict[str, str | None]:
@@ -159,11 +171,11 @@ def _build_configured_discovery_payload(
     category_urls = _split_urls(settings_map.get(keys["scan_urls"]))
     cookie_header = settings_map.get(keys["cookie_header"])
     user_agent = settings_map.get(keys["user_agent"])
-    max_results = requested_max_results
+    max_results = max(1, min(requested_max_results, 50))
     configured_limit = settings_map.get(keys["max_results"])
     if configured_limit and configured_limit.isdigit():
-        max_results = min(max_results, int(configured_limit))
-    return category_urls, cookie_header, user_agent, max_results
+        max_results = max(1, min(max_results, int(configured_limit)))
+    return list(dict.fromkeys(category_urls))[:10], cookie_header, user_agent, max_results
 
 
 def _make_scraper(platform: str, cookie_header: str | None, user_agent: str | None):
@@ -214,45 +226,12 @@ def _serialize_watch(item: AuctionWatchItem, lego_set: LegoSet) -> AuctionWatchR
 
 
 async def _apply_watch_evaluation(item: AuctionWatchItem, lego_set: LegoSet) -> None:
-    evaluation = await evaluate_auction(
-        set_number=lego_set.set_number,
-        current_bid=item.current_bid,
-        purchase_shipping=item.purchase_shipping,
-        source_url=item.source_url,
-        source_platform=item.source_platform,
-        desired_roi_percent=item.desired_roi_percent,
-        buyer_fee_rate=item.buyer_fee_rate,
-        buyer_fee_fixed=item.buyer_fee_fixed,
-        fee_applies_to_shipping=item.fee_applies_to_shipping,
-        set_name=lego_set.set_name,
-        theme=lego_set.theme,
-        release_year=lego_set.release_year,
-        uvp=lego_set.uvp_eur,
-        eol_status=lego_set.eol_status,
-    )
-
-    item.max_bid = evaluation.bid_result.max_bid
-    item.break_even_bid = evaluation.bid_result.break_even_bid
-    item.bid_gap = evaluation.current_bid_gap
-    item.bid_status = evaluation.bid_status
-    item.recommendation_text = evaluation.recommendation_text
-    item.expected_roi_current = evaluation.expected_roi_at_current_bid
-    item.expected_roi_target = evaluation.bid_result.expected_roi_at_max_bid
-    item.expected_profit_current = evaluation.expected_profit_at_current_bid
-    item.expected_profit_target = evaluation.bid_result.expected_profit_at_max_bid
-    item.all_in_cost_current = evaluation.current_total_purchase_cost
-    item.all_in_cost_target = evaluation.bid_result.total_purchase_cost_at_max_bid
-    item.buyer_fee_current = evaluation.current_buyer_fee
-    item.buyer_fee_target = evaluation.bid_result.buyer_fee_at_max_bid
-    item.market_price = evaluation.analysis.market_consensus.consensus_price
-    item.reference_price = evaluation.analysis.reference_price
-    item.reference_label = evaluation.analysis.reference_label
-    item.set_category = evaluation.analysis.category
-    item.eol_status = evaluation.eol_status
-    item.warning_text = evaluation.warnings[0] if evaluation.warnings else None
-    item.last_checked_at = datetime.now(UTC)
-    item.check_count = (item.check_count or 0) + 1
-    item.status = "ACTIVE" if evaluation.can_bid_now else "OVER_LIMIT"
+    try:
+        await refresh_watch_item(item, lego_set)
+    except SoftTimeLimitExceeded:
+        raise
+    except Exception as exc:
+        logger.warning("auction.refresh_failed", error=type(exc).__name__)
 
 
 async def _evaluate_lot(
@@ -261,9 +240,20 @@ async def _evaluate_lot(
     platform: str,
     lot,
 ) -> AuctionDiscoverResult | None:
-    set_number = lot.set_numbers[0] if lot.set_numbers else None
+    set_number = lot.set_numbers[0] if lot.set_numbers and len(lot.set_numbers) == 1 else None
+    result = AuctionDiscoverResult(
+        source_platform=platform, category_url=category_url, lot_title=lot.title, source_url=lot.url,
+        set_numbers=lot.set_numbers or [], set_number=set_number, current_bid=lot.current_bid,
+        purchase_shipping=lot.shipping_eur, condition=getattr(lot, "condition", "UNKNOWN"),
+    )
+    reasons = lot_review_reasons(lot) if platform == "CATAWIKI" else []
     if not set_number or lot.current_bid is None:
-        return None
+        reasons.append("Set oder Preis fehlt: manuell pruefen.")
+    if reasons:
+        result.bid_status = "ENDED" if getattr(lot, "is_closed", False) else "NEEDS_REVIEW"
+        result.recommendation_text = " ".join(reasons)
+        result.warning_text = result.recommendation_text
+        return result
 
     try:
         evaluation = await evaluate_auction(
@@ -272,10 +262,18 @@ async def _evaluate_lot(
             purchase_shipping=lot.shipping_eur,
             source_url=lot.url,
             source_platform=platform,
+            condition=getattr(lot, "condition", "UNKNOWN"),
+            box_damage=getattr(lot, "box_damage", False),
+            buyer_fee_rate=getattr(lot, "buyer_fee_rate", None),
+            buyer_fee_fixed=getattr(lot, "buyer_fee_fixed", None),
         )
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as exc:
         logger.warning("auction.discover_evaluation_failed", url=lot.url, error=str(exc))
-        return None
+        result.recommendation_text = "Marktvergleich fehlgeschlagen. Spaeter erneut pruefen."
+        result.warning_text = result.recommendation_text
+        return result
 
     return AuctionDiscoverResult(
         source_platform=platform,
@@ -293,8 +291,13 @@ async def _evaluate_lot(
         expected_roi_current=evaluation.expected_roi_at_current_bid,
         expected_profit_current=evaluation.expected_profit_at_current_bid,
         market_price=evaluation.analysis.market_consensus.consensus_price,
-        reference_price=evaluation.analysis.reference_price,
-        warning_text=evaluation.warnings[0] if evaluation.warnings else None,
+        reference_price=evaluation.bid_result.expected_sale_price,
+        warning_text=" ".join(evaluation.warnings) or None,
+        bid_status=evaluation.bid_status,
+        condition=getattr(lot, "condition", "UNKNOWN"),
+        all_in_cost_current=evaluation.current_total_purchase_cost,
+        buyer_fee_current=evaluation.current_buyer_fee,
+        source_prices=evaluation.analysis.market_consensus.source_prices,
     )
 
 
@@ -305,17 +308,29 @@ async def _discover_for_category(
     cookie_header: str | None,
     user_agent: str | None,
     max_results: int,
+    collected: dict[str, AuctionDiscoverResult] | None = None,
 ) -> list[AuctionDiscoverResult]:
     platform = _normalize_platform(source_platform or _platform_from_url(category_url))
     validate_marketplace_url(category_url, platform)
-    async with _make_scraper(platform, cookie_header, user_agent) as scraper:
-        lots = await scraper.scan_category(category_url, limit=max_results)
-
     results: list[AuctionDiscoverResult] = []
-    for lot in lots:
-        evaluated = await _evaluate_lot(category_url=category_url, platform=platform, lot=lot)
-        if evaluated:
+    async with _make_scraper(platform, cookie_header, user_agent) as scraper:
+        direct_lot = False
+        if platform == "CATAWIKI":
+            try:
+                canonical_lot_url(category_url)
+                direct_lot = True
+            except CatawikiParseError:
+                pass
+        lots = [await scraper.get_lot(category_url)] if direct_lot else await scraper.scan_category(
+            category_url, limit=max_results,
+        )
+        for lot in lots:
+            if platform == "CATAWIKI" and not direct_lot:
+                lot = await scraper.get_lot(lot.url)
+            evaluated = await _evaluate_lot(category_url=category_url, platform=platform, lot=lot)
             results.append(evaluated)
+            if collected is not None:
+                collected[evaluated.source_url] = evaluated
     return results
 
 
@@ -329,18 +344,48 @@ async def _discover_configured_platform(
         settings_map,
         max_results_per_url,
     )
-    discovered: list[AuctionDiscoverResult] = []
-    for category_url in category_urls:
-        discovered.extend(
-            await _discover_for_category(
-                category_url=category_url,
-                source_platform=platform,
-                cookie_header=cookie_header,
-                user_agent=user_agent,
-                max_results=max_results,
-            )
-        )
-    return discovered
+    if not category_urls:
+        return []
+    return await _scan_urls(platform, category_urls, cookie_header, user_agent, max_results)
+
+
+async def _scan_urls(platform, category_urls, cookie_header, user_agent, max_results):
+    # Validate the complete request before using this platform's session cookies.
+    for url in category_urls:
+        validate_marketplace_url(url, platform)
+    discovered = {}
+    errors = []
+    try:
+        # Three source platforms must finish within the worker's nine-minute limit.
+        async with asyncio.timeout(120):
+            for category_url in dict.fromkeys(category_urls):
+                try:
+                    results = await _discover_for_category(
+                        category_url=category_url, source_platform=platform, cookie_header=cookie_header,
+                        user_agent=user_agent, max_results=max_results,
+                        collected=discovered,
+                    )
+                    for item in results:
+                        discovered[item.source_url] = item
+                except (httpx.HTTPError, CatawikiParseError) as exc:
+                    errors.append(f"{platform}: Quelle gesperrt oder Seite nicht lesbar ({type(exc).__name__}).")
+                    # Stop on source failure instead of multiplying requests against a block.
+                    break
+    except TimeoutError:
+        errors.append(f"{platform}: Zeitlimit erreicht. Weniger Lose oder URLs pro Scan einstellen.")
+    results = sorted(discovered.values(), key=lambda item: (item.can_bid_now, item.expected_profit_current or 0),
+                     reverse=True)
+    await save_scan(platform, [item.model_dump() for item in results], errors)
+    if errors:
+        raise HTTPException(status_code=502, detail=" ".join(errors))
+    return results
+
+
+@router.get("/discovery-results")
+async def latest_discovery_results(session: AsyncSession = Depends(get_session)):
+    states = (await session.execute(select(AuctionScanState))).scalars().all()
+    return [{"source_platform": state.platform, "scanned_at": state.scanned_at.isoformat(),
+             "status": state.status, "results": state.results, "errors": state.errors} for state in states]
 
 
 @router.get("/", response_model=list[AuctionWatchResponse])
@@ -356,15 +401,36 @@ async def list_auction_watchlist(session: AsyncSession = Depends(get_session)):
 
 @router.post("/", response_model=AuctionWatchResponse)
 async def add_auction_watch(data: AuctionWatchCreate, session: AsyncSession = Depends(get_session)):
+    platform = _normalize_platform(data.source_platform)
+    try:
+        validate_marketplace_url(data.source_url, platform)
+        source_url = canonical_lot_url(data.source_url) if platform == "CATAWIKI" else data.source_url
+    except (UnsafeUrlError, CatawikiParseError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    existing = await session.execute(select(AuctionWatchItem).where(
+        AuctionWatchItem.source_url == source_url, AuctionWatchItem.is_active,
+    ))
+    if existing.scalars().first():
+        raise HTTPException(status_code=409, detail="Dieses Los wird bereits beobachtet")
     result = await session.execute(select(LegoSet).where(LegoSet.set_number == data.set_number))
     lego_set = result.scalar_one_or_none()
     if not lego_set:
-        raise HTTPException(status_code=404, detail=f"Set {data.set_number} nicht gefunden")
+        async with BrickMergeScraper() as scraper:
+            info = await scraper.get_set_info(data.set_number)
+        if not info or not info.release_year:
+            raise HTTPException(status_code=422, detail="Setmetadaten fehlen. Set zuerst im Deal-Checker pruefen.")
+        lego_set = LegoSet(
+            set_number=data.set_number, set_name=info.set_name or f"LEGO {data.set_number}",
+            theme=info.theme or "Unknown", release_year=info.release_year,
+            uvp_eur=info.uvp_eur, eol_status=info.eol_status or "UNKNOWN",
+        )
+        session.add(lego_set)
+        await session.flush()
 
     item = AuctionWatchItem(
         set_id=lego_set.id,
-        source_platform=data.source_platform.upper(),
-        source_url=data.source_url,
+        source_platform=platform,
+        source_url=source_url,
         lot_title=data.lot_title,
         current_bid=data.current_bid,
         purchase_shipping=data.purchase_shipping or 0.0,
@@ -455,21 +521,7 @@ async def discover_auction_lots(request: AuctionDiscoverRequest):
     if not category_urls:
         raise HTTPException(status_code=400, detail=f"Keine {platform.title()}-Scan-URLs konfiguriert")
 
-    discovered: list[AuctionDiscoverResult] = []
-    for category_url in category_urls:
-        try:
-            effective_platform = _platform_from_url(category_url)
-            discovered.extend(
-                await _discover_for_category(
-                    category_url=category_url,
-                    source_platform=effective_platform,
-                    cookie_header=cookie_header,
-                    user_agent=user_agent,
-                    max_results=max_results,
-                )
-            )
-        except UnsafeUrlError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    discovered.sort(key=lambda item: (item.can_bid_now, item.expected_profit_current or 0), reverse=True)
-    return discovered
+    try:
+        return await _scan_urls(platform, category_urls, cookie_header, user_agent, max_results)
+    except UnsafeUrlError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -1,5 +1,10 @@
 # STATUS — Lego-Arbitrage (Stand-Rekonstruktion 2026-08-16)
 
+> Aktualisierung 2026-09-05: Dieser Bericht ist ein historischer Audit, keine aktuelle Fehlerliste.
+> Der aktuelle Stand mit Server-Abgleich und offenen Catawiki-Punkten steht in
+> [docs/status-2026-09-05.md](docs/status-2026-09-05.md).
+> Insbesondere sind Pipeline, Inventar und KI seit diesem Audit erheblich weiterentwickelt worden.
+
 Erhoben am 2026-08-16 durch vollständige Repo-, Git- und Lokal-Laufzeit-Inventur plus adversarialen Gegenblick. Server (`spm-prod-01`) wurde **nicht** betreten — alle Server-Aussagen sind entsprechend markiert.
 
 ## 1. Wiedereinstiegs-Briefing

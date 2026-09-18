@@ -109,6 +109,14 @@ DEFAULT_SETTINGS = [
         "value": "20",
     },
     {
+        "key": "catawiki_scan_frequency",
+        "category": "catawiki",
+        "label": "Automatischer Scan",
+        "description": "daily = taeglich 08:40, weekly = Sonntag 08:40, off = aus (Europe/Berlin)",
+        "is_secret": False,
+        "value": "daily",
+    },
+    {
         "key": "whatnot_cookie_header",
         "category": "whatnot",
         "label": "Cookie Header",
@@ -207,6 +215,8 @@ async def list_settings(category: str | None = None, session: AsyncSession = Dep
 async def update_settings(updates: list[SettingUpdate], session: AsyncSession = Depends(get_session)):
     """Update one or more settings."""
     for update in updates:
+        if update.key == "catawiki_scan_frequency" and update.value not in {"daily", "weekly", "off"}:
+            raise HTTPException(status_code=400, detail="Catawiki-Intervall: daily, weekly oder off")
         default = DEFAULT_SETTINGS_BY_KEY.get(update.key)
         if default is None:
             raise HTTPException(status_code=400, detail=f"Unbekannter Setting-Key: {update.key}")

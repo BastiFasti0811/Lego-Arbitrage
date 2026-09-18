@@ -221,12 +221,15 @@ async def send_auction_discovery_summary(discovered: list[dict]) -> bool:
     platform_label = ", ".join(platforms)
     lines = [f"*Auction Scan ({platform_label})*", f"Treffer: {len(discovered)}", ""]
     for item in discovered[:5]:
+        price_label = "Preis" if item.get("source_platform") == "BRICKLINK" else "Gebot"
         lines.append(
-
-                f"{item.get('source_platform', 'AUCTION')} | LEGO {item['set_number']} | "
-                f"Gebot {item['current_bid']:.0f} EUR | Max {item['recommended_max_bid']:.0f} EUR"
-
+            f"{item.get('source_platform', 'AUCTION')} | LEGO {item['set_number']} | "
+            f"{price_label} {item['current_bid']:.2f} EUR | Max {item['recommended_max_bid']:.2f} EUR"
         )
+        if item.get("all_in_cost_current") is not None:
+            lines.append(f"Inklusive Gebuehren und Versand: {item['all_in_cost_current']:.2f} EUR")
+        if item.get("source_url"):
+            lines.append(item["source_url"])
     try:
         bot = Bot(token=bot_token)
         await bot.send_message(chat_id=chat_id, text="\n".join(lines), parse_mode=ParseMode.MARKDOWN)

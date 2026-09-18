@@ -105,6 +105,7 @@ export const api = {
 
   // Auctions
   listAuctionWatch: () => request("/auctions/"),
+  latestAuctionDiscovery: () => request("/auctions/discovery-results"),
   addAuctionWatch: (data) => request("/auctions/", { method: "POST", body: JSON.stringify(data) }),
   updateAuctionWatch: (id, data) => request(`/auctions/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   refreshAuctionWatch: (id) => request(`/auctions/${id}/refresh`, { method: "POST" }),

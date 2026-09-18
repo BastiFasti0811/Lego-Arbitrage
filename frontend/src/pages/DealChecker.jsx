@@ -418,6 +418,7 @@ export default function DealChecker() {
       desired_roi_percent: auctionTargetRoi ? parseFloat(auctionTargetRoi) : null,
       source_url: sourceUrl || null,
       source_platform: auctionPlatform || sourcePlatform || "CATAWIKI",
+      condition,
     });
   };
 
@@ -429,7 +430,7 @@ export default function DealChecker() {
       source_platform: auctionPlatform || sourcePlatform || "CATAWIKI",
       lot_title: result?.set_name ? `LEGO ${setNumber} - ${result.set_name}` : null,
       current_bid: parseFloat(auctionCurrentBid),
-      purchase_shipping: auctionShipping ? parseFloat(auctionShipping) : 0,
+      purchase_shipping: auctionShipping ? parseFloat(auctionShipping) : null,
       desired_roi_percent: auctionTargetRoi ? parseFloat(auctionTargetRoi) : auctionMaxBid.data.target_roi_percent,
     });
   };
