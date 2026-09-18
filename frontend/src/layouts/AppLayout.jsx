@@ -50,7 +50,10 @@ export default function AppLayout() {
             <span className="text-lego-yellow font-bold text-lg">LEGO</span>
             <span className="text-text-secondary text-xs">Deal Desk</span>
           </div>
-          <SettingsGearIcon />
+          <div className="flex items-center gap-3">
+            <SystemStatus />
+            <SettingsGearIcon />
+          </div>
         </div>
       </div>
 

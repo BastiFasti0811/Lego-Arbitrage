@@ -264,9 +264,15 @@ export default function Settings() {
 
   const telegramMutation = useMutation({
     mutationFn: () => api.testTelegram(),
-    onSuccess: () => {
-      setTelegramStatus({ type: "success", message: "Testnachricht gesendet." });
-      setTimeout(() => setTelegramStatus(null), 4000);
+    onSuccess: (result) => {
+      // Die Serverantwort nennt, ob fehlgeschlagene Berichte neu angestossen
+      // wurden. Der Statuspunkt im Header soll das zeitnah zeigen, nicht erst
+      // beim naechsten Fuenf-Minuten-Abruf.
+      setTelegramStatus({ type: "success", message: result?.message || "Testnachricht gesendet." });
+      setTimeout(() => setTelegramStatus(null), 8000);
+      if (result?.requeued?.length) {
+        setTimeout(() => queryClient.invalidateQueries({ queryKey: ["pipeline-status"] }), 20_000);
+      }
     },
     onError: (error) => {
       setTelegramStatus({ type: "error", message: error.message || "Fehler beim Senden" });
