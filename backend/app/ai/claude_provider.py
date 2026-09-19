@@ -8,6 +8,7 @@ import base64
 
 import anthropic
 import structlog
+from pydantic import ValidationError
 
 from app.ai.schemas import ItemDraft, ListingText
 from app.config import settings
@@ -86,6 +87,12 @@ class ClaudeProvider:
         except anthropic.AnthropicError as exc:
             logger.error("ai.analyze_failed", error_type=type(exc).__name__)
             raise AIProviderError("KI-Aufruf fehlgeschlagen") from exc
+        except ValidationError as exc:
+            # anthropic 1.x validiert schon in parse(): abgeschnittenes JSON
+            # (max_tokens) oder fehlende Felder kommen hier an, nicht als
+            # parsed_output=None.
+            logger.error("ai.analyze_invalid_output", errors=exc.error_count())
+            raise AIProviderError("Die KI-Antwort war unvollstaendig — bitte erneut versuchen") from exc
         if response.stop_reason == "refusal":
             raise AIProviderError("Die KI hat die Analyse dieser Fotos abgelehnt")
         if response.parsed_output is None:
@@ -93,7 +100,15 @@ class ClaudeProvider:
         return response.parsed_output
 
     async def write_listing(
-        self, *, name: str, condition: str, notes: str | None, platform: str, price: float, price_type: str
+        self,
+        *,
+        name: str,
+        condition: str,
+        notes: str | None,
+        platform: str,
+        price: float,
+        price_type: str,
+        quantity: int = 1,
     ) -> ListingText:
         price_suffix = " VB" if price_type == "VB" else ""
         prompt = (
@@ -101,6 +116,8 @@ class ClaudeProvider:
             f"Artikel: {name}\nZustand: {condition}\n"
             f"Preis: {price:.0f} Euro{price_suffix} (in den Text uebernehmen).\n"
         )
+        if quantity > 1:
+            prompt += f"Menge: {quantity} Stueck vorhanden, der Preis gilt pro Stueck.\n"
         if notes:
             prompt += f"Bekannte Details: {notes}\n"
         try:
@@ -119,6 +136,9 @@ class ClaudeProvider:
         except anthropic.AnthropicError as exc:
             logger.error("ai.write_listing_failed", error_type=type(exc).__name__)
             raise AIProviderError("KI-Aufruf fehlgeschlagen") from exc
+        except ValidationError as exc:
+            logger.error("ai.write_listing_invalid_output", errors=exc.error_count())
+            raise AIProviderError("Die KI-Antwort war unvollstaendig — bitte erneut versuchen") from exc
         if response.stop_reason == "refusal":
             raise AIProviderError("Die KI hat die Texterstellung abgelehnt")
         if response.parsed_output is None:

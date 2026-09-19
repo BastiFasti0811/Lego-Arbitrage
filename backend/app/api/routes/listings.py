@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import AIProviderError, get_provider
 from app.models import get_session
-from app.models.inventory import InventoryItem, InventoryStatus
+from app.models.inventory import InventoryItem, InventoryItemType, InventoryStatus
 from app.models.listing import OPEN_LISTING_STATUSES, Listing, ListingPlatform, ListingStatus
 from app.services.listing_rules import (
     apply_price_change,
@@ -145,6 +145,22 @@ async def _get_listing(item_id: int, listing_id: int, session: AsyncSession) -> 
     return listing
 
 
+TITLE_MAX_LENGTH = Listing.__table__.c.title.type.length
+
+
+def _listing_name(item: InventoryItem) -> str:
+    """Artikelname fuer den KI-Prompt. Bei Lego gehoeren Marke und Setnummer in
+    den Titel -- danach wird gesucht, get_sell_links setzt sie ebenso voran."""
+    if item.item_type != InventoryItemType.LEGO.value or not item.set_number or item.set_number in item.set_name:
+        return item.set_name
+    return f"LEGO {item.set_number} {item.set_name}"
+
+
+def _reject_unconfirmed_draft(item: InventoryItem) -> None:
+    if item.status == InventoryStatus.DRAFT.value:
+        raise HTTPException(status_code=400, detail="Entwurf zuerst bestaetigen")
+
+
 def _draft_price(item: InventoryItem, listing: Listing | None, body_price: float | None) -> float | None:
     """Preis-Fallback-Kette fuer KI-Anzeigentexte (Draft-Erzeugung und -Refresh).
 
@@ -185,6 +201,7 @@ async def draft_listing(item_id: int, data: ListingDraftRequest, session: AsyncS
     item = await _get_item(item_id, session)
     if item.status == InventoryStatus.SOLD.value:
         raise HTTPException(status_code=400, detail="Verkaufte Artikel lassen sich nicht neu einstellen")
+    _reject_unconfirmed_draft(item)
     platform = data.platform.strip().upper()
     if platform not in (p.value for p in ListingPlatform):
         raise HTTPException(status_code=400, detail=f"Unbekannte Plattform: {platform}")
@@ -202,19 +219,20 @@ async def draft_listing(item_id: int, data: ListingDraftRequest, session: AsyncS
     try:
         provider = get_provider()
         text = await provider.write_listing(
-            name=item.set_name,
+            name=_listing_name(item),
             condition=item.condition,
             notes=item.notes,
             platform=platform,
             price=price,
             price_type=price_type,
+            quantity=item.quantity,
         )
     except AIProviderError as exc:
         raise HTTPException(status_code=503, detail=exc.detail) from exc
 
     if existing is not None:
         listing = existing
-        listing.title = text.title
+        listing.title = text.title[:TITLE_MAX_LENGTH]
         listing.body = text.body
         listing.platform_category = text.platform_category
     else:
@@ -223,7 +241,7 @@ async def draft_listing(item_id: int, data: ListingDraftRequest, session: AsyncS
             platform=platform,
             status=ListingStatus.DRAFT.value,
             price_type=price_type,
-            title=text.title,
+            title=text.title[:TITLE_MAX_LENGTH],
             body=text.body,
             platform_category=text.platform_category,
             check_interval_days=14,
@@ -260,17 +278,18 @@ async def refresh_listing_text(item_id: int, listing_id: int, session: AsyncSess
     try:
         provider = get_provider()
         text = await provider.write_listing(
-            name=item.set_name,
+            name=_listing_name(item),
             condition=item.condition,
             notes=item.notes,
             platform=listing.platform,
             price=price,
             price_type=listing.price_type,
+            quantity=item.quantity,
         )
     except AIProviderError as exc:
         raise HTTPException(status_code=503, detail=exc.detail) from exc
 
-    listing.title = text.title
+    listing.title = text.title[:TITLE_MAX_LENGTH]
     listing.body = text.body
     listing.platform_category = text.platform_category
     await session.commit()
@@ -290,6 +309,7 @@ async def create_listing(item_id: int, data: ListingCreate, session: AsyncSessio
     item = await _get_item(item_id, session)
     if item.status == InventoryStatus.SOLD.value:
         raise HTTPException(status_code=400, detail="Verkaufte Artikel lassen sich nicht neu einstellen")
+    _reject_unconfirmed_draft(item)
     platform = data.platform.strip().upper()
     min_price = data.min_price if data.min_price is not None else default_min_price(data.current_price)
     error = validate_activation(platform, data.current_price, min_price)
@@ -381,7 +401,11 @@ async def update_listing(
         if value is not None:
             setattr(listing, field, value)
 
-    if data.current_price is not None:
+    if data.current_price is not None and listing.status == ListingStatus.DRAFT.value:
+        # Noch nicht eingestellt: kein alter Anzeigenpreis, also keine Preisaenderung
+        # und kein Check-Termin -- beides beginnt erst mit der Aktivierung.
+        listing.current_price = data.current_price
+    elif data.current_price is not None:
         change = apply_price_change(listing, data.current_price, datetime.now(UTC))
         if change is not None:
             session.add(change)

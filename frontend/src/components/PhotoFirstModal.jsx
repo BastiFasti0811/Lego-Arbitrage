@@ -47,7 +47,8 @@ export default function PhotoFirstModal({ onClose, onCreated }) {
   const [cancelling, setCancelling] = useState(false);
 
   const photoEntriesRef = useRef([]);
-  const uploadedIdsRef = useRef(new Set());
+  // Lokale Eintrags-ID -> Foto-ID auf dem Server, für schon hochgeladene Fotos.
+  const uploadedIdsRef = useRef(new Map());
 
   useEffect(() => {
     photoEntriesRef.current = photoEntries;
@@ -61,7 +62,20 @@ export default function PhotoFirstModal({ onClose, onCreated }) {
     if (fileList?.length) setPhotoEntries((prev) => [...prev, ...createLocalPhotoEntries(fileList)]);
   }
 
-  function removePhoto(photoId) {
+  async function removePhoto(photoId) {
+    const serverId = uploadedIdsRef.current.get(photoId);
+    if (serverId != null) {
+      // Ein hochgeladenes Foto hängt am Entwurf und flösse sonst in jede
+      // weitere Analyse ein, obwohl es hier nicht mehr zu sehen ist.
+      uploadedIdsRef.current.delete(photoId);
+      try {
+        await api.deleteInventoryPhoto(itemId, serverId);
+      } catch (err) {
+        uploadedIdsRef.current.set(photoId, serverId);
+        setAnalyzeError(err.message);
+        return;
+      }
+    }
     setPhotoEntries((prev) => {
       const removed = prev.find((entry) => entry.id === photoId);
       if (removed) URL.revokeObjectURL(removed.previewUrl);
@@ -84,8 +98,11 @@ export default function PhotoFirstModal({ onClose, onCreated }) {
       // ein zweites Mal an den Artikel hängen.
       const pending = photoEntries.filter((entry) => !uploadedIdsRef.current.has(entry.id));
       if (pending.length > 0) {
-        await api.uploadInventoryPhotos(id, pending.map((entry) => entry.file));
-        pending.forEach((entry) => uploadedIdsRef.current.add(entry.id));
+        const stored = await api.uploadInventoryPhotos(id, pending.map((entry) => entry.file));
+        // Die Antwort ist die komplette Fotoliste des Entwurfs nach sort_order;
+        // die gerade hochgeladenen stehen in Upload-Reihenfolge am Ende.
+        const created = stored.slice(-pending.length);
+        pending.forEach((entry, index) => uploadedIdsRef.current.set(entry.id, created[index].id));
       }
       const result = await api.analyzeItem(id, hints.trim());
       setReview({

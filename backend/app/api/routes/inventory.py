@@ -12,6 +12,7 @@ import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
+from PIL import Image
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,6 +57,7 @@ ALLOWED_IMAGE_TYPES = {
 }
 MAX_PHOTOS_PER_ITEM = settings.inventory_photo_max_count
 MAX_PHOTO_BYTES = settings.inventory_photo_max_bytes
+ABANDONED_DRAFT_AGE = timedelta(days=1)
 
 
 class InventoryPhotoUpload(BaseModel):
@@ -499,7 +501,23 @@ async def get_valuation_run(run_id: int, session: AsyncSession = Depends(get_ses
 # "draft" als item_id.
 @router.post("/draft", response_model=InventoryResponse)
 async def create_draft_item(session: AsyncSession = Depends(get_session)):
-    """Foto-first-Einstieg: leerer Entwurf, den /analyze und /confirm fuellen."""
+    """Foto-first-Einstieg: leerer Entwurf, den /analyze und /confirm fuellen.
+
+    Raeumt vorher Entwuerfe ab, die seit ueber einem Tag liegen: Wer nach dem
+    Upload den Tab schliesst statt abzubrechen, hinterlaesst sonst Zeile und
+    Fotos -- unsichtbar, weil Liste und Summary DRAFT ausblenden."""
+    cutoff = datetime.now(UTC) - ABANDONED_DRAFT_AGE
+    stale = (
+        await session.execute(
+            select(InventoryItem).where(
+                InventoryItem.status == InventoryStatus.DRAFT.value, InventoryItem.created_at < cutoff
+            )
+        )
+    ).scalars().all()
+    stale_ids = [old.id for old in stale]
+    for old in stale:
+        await session.delete(old)
+
     item = InventoryItem(
         item_type=InventoryItemType.GENERIC.value,
         set_name="Neuer Artikel",
@@ -510,6 +528,10 @@ async def create_draft_item(session: AsyncSession = Depends(get_session)):
     session.add(item)
     await session.commit()
     await session.refresh(item)
+    for old_id in stale_ids:
+        rmtree(_photo_dir(old_id), ignore_errors=True)
+    if stale_ids:
+        logger.info("inventory.abandoned_drafts_removed", item_ids=stale_ids)
     logger.info("inventory.draft_created", item_id=item.id)
     return _to_response(item)
 
@@ -710,13 +732,14 @@ async def analyze_inventory_item(
             continue
         try:
             prepared.append(prepare_photo(path, photo.content_type))
-        except OSError:
+        except (OSError, Image.DecompressionBombError):
             # UnidentifiedImageError (Pillow) ist eine OSError-Unterklasse:
             # _decode_photo_payload prueft beim Upload nur Base64/Content-Type/
             # Groesse, nie ob die Bytes wirklich ein Bild ergeben. Eine defekte
             # oder Content-Type-vorgetaeuschte Datei darf die Analyse nicht mit
             # einem rohen 500 abbrechen -- sie wird wie eine fehlende Datei
-            # behandelt und uebersprungen.
+            # behandelt und uebersprungen. DecompressionBombError (winzige Datei,
+            # riesige Pixelzahl) erbt dagegen direkt von Exception.
             logger.warning("inventory.analyze_photo_undecodable", item_id=item.id, photo_id=photo.id)
             continue
     if not prepared:
@@ -817,6 +840,16 @@ async def revalue_inventory_item(item_id: int, session: AsyncSession = Depends(g
                 "Marktwert, es wurde nichts gespeichert"
             ),
         )
+    if not price.is_reliable:
+        # Die Freitextsuche filtert keine Titel; ein, zwei Treffer koennen
+        # Zubehoer sein. Belastbar ist erst, was get_price_for_query so markiert.
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Nur {price.sold_count} eBay-Verkaeufe gefunden (Median {median:.0f} €) — "
+                "zu wenig fuer einen Marktwert, es wurde nichts gespeichert"
+            ),
+        )
     item.current_market_price = round(median, 2)
     item.market_price_updated_at = datetime.now(UTC)
     _recalculate_unrealized_metrics(item)
@@ -849,6 +882,8 @@ async def mark_as_sold(
     item = await _get_item(item_id, session)
     if item.status == InventoryStatus.SOLD.value:
         raise HTTPException(status_code=400, detail="Item already sold")
+    if item.status == InventoryStatus.DRAFT.value:
+        raise HTTPException(status_code=400, detail="Entwurf zuerst bestaetigen")
 
     item.status = InventoryStatus.SOLD.value
     item.sell_price = data.sell_price

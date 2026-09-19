@@ -86,11 +86,17 @@ def _item(
     ai_price_min=None,
     ai_price_max=None,
     buy_price=None,
+    item_type="GENERIC",
+    set_number=None,
+    quantity=1,
 ):
     return SimpleNamespace(
         id=1,
         listings=listings if listings is not None else [],
         status=status,
+        item_type=item_type,
+        set_number=set_number,
+        quantity=quantity,
         set_name=set_name,
         condition=condition,
         notes=notes,
@@ -110,7 +116,7 @@ class _FakeProvider:
         self.exc = exc
         self.calls: list[dict] = []
 
-    async def write_listing(self, *, name, condition, notes, platform, price, price_type):
+    async def write_listing(self, *, name, condition, notes, platform, price, price_type, quantity=1):
         self.calls.append(
             {
                 "name": name,
@@ -119,6 +125,7 @@ class _FakeProvider:
                 "platform": platform,
                 "price": price,
                 "price_type": price_type,
+                "quantity": quantity,
             }
         )
         if self.exc is not None:
@@ -576,3 +583,111 @@ def test_draft_price_falls_back_to_buy_price_times_1_5():
 def test_draft_price_returns_none_when_no_source_available():
     item = _item()
     assert _draft_price(item, None, None) is None
+
+
+# ---------------------------------------------------------------------------
+# Review-Findings PR #25
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_draft_names_lego_items_with_brand_and_set_number(monkeypatch):
+    # Auf eBay/Kleinanzeigen wird nach "LEGO 75192" gesucht; der KI-Titel
+    # braucht beides, wie get_sell_links es fuer die Verkaufslinks voranstellt.
+    item = _item(item_type="LEGO", set_number="75192", set_name="Millennium Falcon")
+    session = _FakeSession(fetch_result=item)
+    fake = _FakeProvider(text=ListingText(title="T", body="B", platform_category="K"))
+    monkeypatch.setattr("app.api.routes.listings.get_provider", lambda: fake)
+
+    await draft_listing(item_id=1, data=ListingDraftRequest(platform="EBAY", price=500.0), session=session)
+
+    assert fake.calls[0]["name"] == "LEGO 75192 Millennium Falcon"
+
+
+@pytest.mark.asyncio
+async def test_draft_does_not_repeat_set_number_already_in_the_name(monkeypatch):
+    item = _item(item_type="LEGO", set_number="40426", set_name="LEGO® 40426 Türkranz / Adventskranz 2in1")
+    session = _FakeSession(fetch_result=item)
+    fake = _FakeProvider(text=ListingText(title="T", body="B", platform_category="K"))
+    monkeypatch.setattr("app.api.routes.listings.get_provider", lambda: fake)
+
+    await draft_listing(item_id=1, data=ListingDraftRequest(platform="EBAY", price=40.0), session=session)
+
+    assert fake.calls[0]["name"] == "LEGO® 40426 Türkranz / Adventskranz 2in1"
+
+
+@pytest.mark.asyncio
+async def test_draft_passes_quantity_to_provider(monkeypatch):
+    item = _item(quantity=3)
+    session = _FakeSession(fetch_result=item)
+    fake = _FakeProvider(text=ListingText(title="T", body="B", platform_category="K"))
+    monkeypatch.setattr("app.api.routes.listings.get_provider", lambda: fake)
+
+    await draft_listing(item_id=1, data=ListingDraftRequest(platform="EBAY", price=20.0), session=session)
+
+    assert fake.calls[0]["quantity"] == 3
+
+
+@pytest.mark.asyncio
+async def test_draft_truncates_ai_title_to_column_length(monkeypatch):
+    # Listing.title ist String(120); PostgreSQL wirft bei Ueberlaenge einen
+    # DataError -- nach dem schon bezahlten KI-Aufruf. SQLite prueft das nicht.
+    item = _item()
+    session = _FakeSession(fetch_result=item)
+    fake = _FakeProvider(text=ListingText(title="X" * 150, body="B", platform_category="K"))
+    monkeypatch.setattr("app.api.routes.listings.get_provider", lambda: fake)
+
+    response = await draft_listing(item_id=1, data=ListingDraftRequest(platform="EBAY", price=20.0), session=session)
+
+    assert len(response.title) == 120
+
+
+@pytest.mark.asyncio
+async def test_refresh_text_truncates_ai_title_to_column_length(monkeypatch):
+    listing = _listing(status=ListingStatus.ACTIVE.value, current_price=80.0)
+    item = _item()
+    session = _FakeSession(fetch_results=[listing, item])
+    fake = _FakeProvider(text=ListingText(title="X" * 150, body="B", platform_category="K"))
+    monkeypatch.setattr("app.api.routes.listings.get_provider", lambda: fake)
+
+    await refresh_listing_text(item_id=1, listing_id=1, session=session)
+
+    assert len(listing.title) == 120
+
+
+@pytest.mark.asyncio
+async def test_patch_price_on_draft_listing_sets_price_without_price_change(monkeypatch):
+    # Ein Entwurf hat keinen alten Preis (current_price None); apply_price_change
+    # schrieb dann eine ListingPriceChange mit old_price=None -> NOT NULL -> 500.
+    listing = _listing(status=ListingStatus.DRAFT.value, current_price=None, min_price=None)
+    session = _FakeSession(fetch_result=listing)
+
+    response = await update_listing(item_id=1, listing_id=1, data=ListingUpdate(current_price=60.0), session=session)
+
+    assert response.current_price == 60.0
+    assert session.added == []
+    assert listing.next_check_at is None
+
+
+@pytest.mark.asyncio
+async def test_draft_rejects_unconfirmed_draft_item(monkeypatch):
+    item = _item(status="DRAFT")
+    session = _FakeSession(fetch_result=item)
+    monkeypatch.setattr("app.api.routes.listings.get_provider", lambda: _FakeProvider())
+
+    with pytest.raises(HTTPException) as exc_info:
+        await draft_listing(item_id=1, data=ListingDraftRequest(platform="EBAY", price=20.0), session=session)
+
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_unconfirmed_draft_item():
+    item = _item(status="DRAFT")
+    session = _FakeSession(fetch_result=item)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_listing(item_id=1, data=ListingCreate(platform="EBAY", current_price=20.0), session=session)
+
+    assert exc_info.value.status_code == 400
+    assert session.committed is False
