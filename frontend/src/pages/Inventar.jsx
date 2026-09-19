@@ -304,6 +304,8 @@ export default function Inventar() {
     queryFn: () =>
       api.listInventory({
         status: "HOLDING",
+        // Backend-Default sind 100 Zeilen; ohne Limit fallen die aeltesten Posten still weg.
+        limit: 500,
         ...(typeFilter && { item_type: typeFilter }),
         ...(groupFilter && { product_group: groupFilter }),
       }),
