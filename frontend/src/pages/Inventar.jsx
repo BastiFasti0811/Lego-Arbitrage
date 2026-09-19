@@ -4,6 +4,7 @@ import { api } from "../api/client";
 import StatCard from "../components/StatCard";
 import ListingBadges from "../components/ListingBadges";
 import ListingManager from "../components/ListingManager";
+import PhotoFirstModal from "../components/PhotoFirstModal";
 import ValuationStatus from "../components/ValuationStatus";
 import { referenceLinks } from "./inventoryLinks";
 
@@ -269,6 +270,7 @@ export default function Inventar() {
   const [sellDate, setSellDate] = useState(new Date().toISOString().split("T")[0]);
   const [sellPlatform, setSellPlatform] = useState("");
   const [addModal, setAddModal] = useState(false);
+  const [photoFirstModal, setPhotoFirstModal] = useState(false);
   const [editModal, setEditModal] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [lookupLoading, setLookupLoading] = useState(false);
@@ -362,6 +364,13 @@ export default function Inventar() {
 
   const splitMutation = useMutation({
     mutationFn: (id) => api.splitInventory(id, 1),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["inventory"] });
+    },
+  });
+
+  const revalueMutation = useMutation({
+    mutationFn: (id) => api.revalueItem(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["inventory"] });
     },
@@ -540,9 +549,14 @@ export default function Inventar() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-text-primary">Inventar</h1>
-        <button onClick={openAddModal} className="bg-lego-yellow text-black font-bold px-4 py-2 rounded-lg text-sm hover:bg-lego-yellow/90 transition-colors">
-          + Hinzufügen
-        </button>
+        <div className="flex gap-2">
+          <button onClick={() => setPhotoFirstModal(true)} className="bg-lego-blue text-white font-bold px-4 py-2 rounded-lg text-sm hover:bg-lego-blue/90 transition-colors">
+            Per Foto anlegen
+          </button>
+          <button onClick={openAddModal} className="bg-lego-yellow text-black font-bold px-4 py-2 rounded-lg text-sm hover:bg-lego-yellow/90 transition-colors">
+            + Hinzufügen
+          </button>
+        </div>
       </div>
 
       {summary && (
@@ -667,6 +681,15 @@ export default function Inventar() {
                 <button onClick={() => openEdit(item)} className="bg-lego-blue/10 text-lego-blue text-xs px-3 py-1.5 rounded-lg hover:bg-lego-blue/20 transition-colors">Bearbeiten</button>
                 <SellDropdown item={item} onMarkSold={() => { setSellModal(item); setSellPrice(""); setSellPlatform(""); }} />
                 <button onClick={() => setListingItem(item)} className="bg-lego-yellow/10 text-lego-yellow text-xs px-3 py-1.5 rounded-lg hover:bg-lego-yellow/20 transition-colors">Listings</button>
+                {item.item_type === "GENERIC" && item.search_query && (
+                  <button
+                    onClick={() => revalueMutation.mutate(item.id)}
+                    disabled={revalueMutation.isPending && revalueMutation.variables === item.id}
+                    className="bg-lego-blue/10 text-lego-blue text-xs px-3 py-1.5 rounded-lg hover:bg-lego-blue/20 transition-colors disabled:opacity-50"
+                  >
+                    {revalueMutation.isPending && revalueMutation.variables === item.id ? "..." : "Neu bewerten"}
+                  </button>
+                )}
                 {item.quantity > 1 && (
                   <button
                     onClick={() => splitMutation.mutate(item.id)}
@@ -678,6 +701,9 @@ export default function Inventar() {
                 )}
                 <button onClick={() => { if (confirm(`${item.set_name} entfernen?`)) deleteMutation.mutate(item.id); }} className="bg-no-go/10 text-no-go text-xs px-3 py-1.5 rounded-lg hover:bg-no-go/20 transition-colors">Entfernen</button>
               </div>
+              {revalueMutation.isError && revalueMutation.variables === item.id && (
+                <p className="text-no-go text-xs mt-2">{revalueMutation.error.message}</p>
+              )}
             </div>
           ))}
         </div>
@@ -992,6 +1018,17 @@ export default function Inventar() {
           item={listingItem}
           onClose={() => setListingItem(null)}
           onChanged={() => queryClient.invalidateQueries({ queryKey: ["inventory"] })}
+        />
+      )}
+
+      {photoFirstModal && (
+        <PhotoFirstModal
+          onClose={() => setPhotoFirstModal(false)}
+          onCreated={() => {
+            setPhotoFirstModal(false);
+            queryClient.invalidateQueries({ queryKey: ["inventory"] });
+            queryClient.invalidateQueries({ queryKey: ["productGroups"] });
+          }}
         />
       )}
     </div>

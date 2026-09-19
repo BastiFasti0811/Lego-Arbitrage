@@ -72,6 +72,71 @@ function ActivateForm({ itemId, platform, onDone }) {
   );
 }
 
+function ListingTextBlock({ itemId, listing, onDone }) {
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState(null);
+
+  const refreshText = useMutation({
+    mutationFn: () => api.refreshListingText(itemId, listing.id),
+    onSuccess: () => {
+      setError(null);
+      onDone();
+    },
+    onError: (err) => setError(err.message),
+  });
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(`${listing.title}\n\n${listing.body}`);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setError("Text konnte nicht kopiert werden");
+    }
+  };
+
+  return (
+    <div className="mb-3 rounded-lg border border-lego-yellow/30 bg-lego-yellow/5 p-3 space-y-2">
+      <p className="text-sm font-bold text-text-primary">{listing.title}</p>
+      <p className="text-xs text-text-secondary whitespace-pre-wrap">{listing.body}</p>
+      <div className="flex items-center gap-2">
+        <button type="button" onClick={handleCopy}
+          className="text-xs px-2 py-1 rounded bg-bg-hover text-text-primary border border-border">
+          {copied ? "Kopiert!" : "Text kopieren"}
+        </button>
+        <button type="button" onClick={() => refreshText.mutate()} disabled={refreshText.isPending}
+          className="text-xs px-2 py-1 rounded bg-bg-hover text-text-primary border border-border disabled:opacity-50">
+          {refreshText.isPending ? "..." : "Text neu generieren"}
+        </button>
+      </div>
+      {error && <p className="text-xs text-no-go">{error}</p>}
+    </div>
+  );
+}
+
+function DraftTextButton({ itemId, platform, onDone }) {
+  const [error, setError] = useState(null);
+
+  const draftText = useMutation({
+    mutationFn: () => api.draftListingText(itemId, platform, null),
+    onSuccess: () => {
+      setError(null);
+      onDone();
+    },
+    onError: (err) => setError(err.message),
+  });
+
+  return (
+    <div className="mb-2">
+      <button type="button" onClick={() => draftText.mutate()} disabled={draftText.isPending}
+        className="text-xs px-3 py-1.5 rounded-lg font-bold bg-lego-blue/10 text-lego-blue hover:bg-lego-blue/20 disabled:opacity-50">
+        {draftText.isPending ? "Claude schreibt …" : "Text mit KI erstellen"}
+      </button>
+      {error && <p className="text-xs text-no-go mt-1">{error}</p>}
+    </div>
+  );
+}
+
 function OpenListing({ itemId, listing, onDone }) {
   const [priceDraft, setPriceDraft] = useState("");
   const [error, setError] = useState(null);
@@ -96,7 +161,7 @@ function OpenListing({ itemId, listing, onDone }) {
     <div className="space-y-2">
       <div className="flex items-center justify-between text-sm text-text-primary">
         <span>
-          {Math.round(listing.current_price)}€ {listing.price_type === "VB" ? "VB" : ""} · {STATUS_LABELS[listing.status]}
+          {listing.current_price != null ? `${Math.round(listing.current_price)}€` : "—"} {listing.price_type === "VB" ? "VB" : ""} · {STATUS_LABELS[listing.status]}
           {" seit "}{formatDate(listing.listed_at)}
           {listing.at_floor && <span className="text-no-go"> · an der Schmerzgrenze</span>}
         </span>
@@ -160,13 +225,28 @@ export default function ListingManager({ item, onClose, onChanged }) {
           const open = listings.find(
             (x) => x.platform === platform && (x.status === "ACTIVE" || x.status === "PAUSED" || x.status === "DRAFT"),
           );
+          // Ein DRAFT ist noch keine echte Anzeige: OpenListing (Preis aendern/
+          // Pausieren) passt nur auf ACTIVE/PAUSED. Solange der Artikel nicht
+          // verkauft ist, bekommt der DRAFT stattdessen den Textblock + das
+          // bestehende ActivateForm, das ihn beim Absenden aktiviert. Bleibt ein
+          // DRAFT auf einem SOLD-Artikel liegen (über eine andere Plattform
+          // verkauft), zeigt weiter OpenListing, damit "Beendet/geloescht" ihn
+          // wie jede andere offene Anzeige abräumen kann.
+          const isDraft = open?.status === "DRAFT";
           return (
             <div key={platform} className="border-t border-border/50 py-3">
               <p className="text-sm font-bold text-text-primary mb-2">{PLATFORM_LABELS[platform]}</p>
-              {open ? (
+              {open && (!isDraft || item.status === "SOLD") ? (
                 <OpenListing itemId={item.id} listing={open} onDone={refresh} />
               ) : item.status !== "SOLD" ? (
-                <ActivateForm itemId={item.id} platform={platform} onDone={refresh} />
+                <>
+                  {isDraft ? (
+                    <ListingTextBlock itemId={item.id} listing={open} onDone={refresh} />
+                  ) : (
+                    <DraftTextButton itemId={item.id} platform={platform} onDone={refresh} />
+                  )}
+                  <ActivateForm itemId={item.id} platform={platform} onDone={refresh} />
+                </>
               ) : (
                 <p className="text-xs text-text-secondary">Artikel ist verkauft.</p>
               )}

@@ -99,7 +99,9 @@ Recommended GitHub environment setup:
 - `.env.prod`: host-level Compose values such as `DATA_ROOT`,
   `POSTGRES_PASSWORD`
 - `backend/.env`: application secrets and runtime settings such as dashboard
-  auth, Telegram token defaults, AI keys and scraper config
+  auth, Telegram token defaults, AI keys and scraper config; include `ANTHROPIC_API_KEY`
+  for the photo-analysis/listing-text AI (PR 2)—without it, AI endpoints return 503 and
+  everything else keeps working
 - Inventory-Fotos liegen unter `MEDIA_ROOT`, in Produktion per Compose auf
   `${DATA_ROOT}/media` gemountet
 

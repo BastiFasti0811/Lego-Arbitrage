@@ -10,6 +10,7 @@ from app.models.base import Base
 
 
 class InventoryStatus(StrEnum):
+    DRAFT = "DRAFT"
     HOLDING = "HOLDING"
     SOLD = "SOLD"
 
@@ -40,6 +41,10 @@ class InventoryItem(Base):
     product_group: Mapped[str] = mapped_column(String(100), nullable=False, server_default=LEGO_PRODUCT_GROUP)
     # eBay-Suchbegriff der Preisrecherche; bei LEGO automatisch "LEGO {set_number}".
     search_query: Mapped[str | None] = mapped_column(String(300))
+    # KI-Preisrahmen der letzten Foto-Analyse (PR 2)
+    ai_price_min: Mapped[float | None] = mapped_column(Float)
+    ai_price_max: Mapped[float | None] = mapped_column(Float)
+    ai_analysis_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     set_name: Mapped[str] = mapped_column(String(300), nullable=False)
     theme: Mapped[str | None] = mapped_column(String(100))
     image_url: Mapped[str | None] = mapped_column(Text)

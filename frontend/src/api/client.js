@@ -19,7 +19,9 @@ async function request(path, options = {}) {
     // detail ist meistens ein String, beim 409 auf /valuation/run aber ein
     // Objekt ({message, run_id}) — sonst landet "[object Object]" im UI.
     const detailMessage = typeof err.detail === "string" ? err.detail : err.detail?.message;
-    throw new Error(detailMessage || `API Error ${res.status}`);
+    const error = new Error(detailMessage || `API Error ${res.status}`);
+    error.status = res.status;
+    throw error;
   }
   return res.json();
 }
@@ -151,6 +153,12 @@ export const api = {
   updateInventory: (id, data) => request(`/inventory/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   sellInventory: (id, data) => request(`/inventory/${id}/sell`, { method: "POST", body: JSON.stringify(data) }),
   deleteInventory: (id) => request(`/inventory/${id}`, { method: "DELETE" }),
+  // Foto-first-Anlage (Spec: KI-Anbindung): leerer Entwurf -> Foto-Analyse -> Bestaetigung.
+  createDraft: () => request("/inventory/draft", { method: "POST" }),
+  analyzeItem: (id, hints) =>
+    request(`/inventory/${id}/analyze`, { method: "POST", body: JSON.stringify({ hints: hints || null }) }),
+  confirmItem: (id) => request(`/inventory/${id}/confirm`, { method: "POST" }),
+  revalueItem: (id) => request(`/inventory/${id}/revalue`, { method: "POST" }),
   uploadInventoryPhotos: async (id, files) => {
     const optimizedFiles = await Promise.all(files.map((file) => optimizeImageFile(file)));
     const photos = await Promise.all(
@@ -170,6 +178,11 @@ export const api = {
   inventoryHistory: () => request("/inventory/history"),
   listListings: (itemId) => request(`/inventory/${itemId}/listings`),
   createListing: (itemId, data) => request(`/inventory/${itemId}/listings`, { method: "POST", body: JSON.stringify(data) }),
+  // KI-Anzeigentexte (Spec: KI-Anbindung): Entwurf schreiben/neu schreiben lassen.
+  draftListingText: (itemId, platform, price) =>
+    request(`/inventory/${itemId}/listings/draft`, { method: "POST", body: JSON.stringify({ platform, price: price ?? null }) }),
+  refreshListingText: (itemId, listingId) =>
+    request(`/inventory/${itemId}/listings/${listingId}/refresh-text`, { method: "POST" }),
   updateListing: (itemId, listingId, data) =>
     request(`/inventory/${itemId}/listings/${listingId}`, { method: "PATCH", body: JSON.stringify(data) }),
   endListing: (itemId, listingId) => request(`/inventory/${itemId}/listings/${listingId}/end`, { method: "POST" }),
