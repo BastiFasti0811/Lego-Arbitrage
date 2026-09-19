@@ -5,6 +5,7 @@ Kein Import aus inventory.py — sonst Zirkularimport, denn inventory.py
 bettet ListingResponse in seine InventoryResponse ein.
 """
 
+import re
 from datetime import UTC, date, datetime
 
 import structlog
@@ -148,12 +149,17 @@ async def _get_listing(item_id: int, listing_id: int, session: AsyncSession) -> 
 TITLE_MAX_LENGTH = Listing.__table__.c.title.type.length
 
 
+_LEGO_PREFIX = re.compile(r"^\s*LEGO\s*®?\s*", re.IGNORECASE)
+
+
 def _listing_name(item: InventoryItem) -> str:
     """Artikelname fuer den KI-Prompt. Bei Lego gehoeren Marke und Setnummer in
     den Titel -- danach wird gesucht, get_sell_links setzt sie ebenso voran."""
-    if item.item_type != InventoryItemType.LEGO.value or not item.set_number or item.set_number in item.set_name:
+    if item.item_type != InventoryItemType.LEGO.value or not item.set_number:
         return item.set_name
-    return f"LEGO {item.set_number} {item.set_name}"
+    if re.search(rf"\b{re.escape(item.set_number)}\b", item.set_name):
+        return item.set_name
+    return f"LEGO {item.set_number} {_LEGO_PREFIX.sub('', item.set_name)}"
 
 
 def _reject_unconfirmed_draft(item: InventoryItem) -> None:

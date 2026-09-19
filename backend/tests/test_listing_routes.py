@@ -691,3 +691,19 @@ async def test_create_rejects_unconfirmed_draft_item():
 
     assert exc_info.value.status_code == 400
     assert session.committed is False
+
+
+@pytest.mark.parametrize(
+    ("set_name", "expected"),
+    [
+        ("LEGO Star Wars Millennium Falcon", "LEGO 75192 Star Wars Millennium Falcon"),
+        ("LEGO® Millennium Falcon", "LEGO 75192 Millennium Falcon"),
+        ("Millennium Falcon 751920 Edition", "LEGO 75192 Millennium Falcon 751920 Edition"),
+    ],
+)
+def test_listing_name_puts_brand_and_set_number_up_front_exactly_once(set_name, expected):
+    from app.api.routes.listings import _listing_name
+
+    item = _item(item_type="LEGO", set_number="75192", set_name=set_name)
+
+    assert _listing_name(item) == expected

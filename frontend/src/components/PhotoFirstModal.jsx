@@ -113,10 +113,23 @@ export default function PhotoFirstModal({ onClose, onCreated }) {
         ebayError: result.ebay_error,
       });
     } catch (err) {
-      setAnalyzeError(err.message);
+      if (err.status === 404) {
+        forgetExpiredDraft();
+      } else {
+        setAnalyzeError(err.message);
+      }
     } finally {
       setAnalyzing(false);
     }
+  }
+
+  // POST /draft räumt Entwürfe ab, die seit über einem Tag liegen. Lief dieser
+  // Dialog so lange, ist sein Entwurf weg: neu anfangen statt mit toter ID weiter.
+  function forgetExpiredDraft() {
+    setItemId(null);
+    uploadedIdsRef.current.clear();
+    setReview(null);
+    setAnalyzeError("Der Entwurf war abgelaufen und wurde verworfen — bitte erneut analysieren.");
   }
 
   async function handleCancel() {
@@ -154,7 +167,7 @@ export default function PhotoFirstModal({ onClose, onCreated }) {
       return api.confirmItem(itemId);
     },
     onSuccess: () => onCreated(),
-    onError: (err) => setConfirmError(err.message),
+    onError: (err) => (err.status === 404 ? forgetExpiredDraft() : setConfirmError(err.message)),
   });
 
   function updateForm(patch) {
@@ -203,10 +216,13 @@ export default function PhotoFirstModal({ onClose, onCreated }) {
                 {photoEntries.map((entry) => (
                   <div key={entry.id} className="relative rounded-lg overflow-hidden border border-border bg-bg-primary">
                     <img src={entry.previewUrl} alt={entry.file.name} className="w-full aspect-square object-cover" />
+                    {/* Während Upload und Analyse steht noch nicht fest, welche Fotos schon am
+                        Entwurf hängen – ein Entfernen hätte dann nur die Vorschau getroffen. */}
                     <button
                       type="button"
                       onClick={() => removePhoto(entry.id)}
-                      className="absolute top-1 right-1 bg-black/70 text-white text-xs px-1.5 py-0.5 rounded"
+                      disabled={analyzing}
+                      className="absolute top-1 right-1 bg-black/70 text-white text-xs px-1.5 py-0.5 rounded disabled:opacity-40"
                     >
                       X
                     </button>
