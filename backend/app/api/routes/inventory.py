@@ -31,6 +31,7 @@ from app.models.inventory import (
 )
 from app.models.inventory_photo import InventoryPhoto
 from app.models.listing import OPEN_LISTING_STATUSES, ListingStatus
+from app.models.price import PriceSource
 from app.models.valuation_run import (
     ValuationRun,
     ValuationRunItem,
@@ -260,6 +261,7 @@ class EbayPriceSummary(BaseModel):
     sold_count: int | None
     is_reliable: bool
     source_url: str | None
+    source: str  # EBAY_SOLD = erzielte Preise, EBAY_ACTIVE = nur Angebotspreise (Fallback)
 
 
 class AnalyzeResponse(BaseModel):
@@ -742,6 +744,7 @@ async def analyze_inventory_item(
                 sold_count=price.sold_count,
                 is_reliable=price.is_reliable,
                 source_url=price.source_url,
+                source=price.source,
             )
 
     item.ai_price_min = draft.price_min
@@ -803,6 +806,17 @@ async def revalue_inventory_item(item_id: int, session: AsyncSession = Depends(g
         raise HTTPException(status_code=404, detail="Keine eBay-Verkaeufe zu dieser Suche gefunden")
 
     median = price.median_price if price.median_price is not None else price.price_eur
+    if price.source != PriceSource.EBAY_SOLD:
+        # Aktiv-Fallback: Angebotspreise sind kein Marktwert (Commit fa5e2a3) und
+        # landen nicht in current_market_price -- nur als Hinweis fuer den Nutzer.
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Keine eBay-Verkaeufe zu dieser Suche gefunden. Aktive Angebote liegen im Median bei "
+                f"{median:.0f} € ({price.sold_count} aktive Angebote) — Angebotspreise sind kein "
+                "Marktwert, es wurde nichts gespeichert"
+            ),
+        )
     item.current_market_price = round(median, 2)
     item.market_price_updated_at = datetime.now(UTC)
     _recalculate_unrealized_metrics(item)

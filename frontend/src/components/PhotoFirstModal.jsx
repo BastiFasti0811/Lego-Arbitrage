@@ -240,7 +240,14 @@ export default function PhotoFirstModal({ onClose, onCreated }) {
           <div className="space-y-4">
             <div className="rounded-lg bg-lego-yellow/10 border border-lego-yellow/30 px-3 py-2 text-xs text-text-primary">
               KI-Schätzung {formatEuro(review.priceMin)}–{formatEuro(review.priceMax)}
-              {review.ebay && (
+              {review.ebay && review.ebay.source === "EBAY_ACTIVE" && (
+                <>
+                  {" · eBay-Angebote "}
+                  {formatEuro(review.ebay.median)} (Median aus {review.ebay.sold_count ?? 0} aktiven Angeboten, keine
+                  Verkaufspreise)
+                </>
+              )}
+              {review.ebay && review.ebay.source !== "EBAY_ACTIVE" && (
                 <>
                   {" · eBay-Median "}
                   {formatEuro(review.ebay.median)} ({review.ebay.sold_count ?? 0} Verkäufe)

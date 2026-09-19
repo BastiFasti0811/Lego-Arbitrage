@@ -54,6 +54,20 @@ _SCRAPED_PRICE = ScrapedPrice(
     notes="Median from 5 sold items",
 )
 
+# So sieht die Antwort aus, wenn die Sold-Suche blockiert ist (Prod-Normalfall,
+# 403) und get_price_for_query auf aktive Sofort-Kaufen-Angebote ausweicht.
+_ACTIVE_PRICE = ScrapedPrice(
+    source="EBAY_ACTIVE",
+    price_eur=39.0,
+    median_price=39.0,
+    min_price=25.0,
+    max_price=60.0,
+    sold_count=7,
+    source_url="https://www.ebay.de/sch/i.html?_nkw=Bosch+PSB+500+RE&LH_BIN=1",
+    is_reliable=False,
+    notes="Fallback: Median aus 7 aktiven BIN-Listungen",
+)
+
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -398,6 +412,31 @@ async def test_analyze_happy_path_sets_ai_fields_and_returns_draft_plus_ebay(mon
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("price", "expected_source"), [(_SCRAPED_PRICE, "EBAY_SOLD"), (_ACTIVE_PRICE, "EBAY_ACTIVE")])
+async def test_analyze_reports_whether_ebay_median_is_sales_or_asking_prices(
+    monkeypatch, tmp_path, price, expected_source
+):
+    # Ohne Quelle beschriftet der Foto-first-Dialog auch den Aktiv-Fallback
+    # als "Verkaeufe" -- Angebotspreise sehen dann aus wie erzielte Preise.
+    monkeypatch.setattr("app.api.routes.inventory.PHOTO_STORAGE_ROOT", tmp_path)
+    photo_dir = tmp_path / "1"
+    photo_dir.mkdir()
+    (photo_dir / "a.jpg").write_bytes(b"fake-jpeg-bytes")
+    monkeypatch.setattr(
+        "app.api.routes.inventory.prepare_photo",
+        lambda path, content_type: (b"prepared-bytes", content_type or "image/jpeg"),
+    )
+    monkeypatch.setattr("app.api.routes.inventory.get_provider", lambda: _FakeProvider(draft=_ITEM_DRAFT))
+    monkeypatch.setattr("app.api.routes.inventory.EbaySoldScraper", lambda: _FakeScraper(price=price))
+
+    session = _ItemSession(_item(photos=[_photo("a.jpg")]), product_group_rows=[])
+
+    response = await inventory.analyze_inventory_item(1, inventory.AnalyzeRequest(), session)
+
+    assert response.ebay.source == expected_source
+
+
+@pytest.mark.asyncio
 async def test_analyze_limits_to_four_photos(monkeypatch, tmp_path):
     monkeypatch.setattr("app.api.routes.inventory.PHOTO_STORAGE_ROOT", tmp_path)
     photo_dir = tmp_path / "1"
@@ -616,6 +655,31 @@ async def test_revalue_404_when_no_sales_found(monkeypatch):
 
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail == "Keine eBay-Verkaeufe zu dieser Suche gefunden"
+    assert session.committed is False
+
+
+@pytest.mark.asyncio
+async def test_revalue_does_not_store_asking_prices_as_market_value(monkeypatch):
+    # Angebotspreise gehoeren nicht in die Geldzahlen (Commit fa5e2a3). Liefert
+    # die Suche nur den Aktiv-Fallback, bleibt der alte Marktwert stehen und
+    # der Nutzer erfaehrt das Angebotsniveau nur als Hinweis.
+    fake_scraper = _FakeScraper(price=_ACTIVE_PRICE)
+    monkeypatch.setattr("app.api.routes.inventory.EbaySoldScraper", lambda: fake_scraper)
+
+    item = _item(
+        item_type="GENERIC", search_query="Bosch PSB 500 RE",
+        buy_price=30.0, buy_shipping=5.0, status="HOLDING",
+        current_market_price=50.0,
+    )
+    session = _ItemSession(item)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await inventory.revalue_inventory_item(1, session)
+
+    assert exc_info.value.status_code == 404
+    assert "39" in exc_info.value.detail
+    assert "7 aktive" in exc_info.value.detail
+    assert item.current_market_price == 50.0
     assert session.committed is False
 
 
