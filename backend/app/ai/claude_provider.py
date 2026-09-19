@@ -22,8 +22,10 @@ logger = structlog.get_logger()
 # nicht-gestreamte Anfragen (darueber drohen HTTP-Timeouts).
 _MAX_TOKENS = 16000
 # Eine Analyse mit Denkphase braucht laenger als die urspruenglichen 90 s. Laeuft
-# der Timeout ab, ist der Aufruf bezahlt und das Ergebnis weg (max_retries=1
-# schickt ihn danach ein zweites Mal los).
+# der Timeout ab, ist der Aufruf bezahlt und das Ergebnis weg. Deshalb keine
+# Wiederholung (max_retries=0): das SDK haelt einen Timeout fuer wiederholbar und
+# wuerde denselben Aufruf ein zweites Mal bezahlen -- und den Nutzer insgesamt
+# bis zu zehn Minuten warten lassen.
 _TIMEOUT_SECONDS = 300.0
 
 _ANALYZE_SYSTEM = (
@@ -51,7 +53,7 @@ class AIProviderError(Exception):
 class ClaudeProvider:
     def __init__(self, client: anthropic.AsyncAnthropic | None = None):
         self._client = client or anthropic.AsyncAnthropic(
-            api_key=settings.anthropic_api_key, timeout=_TIMEOUT_SECONDS, max_retries=1
+            api_key=settings.anthropic_api_key, timeout=_TIMEOUT_SECONDS, max_retries=0
         )
         self._model = settings.ai_model
 

@@ -277,3 +277,12 @@ def test_client_timeout_covers_a_long_thinking_turn():
     provider = ClaudeProvider()
 
     assert provider._client.timeout >= 300
+
+
+def test_client_does_not_retry_a_timed_out_call():
+    # Ein Timeout gilt dem SDK als wiederholbar. Bei 300 s Timeout hiesse das:
+    # bis zu 10 min Wartezeit und ein zweites Mal bezahlen fuer denselben
+    # Aufruf. Lieber einmal sauber scheitern.
+    provider = ClaudeProvider()
+
+    assert provider._client.max_retries == 0
