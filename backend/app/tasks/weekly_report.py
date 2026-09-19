@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from app.engine.decision_engine import Recommendation
 from app.models import Offer, PriceRecord, WatchlistItem
 from app.models.base import async_session
+from app.notifications.delivery import require_delivery
 from app.notifications.telegram_bot import send_weekly_report
 from app.services.heartbeat import evaluate_data_freshness, evaluate_health, load_heartbeats
 from app.tasks.async_runner import run_async as _run_async
@@ -23,7 +24,7 @@ logger = structlog.get_logger()
 @celery_app.task(name="app.tasks.weekly_report.send_weekly_report_task")
 def send_weekly_report_task() -> dict:
     """Beat-scheduled weekly report (Sunday 18:00 Berlin)."""
-    return _run_async(_report_async())
+    return require_delivery(_run_async(_report_async()), "Wochenreport")
 
 
 async def _report_async() -> dict:
