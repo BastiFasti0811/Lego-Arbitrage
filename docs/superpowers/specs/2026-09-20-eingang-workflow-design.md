@@ -24,6 +24,8 @@ Fertig ist der Durchgang, wenn die Posten in der App stehen, ihre Fotos daran h�
 ```
 Eingang/                      # gitignored, liegt neben dem Repo-Inhalt
   neu/                        # hier legt Sebastian Fotos ab (auch ZIPs aus dem Handy-Export)
+  arbeit/                     # verkleinerte Sichtungskopien + gruppen.json + herkunft.json,
+                              # wird bei jedem prepare-Lauf geleert
   verarbeitet/2026-09-20/     # nach dem Import verschoben, mit manifest.json des Durchgangs
   .verarbeitet.json           # SHA-256 je importiertem Foto
 ```
@@ -35,7 +37,7 @@ Ein Durchgang:
 3. Claude liest den Prod-Bestand und die eigenen Anzeigen (Kleinanzeigen, eBay) und gleicht ab.
 4. Claude legt die Tabelle vor: je Artikel Bezeichnung, Warengruppe, Zustand, Menge, Fotos, schon im Inventar ja/nein, schon inseriert ja/nein, geplante Aktion.
 5. Nach Freigabe schreibt Claude eine `manifest.json` und ruft `app.tools.import_inventory` im API-Container auf.
-6. `python -m app.tools.eingang_prepare finish`: merkt sich die Hashes und verschiebt die Originale nach `verarbeitet/<Datum>/`. Erst hier — bricht der Import ab, sieht der nächste Lauf dieselben Fotos wieder.
+6. `python -m app.tools.eingang_prepare finish --manifest <verzeichnis>`: merkt sich die Hashes der importierten Fotos und verschiebt sie nach `verarbeitet/<Datum>/`. Fotos zurückgestellter Artikel bleiben im Eingang. Erst hier — bricht der Import ab, sieht der nächste Lauf dieselben Fotos wieder.
 
 ## 2. Zwei Spuren
 
@@ -69,6 +71,7 @@ Ohne `--apply` wird nichts geschrieben: Der Probelauf prüft die Pydantic-Modell
 | Foto doppelt im Eingang | Hash steht in `.verarbeitet.json`, das Foto wird übersprungen |
 | Manifest verletzt eine Regel der App (Zustand, Plattform, Länge, Menge, Fotoformat oder -größe) | Abbruch vor dem ersten Schreibzugriff mit Angabe des Schlüssels |
 | Gleichnamige Fotos aus verschiedenen Ordnern | Beide bleiben erhalten, das zweite bekommt ein `_2` |
+| Artikel zurückgestellt (nicht angelegt) | Seine Fotos bleiben im Eingang und tauchen im nächsten Durchgang wieder auf |
 | Posten existiert schon (gleiche Setnummer) | Kein zweiter Posten; die Tabelle weist ihn als Dublette aus, Sebastian entscheidet über die Menge |
 | Prod nicht erreichbar | Der Durchgang endet nach der Tabelle; die `manifest.json` bleibt liegen und lässt sich später anwenden |
 

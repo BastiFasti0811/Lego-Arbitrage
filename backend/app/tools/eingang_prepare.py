@@ -25,7 +25,8 @@ from PIL import Image, ImageOps
 MAX_DIMENSION = 2000
 JPEG_QUALITY = 85
 GROUP_GAP = timedelta(minutes=2)
-PHOTO_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+PHOTO_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+ORIGINS_FILE = "herkunft.json"
 _TIMESTAMP = re.compile(r"(\d{8})_(\d{6})")
 
 
@@ -53,10 +54,26 @@ def mark_processed(index_path: Path, paths: list[Path], stamp: str) -> None:
     index_path.write_text(json.dumps(index, indent=1), encoding="utf-8")
 
 
-def finish(source: Path, archive_dir: Path, index_path: Path, stamp: str) -> int:
+def finish(
+    source: Path,
+    archive_dir: Path,
+    index_path: Path,
+    stamp: str,
+    prepared_names: list[str] | None = None,
+    work_dir: Path | None = None,
+) -> int:
     """Durchgang abschliessen: Hashes merken, Originale wegraeumen. Erst hier --
-    bricht der Import ab, soll der naechste Lauf dieselben Fotos wieder sehen."""
+    bricht der Import ab, soll der naechste Lauf dieselben Fotos wieder sehen.
+
+    `prepared_names` sind die Fotos aus dem Manifest (die Namen aus
+    `Eingang/arbeit`). Ohne die Liste wird alles abgeraeumt, was im Eingang
+    liegt; mit ihr bleiben zurueckgestellte Artikel dort liegen, wo sie beim
+    naechsten Durchgang wieder auftauchen."""
     photos = [p for p in sorted(source.rglob("*")) if p.suffix.lower() in PHOTO_SUFFIXES]
+    if prepared_names is not None:
+        origins = load_origins(work_dir or source)
+        wanted = {origins[name] for name in prepared_names if name in origins}
+        photos = [p for p in photos if str(p) in wanted]
     if not photos:
         return 0
     mark_processed(index_path, photos, stamp)
@@ -64,6 +81,14 @@ def finish(source: Path, archive_dir: Path, index_path: Path, stamp: str) -> int
     for photo in photos:
         photo.rename(_free_path(archive_dir / photo.name))
     return len(photos)
+
+
+def load_origins(work_dir: Path) -> dict[str, str]:
+    """Zuordnung vorbereitetes Foto -> Originaldatei, von `prepare` geschrieben."""
+    path = work_dir / ORIGINS_FILE
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def unpack_archives(source: Path) -> list[Path]:
@@ -147,31 +172,45 @@ def prepare(source: Path, out_dir: Path, index_path: Path) -> PrepareResult:
     photos = new_photos(source, index)
     skipped = len([p for p in source.rglob("*") if p.suffix.lower() in PHOTO_SUFFIXES]) - len(photos)
 
-    for photo in photos:
-        prepare_photo(photo, out_dir)
-
-    groups = group_by_capture_time([p.name for p in photos])
-    payload = [
-        {"gruppe": number, "fotos": [Path(name).with_suffix(".jpg").name for name in group]}
-        for number, group in enumerate(groups, start=1)
-    ]
+    # Reste eines frueheren Durchgangs raus: sonst sichtet der naechste Lauf
+    # Fotos mit, die laengst im Inventar stehen.
     out_dir.mkdir(parents=True, exist_ok=True)
+    for stale in list(out_dir.glob("*.jpg")) + [out_dir / "gruppen.json", out_dir / ORIGINS_FILE]:
+        stale.unlink(missing_ok=True)
+
+    origins = {}
+    prepared_names = []
+    for photo in photos:
+        target = prepare_photo(photo, out_dir)
+        origins[target.name] = str(photo)
+        prepared_names.append(target.name)
+
+    groups = group_by_capture_time(prepared_names)
+    payload = [{"gruppe": number, "fotos": group} for number, group in enumerate(groups, start=1)]
     (out_dir / "gruppen.json").write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+    (out_dir / ORIGINS_FILE).write_text(json.dumps(origins, ensure_ascii=False, indent=1), encoding="utf-8")
     return PrepareResult(prepared=len(photos), groups=len(groups), skipped=skipped)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Eingang-Fotos vorbereiten und nach dem Import wegraeumen")
-    parser.add_argument("--index", type=Path, default=Path("Eingang/.verarbeitet.json"))
     sub = parser.add_subparsers(dest="command", required=True)
 
     prepare_cmd = sub.add_parser("prepare", help="ZIPs auspacken, verkleinern, Gruppen vorschlagen")
     prepare_cmd.add_argument("source", type=Path, nargs="?", default=Path("Eingang/neu"))
     prepare_cmd.add_argument("out", type=Path, nargs="?", default=Path("Eingang/arbeit"))
+    prepare_cmd.add_argument("--index", type=Path, default=Path("Eingang/.verarbeitet.json"))
 
     finish_cmd = sub.add_parser("finish", help="nach dem Import: Hashes merken, Originale wegraeumen")
     finish_cmd.add_argument("source", type=Path, nargs="?", default=Path("Eingang/neu"))
     finish_cmd.add_argument("archive", type=Path, nargs="?", default=None)
+    finish_cmd.add_argument("--index", type=Path, default=Path("Eingang/.verarbeitet.json"))
+    finish_cmd.add_argument("--work", type=Path, default=Path("Eingang/arbeit"))
+    finish_cmd.add_argument(
+        "--manifest",
+        type=Path,
+        help="Verzeichnis mit der importierten manifest.json; dann bleiben zurueckgestellte Fotos liegen",
+    )
 
     args = parser.parse_args()
 
@@ -180,10 +219,16 @@ def main() -> None:
         print(f"{result.prepared} Fotos vorbereitet, {result.groups} Gruppen, {result.skipped} schon verarbeitet")
         return
 
+    prepared_names = None
+    if args.manifest:
+        manifest = json.loads((args.manifest / "manifest.json").read_text(encoding="utf-8"))
+        prepared_names = [photo for item in manifest.get("items", []) for photo in item.get("photos", [])]
+
     stamp = date.today().isoformat()
     archive = args.archive or Path("Eingang/verarbeitet") / stamp
-    moved = finish(args.source, archive, args.index, stamp)
-    print(f"{moved} Fotos nach {archive} verschoben und als verarbeitet vermerkt")
+    moved = finish(args.source, archive, args.index, stamp, prepared_names=prepared_names, work_dir=args.work)
+    liegen = "" if prepared_names is None else " (zurueckgestellte Fotos bleiben im Eingang)"
+    print(f"{moved} Fotos nach {archive} verschoben und als verarbeitet vermerkt{liegen}")
 
 
 if __name__ == "__main__":

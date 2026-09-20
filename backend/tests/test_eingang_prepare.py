@@ -5,6 +5,7 @@ Spec: `docs/superpowers/specs/2026-09-20-eingang-workflow-design.md`.
 
 import json
 import zipfile
+from pathlib import Path
 
 from PIL import Image
 
@@ -169,3 +170,51 @@ def test_prepare_marks_nothing_as_processed_before_the_import(tmp_path):
     eingang_prepare.prepare(src, tmp_path / "arbeit", index_path=index_path)
 
     assert not index_path.exists()
+
+
+def test_prepare_records_where_each_photo_came_from(tmp_path):
+    src = tmp_path / "neu"
+    out = tmp_path / "arbeit"
+    _photo(src / "a" / "IMG_1.jpg")
+    _photo(src / "b" / "IMG_1.jpg", color=(200, 10, 10))
+
+    eingang_prepare.prepare(src, out, index_path=tmp_path / ".verarbeitet.json")
+
+    herkunft = json.loads((out / "herkunft.json").read_text(encoding="utf-8"))
+    assert sorted(herkunft) == ["IMG_1.jpg", "IMG_1_2.jpg"]
+    assert {Path(p).parent.name for p in herkunft.values()} == {"a", "b"}
+
+
+def test_prepare_clears_leftovers_from_an_earlier_run(tmp_path):
+    # Sonst sichtet der naechste Durchgang Fotos mit, die laengst importiert
+    # sind -- und legt denselben Artikel ein zweites Mal an.
+    src = tmp_path / "neu"
+    out = tmp_path / "arbeit"
+    _photo(src / "alt.jpg")
+    eingang_prepare.prepare(src, out, index_path=tmp_path / ".verarbeitet.json")
+    eingang_prepare.finish(src, tmp_path / "verarbeitet", tmp_path / ".verarbeitet.json", stamp="2026-09-20")
+    _photo(src / "neu.jpg", color=(5, 5, 5))
+
+    eingang_prepare.prepare(src, out, index_path=tmp_path / ".verarbeitet.json")
+
+    assert sorted(p.name for p in out.glob("*.jpg")) == ["neu.jpg"]
+
+
+def test_finish_only_archives_the_photos_of_this_run(tmp_path):
+    # Zurueckgestellte Artikel ("Setnummer pruefen") bleiben im Eingang liegen,
+    # sonst gelten sie als verarbeitet, ohne dass je ein Posten entstand.
+    src = tmp_path / "neu"
+    out = tmp_path / "arbeit"
+    index_path = tmp_path / ".verarbeitet.json"
+    _photo(src / "angelegt.jpg")
+    zurueck = _photo(src / "zurueckgestellt.jpg", color=(7, 7, 7))
+    eingang_prepare.prepare(src, out, index_path=index_path)
+
+    moved = eingang_prepare.finish(
+        src, tmp_path / "verarbeitet", index_path, stamp="2026-09-20", prepared_names=["angelegt.jpg"], work_dir=out
+    )
+
+    assert moved == 1
+    assert zurueck.exists()
+    assert (tmp_path / "verarbeitet" / "angelegt.jpg").exists()
+    assert eingang_prepare.photo_hash(zurueck) not in eingang_prepare.load_index(index_path)

@@ -37,7 +37,7 @@ from app.api.routes.inventory import (
 )
 from app.api.routes.listings import ListingCreate, create_listing
 from app.models.base import async_session
-from app.models.inventory import InventoryItem
+from app.models.inventory import InventoryItem, InventoryItemType
 from app.models.listing import OPEN_LISTING_STATUSES, Listing, ListingPlatform, ListingStatus
 from app.models.offer import OfferCondition
 from app.services.listing_rules import default_price_type
@@ -47,7 +47,14 @@ logger = structlog.get_logger()
 _COLUMNS = InventoryItem.__table__.c
 _LISTING_COLUMNS = Listing.__table__.c
 TITLE_MAX_LENGTH = _LISTING_COLUMNS.title.type.length
-_CONTENT_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+# Deckungsgleich mit ALLOWED_IMAGE_TYPES der Upload-Route.
+_CONTENT_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
 # Was auf PostgreSQL an der Spaltenlaenge scheitern wuerde, faellt auf SQLite
 # still durch -- also vorher pruefen, nicht erst mitten im Lauf.
 _ITEM_LIMITS = {
@@ -63,6 +70,7 @@ _LISTING_LIMITS = {
     "platform_category": _LISTING_COLUMNS.platform_category.type.length,
 }
 _ACTIVATABLE = (ListingStatus.ACTIVE.value, ListingStatus.PAUSED.value)
+_LEGO_OVERWRITTEN = ("product_group", "search_query")
 
 
 class ManifestError(Exception):
@@ -116,6 +124,8 @@ def load_manifest(source: Path) -> Manifest:
     if not path.exists():
         raise ManifestError(f"{path} fehlt")
     raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ManifestError("manifest.json muss ein Objekt mit 'mark' und 'items' sein")
     items = []
     # Posten einzeln validieren, damit die Meldung den Schluessel nennt und
     # nicht nur "items.7.quantity".
@@ -196,6 +206,9 @@ def _prepare(source: Path, manifest: Manifest) -> list[tuple[ManifestItem, Inven
         if item.condition not in (c.value for c in OfferCondition):
             raise ManifestError(f"{item.key}: unbekannter Zustand {item.condition}")
         for name, limit in _ITEM_LIMITS.items():
+            # product_group und search_query setzt InventoryAdd bei Lego selbst.
+            if item.item_type == InventoryItemType.LEGO.value and name in _LEGO_OVERWRITTEN:
+                continue
             value = getattr(item, name)
             if value and len(value) > limit:
                 raise ManifestError(f"{item.key}: {name} hat {len(value)} Zeichen, erlaubt sind {limit}")

@@ -29,9 +29,9 @@ Zweiter Weg ins Inventar neben der Foto-first-Anlage in der App. Spec: `docs/sup
 5. **Nach Freigabe importieren**: `manifest.json` schreiben, Fotos daneben legen, Sicherungs-Dump ziehen, Probelauf, dann `--apply`.
 6. **Nachhalten**: Ergebnis gegen das Manifest prüfen (Summary nennt `created`, `skipped`, `photos`, `listings`), dann abschließen:
    ```
-   PYTHONPATH=backend backend/.venv/Scripts/python.exe -m app.tools.eingang_prepare finish
+   PYTHONPATH=backend backend/.venv/Scripts/python.exe -m app.tools.eingang_prepare finish --manifest <manifest-verzeichnis>
    ```
-   Das merkt sich die Hashes und räumt die Originale nach `Eingang/verarbeitet/<Datum>/`. Erst danach gelten die Fotos als erledigt — bricht der Import ab, sieht der nächste Lauf sie wieder.
+   Das merkt sich die Hashes und räumt die Originale nach `Eingang/verarbeitet/<Datum>/`. **`--manifest` nicht weglassen:** Nur so bleiben die Fotos zurückgestellter Artikel im Eingang liegen; ohne die Angabe gilt alles als verarbeitet. Erst nach diesem Schritt gelten Fotos als erledigt — bricht der Import ab, sieht der nächste Lauf sie wieder.
 
 ## Manifest
 

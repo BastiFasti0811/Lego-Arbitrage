@@ -395,3 +395,40 @@ async def test_oversized_photo_aborts_before_writing(tmp_path, db):
 
     assert "gross.jpg" in str(exc_info.value)
     assert await _items(db) == []
+
+
+@pytest.mark.asyncio
+async def test_manifest_that_is_not_an_object_fails_with_a_clear_error(tmp_path, db):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "manifest.json").write_text("[1, 2, 3]", encoding="utf-8")
+
+    with pytest.raises(import_inventory.ManifestError):
+        await import_inventory.run(tmp_path, db, apply=True)
+
+
+@pytest.mark.asyncio
+async def test_lego_item_may_carry_a_long_product_group_that_gets_replaced(tmp_path, db):
+    # product_group und search_query setzt InventoryAdd bei Lego selbst; eine
+    # Laengenpruefung darauf wuerde den Import ohne Grund abbrechen.
+    source = _manifest(
+        tmp_path,
+        [
+            {
+                "key": "E04",
+                "item_type": "LEGO",
+                "set_number": "75192",
+                "set_name": "Millennium Falcon",
+                "product_group": "X" * 150,
+                "condition": "NEW_SEALED",
+                "quantity": 1,
+                "buy_date": "2026-09-20",
+                "notes": "",
+                "photos": [],
+                "listings": [],
+            }
+        ],
+    )
+
+    await import_inventory.run(source, db, apply=True)
+
+    assert (await _items(db))[0].product_group == "Lego"
