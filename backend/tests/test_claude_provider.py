@@ -249,3 +249,40 @@ def test_get_provider_returns_claude_provider(monkeypatch):
     provider = get_provider()
 
     assert isinstance(provider, ClaudeProvider)
+
+
+@pytest.mark.parametrize("call", ["analyze", "listing"])
+@pytest.mark.asyncio
+async def test_requests_leave_room_for_thinking_tokens(call):
+    # claude-opus-5 denkt per Default mit, und Denk-Tokens zaehlen gegen
+    # max_tokens. Mit 2048 (Analyse) bzw. 1024 (Anzeigentext) bricht die
+    # Antwort mitten im JSON ab: bezahlter Aufruf, Ergebnis unbrauchbar.
+    fake_client = _FakeClient(_FakeParseResponse(_ITEM_DRAFT if call == "analyze" else _LISTING_TEXT))
+    provider = ClaudeProvider(client=fake_client)
+
+    if call == "analyze":
+        await provider.analyze_photos([(b"data", "image/jpeg")], hints=None, product_groups=["LEGO"])
+    else:
+        await provider.write_listing(
+            name="Testartikel", condition="USED_COMPLETE", notes=None,
+            platform="ebay", price=10.0, price_type="FIXED",
+        )
+
+    assert fake_client.messages.calls[0]["max_tokens"] >= 8000
+
+
+def test_client_timeout_covers_a_long_thinking_turn():
+    # Mit Denkphase dauert eine Foto-Analyse laenger als die urspruenglichen
+    # 90 s; laeuft der HTTP-Timeout ab, ist der Aufruf trotzdem bezahlt.
+    provider = ClaudeProvider()
+
+    assert provider._client.timeout >= 300
+
+
+def test_client_does_not_retry_a_timed_out_call():
+    # Ein Timeout gilt dem SDK als wiederholbar. Bei 300 s Timeout hiesse das:
+    # bis zu 10 min Wartezeit und ein zweites Mal bezahlen fuer denselben
+    # Aufruf. Lieber einmal sauber scheitern.
+    provider = ClaudeProvider()
+
+    assert provider._client.max_retries == 0

@@ -15,6 +15,19 @@ from app.config import settings
 
 logger = structlog.get_logger()
 
+# claude-opus-5 denkt per Default mit (adaptive thinking), und Denk-Tokens zaehlen
+# gegen max_tokens. Ein knappes Limit schneidet deshalb die Antwort ab, obwohl der
+# Aufruf laengst bezahlt ist. Abgerechnet wird nur, was wirklich erzeugt wird --
+# das Limit darf also grosszuegig sein. 16k ist der uebliche Default fuer
+# nicht-gestreamte Anfragen (darueber drohen HTTP-Timeouts).
+_MAX_TOKENS = 16000
+# Eine Analyse mit Denkphase braucht laenger als die urspruenglichen 90 s. Laeuft
+# der Timeout ab, ist der Aufruf bezahlt und das Ergebnis weg. Deshalb keine
+# Wiederholung (max_retries=0): das SDK haelt einen Timeout fuer wiederholbar und
+# wuerde denselben Aufruf ein zweites Mal bezahlen -- und den Nutzer insgesamt
+# bis zu zehn Minuten warten lassen.
+_TIMEOUT_SECONDS = 300.0
+
 _ANALYZE_SYSTEM = (
     "Du katalogisierst gebrauchte Gegenstaende fuer den Privatverkauf auf deutschen "
     "Plattformen (Kleinanzeigen, eBay). Du bekommst Fotos EINES Artikels und lieferst "
@@ -40,7 +53,7 @@ class AIProviderError(Exception):
 class ClaudeProvider:
     def __init__(self, client: anthropic.AsyncAnthropic | None = None):
         self._client = client or anthropic.AsyncAnthropic(
-            api_key=settings.anthropic_api_key, timeout=90.0, max_retries=1
+            api_key=settings.anthropic_api_key, timeout=_TIMEOUT_SECONDS, max_retries=0
         )
         self._model = settings.ai_model
 
@@ -74,7 +87,7 @@ class ClaudeProvider:
         try:
             response = await self._client.messages.parse(
                 model=self._model,
-                max_tokens=2048,
+                max_tokens=_MAX_TOKENS,
                 system=_ANALYZE_SYSTEM,
                 messages=[{"role": "user", "content": blocks}],
                 output_format=ItemDraft,
@@ -123,7 +136,7 @@ class ClaudeProvider:
         try:
             response = await self._client.messages.parse(
                 model=self._model,
-                max_tokens=1024,
+                max_tokens=_MAX_TOKENS,
                 system=_LISTING_SYSTEM,
                 messages=[{"role": "user", "content": prompt}],
                 output_format=ListingText,
