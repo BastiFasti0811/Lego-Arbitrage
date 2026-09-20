@@ -22,7 +22,12 @@ backend/.env
 # IDE
 .vscode/
 .idea/
-.claude/
+# Sitzungskram bleibt draussen, die Skills gehoeren zum Projekt.
+.claude/*
+!.claude/skills/
+
+# Fotos, die auf ihren Import warten (Spec: Eingang-Workflow)
+Eingang/
 *.swp
 *.swo
 
