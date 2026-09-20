@@ -16,16 +16,22 @@ Zweiter Weg ins Inventar neben der Foto-first-Anlage in der App. Spec: `docs/sup
 
 ## Ablauf
 
-1. **Vorbereiten** (lokal, Backend-venv):
-   `backend/.venv/Scripts/python.exe -m app.tools.eingang_prepare Eingang/neu Eingang/arbeit --index Eingang/.verarbeitet.json`
-   Packt ZIPs aus, überspringt schon importierte Fotos, verkleinert auf 2000 px ohne Metadaten, schreibt `gruppen.json`.
+1. **Vorbereiten** (lokal, aus dem Repo-Wurzelverzeichnis):
+   ```
+   PYTHONPATH=backend backend/.venv/Scripts/python.exe -m app.tools.eingang_prepare prepare Eingang/neu Eingang/arbeit
+   ```
+   Packt ZIPs aus (das Archiv bleibt als `.zip.verarbeitet` liegen, weil HEIC, Videos und Belege darin nicht ausgepackt werden), überspringt schon importierte Fotos, verkleinert auf 2000 px ohne Metadaten, schreibt `gruppen.json`.
 2. **Sichten**: Jedes Foto in `Eingang/arbeit` mit dem Read-Tool ansehen. Bei mehr als etwa 30 Fotos auf parallele Subagents aufteilen (Datei-Liste, Rückgabe: Artikel, Setnummer, Zustand, Menge, Mängel, Sicherheit). Gruppierung aus `gruppen.json` ist ein Vorschlag — bei Lego über die Setnummer korrigieren, sonst über den Bildinhalt.
 3. **Abgleichen**:
    - Prod-Inventar lesen (read-only SQL, siehe unten). Lego über `set_number`, sonst über den Namen.
    - Eigene Anzeigen lesen: Kleinanzeigen „Meine Anzeigen" und eBay-Verkäufercockpit im Browser. Nur lesen.
 4. **Tabelle vorlegen**: je Artikel Bezeichnung, Warengruppe, Zustand, Menge, Anzahl Fotos, schon im Inventar, schon inseriert, geplante Aktion. Abweichungen und Unsicherheiten ausdrücklich nennen.
 5. **Nach Freigabe importieren**: `manifest.json` schreiben, Fotos daneben legen, Sicherungs-Dump ziehen, Probelauf, dann `--apply`.
-6. **Nachhalten**: verarbeitete Fotos nach `Eingang/verarbeitet/<Datum>/` verschieben, `mark_processed` aufrufen, Ergebnis gegen das Manifest prüfen.
+6. **Nachhalten**: Ergebnis gegen das Manifest prüfen (Summary nennt `created`, `skipped`, `photos`, `listings`), dann abschließen:
+   ```
+   PYTHONPATH=backend backend/.venv/Scripts/python.exe -m app.tools.eingang_prepare finish
+   ```
+   Das merkt sich die Hashes und räumt die Originale nach `Eingang/verarbeitet/<Datum>/`. Erst danach gelten die Fotos als erledigt — bricht der Import ab, sieht der nächste Lauf sie wieder.
 
 ## Manifest
 

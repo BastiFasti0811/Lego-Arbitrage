@@ -5,7 +5,8 @@ importiert hat, dreht nach EXIF, verkleinert und wirft die Metadaten weg (in
 Handyfotos steckt der Aufnahmeort). Dazu ein Gruppenvorschlag nach Aufnahmezeit
 -- die endgueltige Zuordnung macht Claude beim Ansehen der Bilder.
 
-    python -m app.tools.eingang_prepare Eingang/neu Eingang/arbeit
+    python -m app.tools.eingang_prepare prepare Eingang/neu Eingang/arbeit
+    python -m app.tools.eingang_prepare finish       # nach dem Import
 
 Spec: `docs/superpowers/specs/2026-09-20-eingang-workflow-design.md`.
 """
@@ -16,7 +17,7 @@ import json
 import re
 import zipfile
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from PIL import Image, ImageOps
@@ -52,21 +53,49 @@ def mark_processed(index_path: Path, paths: list[Path], stamp: str) -> None:
     index_path.write_text(json.dumps(index, indent=1), encoding="utf-8")
 
 
+def finish(source: Path, archive_dir: Path, index_path: Path, stamp: str) -> int:
+    """Durchgang abschliessen: Hashes merken, Originale wegraeumen. Erst hier --
+    bricht der Import ab, soll der naechste Lauf dieselben Fotos wieder sehen."""
+    photos = [p for p in sorted(source.rglob("*")) if p.suffix.lower() in PHOTO_SUFFIXES]
+    if not photos:
+        return 0
+    mark_processed(index_path, photos, stamp)
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    for photo in photos:
+        photo.rename(_free_path(archive_dir / photo.name))
+    return len(photos)
+
+
 def unpack_archives(source: Path) -> list[Path]:
+    """Holt die Fotos aus ZIP-Exporten. Das Archiv bleibt liegen (nur umbenannt):
+    Handy-Exporte enthalten auch HEIC, Videos und Belege, die hier nicht
+    ausgepackt werden -- geloescht waeren sie unwiederbringlich weg."""
     unpacked = []
     for archive_path in sorted(source.glob("*.zip")):
         with zipfile.ZipFile(archive_path) as archive:
             for info in archive.infolist():
                 if info.is_dir() or Path(info.filename).suffix.lower() not in PHOTO_SUFFIXES:
                     continue
-                target = source / Path(info.filename).name
-                if target.exists():
-                    target = source / f"{target.stem}_{info.CRC:08x}{target.suffix}"
+                # Nur der Dateiname, nie der Pfad aus dem Archiv: sonst schreibt
+                # ein praepariertes ZIP ausserhalb von source.
+                target = _free_path(source / Path(info.filename).name)
                 with archive.open(info) as src, open(target, "wb") as dst:
                     dst.write(src.read())
                 unpacked.append(target)
-        archive_path.unlink()
+        archive_path.rename(archive_path.with_suffix(".zip.verarbeitet"))
     return unpacked
+
+
+def _free_path(target: Path) -> Path:
+    """Naechster freier Name: gleichnamige Fotos aus verschiedenen Ordnern
+    duerfen sich nicht gegenseitig ueberschreiben."""
+    if not target.exists():
+        return target
+    for n in range(2, 1000):
+        candidate = target.with_name(f"{target.stem}_{n}{target.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"zu viele gleichnamige Dateien: {target}")
 
 
 def new_photos(source: Path, index: dict[str, str]) -> list[Path]:
@@ -104,7 +133,7 @@ def group_by_capture_time(names: list[str], gap: timedelta = GROUP_GAP) -> list[
 
 def prepare_photo(path: Path, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
-    target = out_dir / f"{path.stem}.jpg"
+    target = _free_path(out_dir / f"{path.stem}.jpg")
     with Image.open(path) as image:
         rotated = ImageOps.exif_transpose(image)
         rotated.thumbnail((MAX_DIMENSION, MAX_DIMENSION))
@@ -132,14 +161,29 @@ def prepare(source: Path, out_dir: Path, index_path: Path) -> PrepareResult:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Eingang-Fotos fuer die Sichtung vorbereiten")
-    parser.add_argument("source", type=Path, nargs="?", default=Path("Eingang/neu"))
-    parser.add_argument("out", type=Path, nargs="?", default=Path("Eingang/arbeit"))
+    parser = argparse.ArgumentParser(description="Eingang-Fotos vorbereiten und nach dem Import wegraeumen")
     parser.add_argument("--index", type=Path, default=Path("Eingang/.verarbeitet.json"))
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    prepare_cmd = sub.add_parser("prepare", help="ZIPs auspacken, verkleinern, Gruppen vorschlagen")
+    prepare_cmd.add_argument("source", type=Path, nargs="?", default=Path("Eingang/neu"))
+    prepare_cmd.add_argument("out", type=Path, nargs="?", default=Path("Eingang/arbeit"))
+
+    finish_cmd = sub.add_parser("finish", help="nach dem Import: Hashes merken, Originale wegraeumen")
+    finish_cmd.add_argument("source", type=Path, nargs="?", default=Path("Eingang/neu"))
+    finish_cmd.add_argument("archive", type=Path, nargs="?", default=None)
+
     args = parser.parse_args()
 
-    result = prepare(args.source, args.out, args.index)
-    print(f"{result.prepared} Fotos vorbereitet, {result.groups} Gruppen, {result.skipped} schon verarbeitet")
+    if args.command == "prepare":
+        result = prepare(args.source, args.out, args.index)
+        print(f"{result.prepared} Fotos vorbereitet, {result.groups} Gruppen, {result.skipped} schon verarbeitet")
+        return
+
+    stamp = date.today().isoformat()
+    archive = args.archive or Path("Eingang/verarbeitet") / stamp
+    moved = finish(args.source, archive, args.index, stamp)
+    print(f"{moved} Fotos nach {archive} verschoben und als verarbeitet vermerkt")
 
 
 if __name__ == "__main__":

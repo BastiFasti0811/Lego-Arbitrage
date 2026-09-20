@@ -8,9 +8,9 @@ und ruft dieses Werkzeug im API-Container auf. Spec:
     python -m app.tools.import_inventory /tmp/import           # Probelauf
     python -m app.tools.import_inventory /tmp/import --apply   # schreibt
 
-Wiederholbar: Jeder Posten traegt den Marker `[<mark> <key>]` am Anfang seiner
-Notiz. Was es schon gibt, wird uebersprungen -- ein abgebrochener Lauf laesst
-sich damit einfach wiederholen.
+Wiederholbar: Jeder Posten traegt den Marker `[<mark> <key>]` in seiner
+Notiz (auch nach dem Bearbeiten in der App). Was es schon gibt, wird
+uebersprungen -- ein abgebrochener Lauf laesst sich einfach wiederholen.
 """
 
 import argparse
@@ -22,10 +22,12 @@ from datetime import date
 from pathlib import Path
 
 import structlog
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 
 from app.api.routes.inventory import (
+    MAX_PHOTO_BYTES,
+    MAX_PHOTOS_PER_ITEM,
     InventoryAdd,
     InventoryPhotoUpload,
     InventoryPhotoUploadRequest,
@@ -36,13 +38,31 @@ from app.api.routes.inventory import (
 from app.api.routes.listings import ListingCreate, create_listing
 from app.models.base import async_session
 from app.models.inventory import InventoryItem
-from app.models.listing import OPEN_LISTING_STATUSES, Listing, ListingStatus
+from app.models.listing import OPEN_LISTING_STATUSES, Listing, ListingPlatform, ListingStatus
+from app.models.offer import OfferCondition
 from app.services.listing_rules import default_price_type
 
 logger = structlog.get_logger()
 
-TITLE_MAX_LENGTH = Listing.__table__.c.title.type.length
+_COLUMNS = InventoryItem.__table__.c
+_LISTING_COLUMNS = Listing.__table__.c
+TITLE_MAX_LENGTH = _LISTING_COLUMNS.title.type.length
 _CONTENT_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+# Was auf PostgreSQL an der Spaltenlaenge scheitern wuerde, faellt auf SQLite
+# still durch -- also vorher pruefen, nicht erst mitten im Lauf.
+_ITEM_LIMITS = {
+    "set_name": _COLUMNS.set_name.type.length,
+    "set_number": _COLUMNS.set_number.type.length,
+    "product_group": _COLUMNS.product_group.type.length,
+    "theme": _COLUMNS.theme.type.length,
+    "search_query": _COLUMNS.search_query.type.length,
+    "condition": _COLUMNS.condition.type.length,
+}
+_LISTING_LIMITS = {
+    "title": TITLE_MAX_LENGTH,
+    "platform_category": _LISTING_COLUMNS.platform_category.type.length,
+}
+_ACTIVATABLE = (ListingStatus.ACTIVE.value, ListingStatus.PAUSED.value)
 
 
 class ManifestError(Exception):
@@ -69,7 +89,7 @@ class ManifestItem(BaseModel):
     product_group: str | None = None
     theme: str | None = None
     condition: str = "NEW_SEALED"
-    quantity: int = 1
+    quantity: int = Field(default=1, ge=1)
     search_query: str | None = None
     buy_date: date
     notes: str = ""
@@ -95,9 +115,19 @@ def load_manifest(source: Path) -> Manifest:
     path = source / "manifest.json"
     if not path.exists():
         raise ManifestError(f"{path} fehlt")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    items = []
+    # Posten einzeln validieren, damit die Meldung den Schluessel nennt und
+    # nicht nur "items.7.quantity".
+    for entry in raw.get("items", []):
+        try:
+            items.append(ManifestItem.model_validate(entry))
+        except ValidationError as exc:
+            detail = exc.errors()[0]
+            raise ManifestError(f"{entry.get('key', '?')}: {detail['loc'][-1]} {detail['msg']}") from exc
     try:
-        return Manifest.model_validate_json(path.read_text(encoding="utf-8"))
-    except ValidationError as exc:
+        return Manifest(mark=raw["mark"], items=items)
+    except (KeyError, ValidationError) as exc:
         raise ManifestError(f"manifest.json ist unvollstaendig: {exc}") from exc
 
 
@@ -119,19 +149,58 @@ def _photo_payload(source: Path, item: ManifestItem) -> InventoryPhotoUploadRequ
     return InventoryPhotoUploadRequest(photos=uploads)
 
 
+def _check_photos(source: Path, item: ManifestItem) -> None:
+    if len(item.photos) > MAX_PHOTOS_PER_ITEM:
+        raise ManifestError(f"{item.key}: {len(item.photos)} Fotos, erlaubt sind {MAX_PHOTOS_PER_ITEM}")
+    for name in item.photos:
+        path = source / name
+        if not path.exists():
+            raise ManifestError(f"{item.key}: Foto {name} fehlt in {source}")
+        if path.suffix.lower() not in _CONTENT_TYPES:
+            raise ManifestError(f"{item.key}: {name} ist kein unterstuetztes Bildformat")
+        if path.stat().st_size > MAX_PHOTO_BYTES:
+            raise ManifestError(f"{item.key}: {name} ist groesser als {MAX_PHOTO_BYTES // (1024 * 1024)} MB")
+
+
+def _check_listings(item: ManifestItem) -> None:
+    """Normalisiert die Plattform und prueft, was die App sonst erst beim
+    Schreiben bemerken wuerde -- DRAFT-Zeilen gehen an create_listing vorbei."""
+    platforms = set()
+    for listing in item.listings:
+        listing.platform = listing.platform.strip().upper()
+        if listing.platform not in (p.value for p in ListingPlatform):
+            raise ManifestError(f"{item.key}: unbekannte Plattform {listing.platform}")
+        if listing.platform in platforms:
+            raise ManifestError(f"{item.key}: zwei offene Listings auf {listing.platform}")
+        platforms.add(listing.platform)
+        if listing.status not in (ListingStatus.DRAFT.value, ListingStatus.ACTIVE.value):
+            raise ManifestError(f"{item.key}: Listing-Status {listing.status} wird hier nicht angelegt")
+        if listing.status == ListingStatus.ACTIVE.value and not (listing.price and listing.price > 0):
+            raise ManifestError(f"{item.key}: aktives Listing ohne Preis")
+        for name, limit in _LISTING_LIMITS.items():
+            value = getattr(listing, name)
+            if value and len(value) > limit:
+                raise ManifestError(f"{item.key}: {name} hat {len(value)} Zeichen, erlaubt sind {limit}")
+
+
 def _prepare(source: Path, manifest: Manifest) -> list[tuple[ManifestItem, InventoryAdd]]:
-    """Alles pruefen, bevor irgendetwas geschrieben wird: fehlende Fotos oder ein
-    Lego-Posten ohne Setnummer sollen nicht erst nach dem halben Lauf auffallen."""
+    """Alles pruefen, bevor irgendetwas geschrieben wird: ein Lego-Posten ohne
+    Setnummer, ein zu langer Name oder ein fehlendes Foto sollen nicht erst nach
+    dem halben Lauf auffallen -- die Routen committen einzeln."""
     prepared = []
+    seen_keys = set()
     for item in manifest.items:
-        for name in item.photos:
-            if not (source / name).exists():
-                raise ManifestError(f"{item.key}: Foto {name} fehlt in {source}")
-        for listing in item.listings:
-            if listing.status == ListingStatus.ACTIVE.value and not listing.price:
-                raise ManifestError(f"{item.key}: aktives Listing ohne Preis")
-            if listing.status not in (ListingStatus.DRAFT.value, ListingStatus.ACTIVE.value):
-                raise ManifestError(f"{item.key}: Listing-Status {listing.status} wird hier nicht angelegt")
+        if item.key in seen_keys:
+            raise ManifestError(f"{item.key}: Schluessel kommt zweimal vor")
+        seen_keys.add(item.key)
+        if item.condition not in (c.value for c in OfferCondition):
+            raise ManifestError(f"{item.key}: unbekannter Zustand {item.condition}")
+        for name, limit in _ITEM_LIMITS.items():
+            value = getattr(item, name)
+            if value and len(value) > limit:
+                raise ManifestError(f"{item.key}: {name} hat {len(value)} Zeichen, erlaubt sind {limit}")
+        _check_photos(source, item)
+        _check_listings(item)
         try:
             add = InventoryAdd(
                 item_type=item.item_type,
@@ -152,8 +221,17 @@ def _prepare(source: Path, manifest: Manifest) -> list[tuple[ManifestItem, Inven
 
 
 async def _existing_item_id(session, mark: str, key: str) -> int | None:
-    result = await session.execute(select(InventoryItem.id).where(InventoryItem.notes.like(f"[{mark} {key}]%")))
-    return result.scalar_one_or_none()
+    """Sucht den Marker irgendwo in der Notiz, nicht nur am Anfang -- in der App
+    bearbeitete Notizen sollen den Wiederholungslauf nicht aushebeln. autoescape
+    entschaerft `%` und `_` aus Marke und Schluessel."""
+    marker = f"[{mark} {key}]"
+    result = await session.execute(
+        select(InventoryItem.id).where(InventoryItem.notes.contains(marker, autoescape=True))
+    )
+    ids = result.scalars().all()
+    if len(ids) > 1:
+        raise ManifestError(f"{key}: Marker steckt an mehreren Posten ({ids}) -- bitte von Hand aufloesen")
+    return ids[0] if ids else None
 
 
 def _draft_listing(item_id: int, listing: ManifestListing) -> Listing:
@@ -195,7 +273,15 @@ async def run(source: Path, session, *, apply: bool) -> Summary:
 
         for listing in item.listings:
             stored = await _get_item(item_id, session)
-            if any(x.platform == listing.platform and x.status in OPEN_LISTING_STATUSES for x in stored.listings):
+            open_on_platform = [
+                x for x in stored.listings
+                if x.platform == listing.platform and x.status in OPEN_LISTING_STATUSES
+            ]
+            # Eine offene DRAFT-Zeile ist kein Grund zu ueberspringen, wenn das
+            # Manifest die inzwischen eingestellte Anzeige meldet: create_listing
+            # aktiviert genau diese Zeile und behaelt den vorbereiteten Text.
+            already_live = any(x.status in _ACTIVATABLE for x in open_on_platform)
+            if already_live or (open_on_platform and listing.status == ListingStatus.DRAFT.value):
                 continue
             if listing.status == ListingStatus.ACTIVE.value:
                 await create_listing(

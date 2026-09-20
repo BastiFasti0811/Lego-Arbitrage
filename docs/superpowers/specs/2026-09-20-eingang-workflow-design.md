@@ -30,12 +30,12 @@ Eingang/                      # gitignored, liegt neben dem Repo-Inhalt
 
 Ein Durchgang:
 
-1. `python -m app.tools.eingang_prepare` (lokal, Backend-venv): packt ZIPs aus, überspringt Fotos, deren Hash schon in `.verarbeitet.json` steht, dreht sie nach EXIF, verkleinert auf 2000 px ohne Metadaten und schreibt einen Gruppenvorschlag nach Aufnahmezeit.
+1. `python -m app.tools.eingang_prepare prepare` (lokal, Backend-venv): packt ZIPs aus, überspringt Fotos, deren Hash schon in `.verarbeitet.json` steht, dreht sie nach EXIF, verkleinert auf 2000 px ohne Metadaten und schreibt einen Gruppenvorschlag nach Aufnahmezeit. Das ZIP bleibt als `.zip.verarbeitet` liegen: HEIC, Videos und Belege darin werden nicht ausgepackt und wären beim Löschen verloren.
 2. Claude sieht die verkleinerten Fotos an, erkennt Artikel und korrigiert die Gruppierung anhand des Bildinhalts (bei Lego über die Setnummer).
 3. Claude liest den Prod-Bestand und die eigenen Anzeigen (Kleinanzeigen, eBay) und gleicht ab.
 4. Claude legt die Tabelle vor: je Artikel Bezeichnung, Warengruppe, Zustand, Menge, Fotos, schon im Inventar ja/nein, schon inseriert ja/nein, geplante Aktion.
 5. Nach Freigabe schreibt Claude eine `manifest.json` und ruft `app.tools.import_inventory` im API-Container auf.
-6. Verarbeitete Fotos wandern nach `verarbeitet/<Datum>/`, ihre Hashes in `.verarbeitet.json`.
+6. `python -m app.tools.eingang_prepare finish`: merkt sich die Hashes und verschiebt die Originale nach `verarbeitet/<Datum>/`. Erst hier — bricht der Import ab, sieht der nächste Lauf dieselben Fotos wieder.
 
 ## 2. Zwei Spuren
 
@@ -56,7 +56,7 @@ python -m app.tools.import_inventory /tmp/import --apply   # schreibt
 
 Es liest `manifest.json` plus die Fotodateien daneben und nutzt die Routen-Funktionen der App (`add_inventory_item`, `upload_inventory_photos`, `create_listing`), damit dieselben Regeln gelten wie im Dashboard. DRAFT-Listings schreibt es direkt über das Modell, weil die App dafür sonst den KI-Weg nimmt.
 
-Jeder Posten trägt am Anfang seiner Notiz den Marker `[Eingang <Datum> <Schlüssel>]`. Daran erkennt ein zweiter Lauf, was schon existiert, und überspringt es. Fotos werden nur angehängt, wenn der Posten noch keine hat; ein offenes Listing je Plattform bleibt unangetastet.
+Jeder Posten trägt in seiner Notiz den Marker `[Eingang <Datum> <Schlüssel>]`. Daran erkennt ein zweiter Lauf, was schon existiert, und überspringt es — auch wenn die Notiz in der App bearbeitet wurde und der Marker nicht mehr vorn steht. Fotos werden nur angehängt, wenn der Posten noch keine hat. Ein laufendes Listing bleibt unangetastet; meldet das Manifest eine inzwischen eingestellte Anzeige, während ein Entwurf offen ist, wird dieser Entwurf aktiviert und behält seinen Text.
 
 Ohne `--apply` wird nichts geschrieben: Der Probelauf prüft die Pydantic-Modelle, die Dateien und den vorhandenen Bestand und gibt aus, was entstehen würde.
 
@@ -67,6 +67,8 @@ Ohne `--apply` wird nichts geschrieben: Der Probelauf prüft die Pydantic-Modell
 | Manifest unvollständig oder Foto fehlt | Abbruch vor dem ersten Schreibzugriff, mit Angabe des Schlüssels |
 | Import bricht mittendrin ab | Bereits angelegte Posten bleiben; ein erneuter Lauf setzt hinter dem Marker fort |
 | Foto doppelt im Eingang | Hash steht in `.verarbeitet.json`, das Foto wird übersprungen |
+| Manifest verletzt eine Regel der App (Zustand, Plattform, Länge, Menge, Fotoformat oder -größe) | Abbruch vor dem ersten Schreibzugriff mit Angabe des Schlüssels |
+| Gleichnamige Fotos aus verschiedenen Ordnern | Beide bleiben erhalten, das zweite bekommt ein `_2` |
 | Posten existiert schon (gleiche Setnummer) | Kein zweiter Posten; die Tabelle weist ihn als Dublette aus, Sebastian entscheidet über die Menge |
 | Prod nicht erreichbar | Der Durchgang endet nach der Tabelle; die `manifest.json` bleibt liegen und lässt sich später anwenden |
 

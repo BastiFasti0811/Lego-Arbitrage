@@ -59,6 +59,7 @@ def db():
 
 
 def _manifest(tmp_path, items, mark="Eingang 2026-09-20"):
+    tmp_path.mkdir(parents=True, exist_ok=True)
     for item in items:
         for name in item.get("photos", []):
             (tmp_path / name).write_bytes(_PIXEL)
@@ -233,4 +234,164 @@ async def test_lego_without_set_number_aborts_before_writing(tmp_path, db):
         await import_inventory.run(source, db, apply=True)
 
     assert "E03" in str(exc_info.value)
+    assert await _items(db) == []
+
+
+# ---------------------------------------------------------------------------
+# Review-Findings PR #27
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_marker_with_wildcards_does_not_match_a_foreign_item(tmp_path, db):
+    # LIKE-Platzhalter im Schluessel: "_" traf jedes Zeichen, Foto und Listing
+    # landeten am fremden Posten.
+    existing = _manifest(tmp_path / "erst", [_generic(key="EX1")])
+    await import_inventory.run(existing, db, apply=True)
+
+    source = _manifest(tmp_path / "zweit", [_generic(key="E_1", set_name="Kaffeemaschine")])
+    summary = await import_inventory.run(source, db, apply=True)
+
+    assert summary.created == ["E_1"]
+    assert sorted(i.set_name for i in await _items(db)) == ["Jabra Evolve 75e Headset", "Kaffeemaschine"]
+
+
+@pytest.mark.asyncio
+async def test_marker_is_found_even_when_the_note_was_edited(tmp_path, db):
+    source = _manifest(tmp_path, [_generic()])
+    await import_inventory.run(source, db, apply=True)
+    item = (await _items(db))[0]
+    item.notes = "Etui fehlt doch. " + item.notes  # wie die Notiz-Bearbeitung in der App
+    await db.commit()
+
+    summary = await import_inventory.run(source, db, apply=True)
+
+    assert summary.created == []
+    assert len(await _items(db)) == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_platform_aborts_before_writing(tmp_path, db):
+    source = _manifest(
+        tmp_path, [_generic(listings=[{"platform": "willhaben", "status": "DRAFT", "title": "T"}])]
+    )
+
+    with pytest.raises(import_inventory.ManifestError) as exc_info:
+        await import_inventory.run(source, db, apply=True)
+
+    assert "WILLHABEN" in str(exc_info.value)
+    assert await _items(db) == []
+
+
+@pytest.mark.asyncio
+async def test_lowercase_platform_is_normalised(tmp_path, db):
+    source = _manifest(tmp_path, [_generic(listings=[{"platform": "kleinanzeigen", "status": "DRAFT", "title": "T"}])])
+
+    await import_inventory.run(source, db, apply=True)
+
+    listing = (await db.execute(select(Listing))).scalars().one()
+    assert listing.platform == "KLEINANZEIGEN"
+
+
+@pytest.mark.asyncio
+async def test_two_listings_on_the_same_platform_abort_before_writing(tmp_path, db):
+    # Sonst haengen zwei offene Zeilen derselben Plattform am Posten: der
+    # partial-unique-Index greift nur bei identischer Schreibweise.
+    source = _manifest(
+        tmp_path,
+        [
+            _generic(
+                listings=[
+                    {"platform": "kleinanzeigen", "status": "DRAFT", "title": "Erster"},
+                    {"platform": "KLEINANZEIGEN", "status": "DRAFT", "title": "Zweiter"},
+                ]
+            )
+        ],
+    )
+
+    with pytest.raises(import_inventory.ManifestError) as exc_info:
+        await import_inventory.run(source, db, apply=True)
+
+    assert "KLEINANZEIGEN" in str(exc_info.value)
+    assert await _items(db) == []
+
+
+@pytest.mark.asyncio
+async def test_active_listing_activates_an_open_draft(tmp_path, db):
+    draft = _manifest(
+        tmp_path / "erst",
+        [_generic(listings=[{"platform": "KLEINANZEIGEN", "status": "DRAFT", "title": "T"}])],
+    )
+    await import_inventory.run(draft, db, apply=True)
+
+    source = _manifest(
+        tmp_path / "zweit",
+        [
+            _generic(
+                listings=[
+                    {
+                        "platform": "KLEINANZEIGEN",
+                        "status": "ACTIVE",
+                        "price": 49.0,
+                        "url": "https://www.kleinanzeigen.de/s-anzeige/x/123",
+                        "listed_at": "2026-09-18",
+                    }
+                ]
+            )
+        ],
+    )
+    await import_inventory.run(source, db, apply=True)
+
+    listing = (await db.execute(select(Listing))).scalars().one()
+    assert listing.status == ListingStatus.ACTIVE.value
+    assert listing.current_price == 49.0
+    assert listing.title == "T"  # der vorbereitete Text ueberlebt die Aktivierung
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "item",
+    [
+        pytest.param({"quantity": 0}, id="menge-null"),
+        pytest.param({"condition": "BANANE"}, id="unbekannter-zustand"),
+        pytest.param({"set_name": "X" * 400}, id="name-zu-lang"),
+        pytest.param({"photos": ["a.heic"]}, id="kein-bildformat"),
+        pytest.param({"photos": [f"p{n}.jpg" for n in range(9)]}, id="zu-viele-fotos"),
+        pytest.param(
+            {"listings": [{"platform": "EBAY", "status": "DRAFT", "platform_category": "K" * 250}]},
+            id="kategorie-zu-lang",
+        ),
+        pytest.param({"listings": [{"platform": "EBAY", "status": "DRAFT", "title": "T" * 130}]}, id="titel-zu-lang"),
+    ],
+)
+async def test_bad_manifest_values_abort_before_writing(tmp_path, db, item):
+    source = _manifest(tmp_path, [_generic(**item)])
+
+    with pytest.raises(import_inventory.ManifestError) as exc_info:
+        await import_inventory.run(source, db, apply=True)
+
+    assert "E01" in str(exc_info.value)
+    assert await _items(db) == []
+
+
+@pytest.mark.asyncio
+async def test_duplicate_key_aborts_before_writing(tmp_path, db):
+    source = _manifest(tmp_path, [_generic(), _generic(set_name="Kaffeemaschine")])
+
+    with pytest.raises(import_inventory.ManifestError) as exc_info:
+        await import_inventory.run(source, db, apply=True)
+
+    assert "E01" in str(exc_info.value)
+    assert await _items(db) == []
+
+
+@pytest.mark.asyncio
+async def test_oversized_photo_aborts_before_writing(tmp_path, db):
+    source = _manifest(tmp_path, [_generic(photos=["gross.jpg"])])
+    (tmp_path / "gross.jpg").write_bytes(b"x" * (9 * 1024 * 1024))
+
+    with pytest.raises(import_inventory.ManifestError) as exc_info:
+        await import_inventory.run(source, db, apply=True)
+
+    assert "gross.jpg" in str(exc_info.value)
     assert await _items(db) == []
