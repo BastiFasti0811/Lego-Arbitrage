@@ -481,3 +481,6 @@ def test_manifest_rejects_text_longer_than_its_column():
         ManifestItem(**base, storage_location="x" * 201)
     with pytest.raises(ValidationError):
         ManifestItem(**base, buy_platform="y" * 101)
+    # Wie in der API: Leerzeichen am Rand zaehlen nicht mit, leer wird NULL.
+    assert ManifestItem(**base, storage_location=" " + "x" * 200 + " ").storage_location == "x" * 200
+    assert ManifestItem(**base, storage_location="   ").storage_location is None

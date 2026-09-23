@@ -122,10 +122,14 @@ class InventoryAdd(BaseModel):
             self.set_number = None
             self.product_group = (self.product_group or "").strip() or "Diverses"
             self.search_query = (self.search_query or "").strip() or None
-        for field, limit in (("set_number", 20), ("product_group", 100), ("search_query", 300)):
+        for field, label, limit in (
+            ("set_number", "Setnummer", 20),
+            ("product_group", "Warengruppe", 100),
+            ("search_query", "Such-Query", 300),
+        ):
             value = getattr(self, field)
             if value is not None and len(value) > limit:
-                raise ValueError(f"{field} darf hoechstens {limit} Zeichen haben")
+                raise ValueError(f"{label} darf höchstens {limit} Zeichen haben")
         return self
 
 
