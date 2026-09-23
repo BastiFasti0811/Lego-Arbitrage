@@ -87,7 +87,7 @@ class InventoryAdd(BaseModel):
     condition: str = "NEW_SEALED"
     quantity: int = 1
     notes: str | None = None
-    storage_location: str | None = None
+    storage_location: str | None = Field(default=None, max_length=200)
 
     @model_validator(mode="after")
     def _apply_type_rules(self):
@@ -122,7 +122,7 @@ class InventoryUpdate(BaseModel):
     condition: str | None = None
     quantity: int | None = None
     notes: str | None = None
-    storage_location: str | None = None
+    storage_location: str | None = Field(default=None, max_length=200)
 
     @model_validator(mode="after")
     def _reject_null_product_group(self):

@@ -467,3 +467,17 @@ async def test_lego_item_may_carry_a_long_product_group_that_gets_replaced(tmp_p
     await import_inventory.run(source, db, apply=True)
 
     assert (await _items(db))[0].product_group == "Lego"
+
+
+def test_manifest_rejects_text_longer_than_its_column():
+    # Postgres-Spalten: storage_location VARCHAR(200), buy_platform VARCHAR(100).
+    from pydantic import ValidationError
+
+    from app.tools.import_inventory import ManifestItem
+
+    base = {"key": "E01", "item_type": "LEGO", "set_number": "42055", "set_name": "Bagger", "buy_date": "2024-01-01"}
+    ManifestItem(**base, storage_location="x" * 200, buy_platform="y" * 100)
+    with pytest.raises(ValidationError):
+        ManifestItem(**base, storage_location="x" * 201)
+    with pytest.raises(ValidationError):
+        ManifestItem(**base, buy_platform="y" * 101)

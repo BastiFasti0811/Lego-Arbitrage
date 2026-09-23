@@ -92,3 +92,17 @@ async def test_update_allows_product_group_on_generic():
     item = _fake_item(item_type="GENERIC", product_group="Diverses")
     response = await update_inventory_item(1, InventoryUpdate(product_group="Elektronik"), _Session(item))
     assert response.product_group == "Elektronik"
+
+
+def test_storage_location_longer_than_column_is_rejected():
+    # Postgres erzwingt VARCHAR(200) und wuerde sonst mit 500 antworten;
+    # SQLite in den Tests speichert still, deshalb greift die Grenze im Schema.
+    from pydantic import ValidationError
+
+    from app.api.routes.inventory import InventoryAdd
+
+    InventoryUpdate(storage_location="x" * 200)
+    with pytest.raises(ValidationError):
+        InventoryUpdate(storage_location="x" * 201)
+    with pytest.raises(ValidationError):
+        InventoryAdd(set_number="42055", set_name="Bagger", buy_date=date(2024, 1, 1), storage_location="x" * 201)

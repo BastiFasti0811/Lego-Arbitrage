@@ -104,9 +104,9 @@ class ManifestItem(BaseModel):
     # zu einer Rechnungs-Nachbildung (z. B. Altbestands-Import aus einer Tabelle).
     buy_price: float | None = None
     buy_shipping: float = 0.0
-    buy_platform: str | None = None
+    buy_platform: str | None = Field(default=None, max_length=100)
     buy_url: str | None = None
-    storage_location: str | None = None
+    storage_location: str | None = Field(default=None, max_length=200)
     notes: str = ""
     photos: list[str] = []
     listings: list[ManifestListing] = []
