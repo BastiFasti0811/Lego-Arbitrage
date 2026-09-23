@@ -5,6 +5,40 @@ const LOGIN_PATH = APP_BASENAME ? `${APP_BASENAME}/login` : "/login";
 const MAX_UPLOAD_DIMENSION = 1600;
 const JPEG_UPLOAD_QUALITY = 0.82;
 
+// Feldnamen aus FastAPI-Validierungsfehlern, wie sie im Formular heissen.
+const FIELD_LABELS = {
+  set_number: "Setnummer",
+  set_name: "Bezeichnung",
+  product_group: "Warengruppe",
+  search_query: "Such-Query",
+  theme: "Thema",
+  buy_platform: "Kaufplattform",
+  sell_platform: "Verkaufsplattform",
+  condition: "Zustand",
+  storage_location: "Lagerort",
+};
+
+// detail ist meistens ein String, beim 409 auf /valuation/run ein Objekt
+// ({message, run_id}) und bei einem 422 von FastAPI eine Liste von
+// Validierungsfehlern ({loc, msg}) — sonst landet "[object Object]" oder nur
+// "API Error 422" im UI.
+function formatErrorDetail(detail) {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((entry) => {
+        const field = Array.isArray(entry?.loc) ? entry.loc[entry.loc.length - 1] : null;
+        const message = String(entry?.msg || "").replace(/^Value error, /, "");
+        // "body" als letzter loc-Teil kommt von model_validator-Fehlern ohne Feldbezug.
+        const label = field && field !== "body" ? FIELD_LABELS[field] || field : null;
+        return label ? `${label}: ${message}` : message;
+      })
+      .filter(Boolean)
+      .join("; ");
+  }
+  return detail?.message;
+}
+
 async function request(path, options = {}) {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json", ...options.headers },
@@ -16,9 +50,7 @@ async function request(path, options = {}) {
       return;
     }
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    // detail ist meistens ein String, beim 409 auf /valuation/run aber ein
-    // Objekt ({message, run_id}) — sonst landet "[object Object]" im UI.
-    const detailMessage = typeof err.detail === "string" ? err.detail : err.detail?.message;
+    const detailMessage = formatErrorDetail(err.detail);
     const error = new Error(detailMessage || `API Error ${res.status}`);
     error.status = res.status;
     throw error;
