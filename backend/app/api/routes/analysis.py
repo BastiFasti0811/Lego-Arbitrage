@@ -20,7 +20,7 @@ from app.security.url_policy import UnsafeUrlError, validate_marketplace_url
 from app.services.auction_watch import evaluate_auction
 from app.services.bricklink import BrickLinkScraper
 from app.services.bricklink import parse_listing_page as parse_bricklink_listing_page
-from app.services.catawiki import CatawikiScraper, parse_lot_page
+from app.services.catawiki import CatawikiParseError, CatawikiScraper, parse_lot_page
 from app.services.deal_analysis import (
     DealAnalysisCommand,
     DealAnalysisUseCase,
@@ -655,6 +655,17 @@ async def parse_listing_url(request: ParseUrlRequest):
         url_set_numbers = re.findall(r"\b(\d{4,6})\b", url_path)
     url_set_number = url_set_numbers[0] if url_set_numbers else None
 
+    def url_only_response() -> ParseUrlResponse:
+        # Nur was die URL selbst hergibt -- fuer Seiten, die nicht ladbar oder nicht lesbar sind.
+        all_set_numbers = list(dict.fromkeys(url_set_numbers))  # deduplicate, preserve order
+        return ParseUrlResponse(
+            set_number=url_set_number,
+            set_numbers=all_set_numbers,
+            is_konvolut=len(all_set_numbers) > 1,
+            platform=platform,
+            url=url,
+        )
+
     # Try to fetch the page for more details
     try:
         if platform == "CATAWIKI":
@@ -676,14 +687,7 @@ async def parse_listing_url(request: ParseUrlRequest):
                 html = await scraper._fetch(url)
     except Exception as e:
         logger.warning("parse_url.fetch_failed", url=url, error=str(e))
-        all_set_numbers = list(dict.fromkeys(url_set_numbers))  # deduplicate, preserve order
-        return ParseUrlResponse(
-            set_number=url_set_number,
-            set_numbers=all_set_numbers,
-            is_konvolut=len(all_set_numbers) > 1,
-            platform=platform,
-            url=url,
-        )
+        return url_only_response()
 
     soup = BeautifulSoup(html, "lxml")
 
@@ -736,7 +740,13 @@ async def parse_listing_url(request: ParseUrlRequest):
             if m:
                 price = float(m.group(1))
     elif platform == "CATAWIKI":
-        lot = parse_lot_page(html, url)
+        try:
+            lot = parse_lot_page(html, url)
+        except CatawikiParseError as e:
+            # Consent-, Challenge- oder Fehlerseite mit Status 200: kein 500,
+            # sondern derselbe URL-Fallback wie bei einem Ladefehler.
+            logger.warning("parse_url.catawiki_unreadable", url=url, error=str(e))
+            return url_only_response()
         title = lot.title
         price = lot.current_bid
         shipping = lot.shipping_eur

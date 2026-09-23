@@ -129,7 +129,7 @@ export default function AuctionWatch() {
       <div className="bg-bg-card border border-border rounded-xl p-6 mb-6">
         <div className="flex flex-wrap items-center gap-3 mb-4">
           <label htmlFor="scan-frequency" className="text-text-secondary text-sm">Catawiki automatisch</label>
-          <select id="scan-frequency" value={settingsMap.catawiki_scan_frequency || "daily"}
+          <select id="scan-frequency" value={settingsMap.catawiki_scan_frequency || "off"}
             disabled={scheduleMutation.isPending}
             onChange={(event) => scheduleMutation.mutate(event.target.value)}
             className="bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm">

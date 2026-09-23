@@ -67,8 +67,11 @@ async def test_new_scans_preserve_notification_history_and_errors(storage):
 
 async def test_failed_notification_never_marks_lots_delivered(monkeypatch):
     monkeypatch.setattr(catawiki_scan, "SUPPORTED_DISCOVERY_PLATFORMS", ("CATAWIKI",))
-    monkeypatch.setattr(catawiki_scan, "get_settings_map", AsyncMock(return_value={"catawiki_scan_urls": "configured"}))
-    monkeypatch.setattr(catawiki_scan, "_discover_configured_platform", AsyncMock(return_value=[]))
+    monkeypatch.setattr(catawiki_scan, "get_settings_map", AsyncMock(return_value={
+        "catawiki_scan_urls": "configured", "catawiki_scan_frequency": "daily",
+        "telegram_bot_token": "t", "telegram_chat_id": "c",
+    }))
+    monkeypatch.setattr(catawiki_scan, "_discover_configured_platform", AsyncMock(return_value=([], [])))
     monkeypatch.setattr(catawiki_scan, "unnotified_results", AsyncMock(return_value=[{"source_url": "lot"}]))
     monkeypatch.setattr(catawiki_scan, "send_auction_discovery_summary", AsyncMock(return_value=False))
     mark = AsyncMock()

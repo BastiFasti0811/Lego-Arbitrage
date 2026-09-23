@@ -117,7 +117,7 @@ DEFAULT_SETTINGS = [
         "label": "Automatischer Scan",
         "description": "daily = taeglich 08:40, weekly = Sonntag 08:40, off = aus (Europe/Berlin)",
         "is_secret": False,
-        "value": "daily",
+        "value": "off",
     },
     {
         "key": "whatnot_cookie_header",

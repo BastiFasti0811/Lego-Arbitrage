@@ -81,7 +81,7 @@ class AuctionWatchResponse(BaseModel):
     source_url: str
     lot_title: str | None = None
     current_bid: float
-    purchase_shipping: float
+    purchase_shipping: float | None = None
     desired_roi_percent: float | None = None
     max_bid: float | None = None
     break_even_bid: float | None = None
@@ -345,11 +345,24 @@ async def _discover_configured_platform(
         max_results_per_url,
     )
     if not category_urls:
-        return []
-    return await _scan_urls(platform, category_urls, cookie_header, user_agent, max_results)
+        return [], []
+    return await _collect_scan(platform, category_urls, cookie_header, user_agent, max_results)
 
 
 async def _scan_urls(platform, category_urls, cookie_header, user_agent, max_results):
+    """API-Variante: ein Fehler kommt als 502 zurueck, das Teilergebnis ist gespeichert."""
+    results, errors = await _collect_scan(platform, category_urls, cookie_header, user_agent, max_results)
+    if errors:
+        raise HTTPException(status_code=502, detail=" ".join(errors))
+    return results
+
+
+async def _collect_scan(platform, category_urls, cookie_header, user_agent, max_results):
+    """Scan ausfuehren und speichern; liefert (Ergebnisse, Fehler) statt zu werfen.
+
+    Der geplante Task braucht das Teilergebnis auch nach Zeitlimit oder Sperre,
+    sonst werden gespeicherte Funde nie gemeldet.
+    """
     # Validate the complete request before using this platform's session cookies.
     for url in category_urls:
         validate_marketplace_url(url, platform)
@@ -376,9 +389,7 @@ async def _scan_urls(platform, category_urls, cookie_header, user_agent, max_res
     results = sorted(discovered.values(), key=lambda item: (item.can_bid_now, item.expected_profit_current or 0),
                      reverse=True)
     await save_scan(platform, [item.model_dump() for item in results], errors)
-    if errors:
-        raise HTTPException(status_code=502, detail=" ".join(errors))
-    return results
+    return results, errors
 
 
 @router.get("/discovery-results")
@@ -433,7 +444,7 @@ async def add_auction_watch(data: AuctionWatchCreate, session: AsyncSession = De
         source_url=source_url,
         lot_title=data.lot_title,
         current_bid=data.current_bid,
-        purchase_shipping=data.purchase_shipping or 0.0,
+        purchase_shipping=data.purchase_shipping,
         desired_roi_percent=data.desired_roi_percent,
         buyer_fee_rate=data.buyer_fee_rate,
         buyer_fee_fixed=data.buyer_fee_fixed,

@@ -14,6 +14,9 @@ from app.services.catawiki import CatawikiLotCandidate
 from app.tasks import catawiki_scan
 
 URL = "https://www.catawiki.com/de/l/102824557"
+# Catawiki-Scan ist ohne Einstellung aus; die Task-Tests schalten ihn ein.
+SCAN_ON = {"catawiki_scan_urls": URL, "catawiki_scan_frequency": "daily"}
+TELEGRAM = {"telegram_bot_token": "t", "telegram_chat_id": "c"}
 
 
 def lot(**changes):
@@ -84,12 +87,13 @@ def test_weekly_scan_uses_berlin_day_and_supports_off():
     assert catawiki_scan.catawiki_scan_due("weekly", saturday)
     assert not catawiki_scan.catawiki_scan_due("weekly", datetime(2026, 9, 5, 8, tzinfo=UTC))
     assert not catawiki_scan.catawiki_scan_due("off", saturday)
-    assert catawiki_scan.catawiki_scan_due(None, saturday)
+    # Ohne Einstellung aus, bis der Parser gegen echte Los-Seiten verifiziert ist.
+    assert not catawiki_scan.catawiki_scan_due(None, saturday)
 
 
 async def test_scheduled_source_failure_cannot_mark_heartbeat_success(monkeypatch):
     monkeypatch.setattr(catawiki_scan, "SUPPORTED_DISCOVERY_PLATFORMS", ("CATAWIKI",))
-    monkeypatch.setattr(catawiki_scan, "get_settings_map", AsyncMock(return_value={"catawiki_scan_urls": URL}))
+    monkeypatch.setattr(catawiki_scan, "get_settings_map", AsyncMock(return_value=SCAN_ON))
     monkeypatch.setattr(catawiki_scan, "_discover_configured_platform", AsyncMock(side_effect=RuntimeError("blocked")))
     with pytest.raises(RuntimeError, match="fehlgeschlagen"):
         await catawiki_scan._scan_configured_categories_async()
@@ -106,7 +110,7 @@ async def test_no_config_reports_skipped_without_fetching(monkeypatch):
 
 async def test_worker_time_limit_is_never_swallowed(monkeypatch):
     monkeypatch.setattr(catawiki_scan, "SUPPORTED_DISCOVERY_PLATFORMS", ("CATAWIKI",))
-    monkeypatch.setattr(catawiki_scan, "get_settings_map", AsyncMock(return_value={"catawiki_scan_urls": URL}))
+    monkeypatch.setattr(catawiki_scan, "get_settings_map", AsyncMock(return_value=SCAN_ON))
     monkeypatch.setattr(catawiki_scan, "_discover_configured_platform", AsyncMock(side_effect=SoftTimeLimitExceeded()))
     with pytest.raises(SoftTimeLimitExceeded):
         await catawiki_scan._scan_configured_categories_async()
@@ -145,3 +149,76 @@ async def test_watch_refresh_reads_new_bid_and_ends_closed_lot(monkeypatch):
     assert not await auction_tracking.refresh_watch_item(item, SimpleNamespace(set_number="10282"))
     assert item.current_bid == 125 and item.purchase_shipping == 13
     assert item.status == "ENDED" and item.max_bid is None
+
+
+def _result(url, can_bid_now=True):
+    return auctions.AuctionDiscoverResult(
+        source_platform="CATAWIKI", category_url=URL, lot_title="LEGO 10282", source_url=url,
+        set_number="10282", current_bid=100, recommended_max_bid=150, can_bid_now=can_bid_now,
+    )
+
+
+async def test_partial_scan_after_timeout_still_notifies_then_fails(monkeypatch):
+    # Zeitlimit nach dem ersten Los: der Fund ist gespeichert und muss gemeldet
+    # werden, der Task endet trotzdem rot.
+    monkeypatch.setattr(catawiki_scan, "SUPPORTED_DISCOVERY_PLATFORMS", ("CATAWIKI",))
+    monkeypatch.setattr(catawiki_scan, "get_settings_map", AsyncMock(return_value={**SCAN_ON, **TELEGRAM}))
+    found = _result(URL)
+    monkeypatch.setattr(catawiki_scan, "_discover_configured_platform",
+                        AsyncMock(return_value=([found], ["CATAWIKI: Zeitlimit erreicht."])))
+    monkeypatch.setattr(catawiki_scan, "unnotified_results", AsyncMock(return_value=[found.model_dump()]))
+    send = AsyncMock(return_value=True)
+    monkeypatch.setattr(catawiki_scan, "send_auction_discovery_summary", send)
+    mark = AsyncMock()
+    monkeypatch.setattr(catawiki_scan, "mark_notified", mark)
+
+    with pytest.raises(RuntimeError, match="Zeitlimit"):
+        await catawiki_scan._scan_configured_categories_async()
+
+    send.assert_awaited_once()
+    mark.assert_awaited_once_with("CATAWIKI", [URL])
+
+
+async def test_missing_telegram_is_skipped_not_failed(monkeypatch):
+    monkeypatch.setattr(catawiki_scan, "SUPPORTED_DISCOVERY_PLATFORMS", ("CATAWIKI",))
+    monkeypatch.setattr(catawiki_scan, "get_settings_map", AsyncMock(return_value=SCAN_ON))
+    found = _result(URL)
+    monkeypatch.setattr(catawiki_scan, "_discover_configured_platform", AsyncMock(return_value=([found], [])))
+    monkeypatch.setattr(catawiki_scan, "unnotified_results", AsyncMock(return_value=[found.model_dump()]))
+    send = AsyncMock()
+    monkeypatch.setattr(catawiki_scan, "send_auction_discovery_summary", send)
+    mark = AsyncMock()
+    monkeypatch.setattr(catawiki_scan, "mark_notified", mark)
+
+    summary = await catawiki_scan._scan_configured_categories_async()
+
+    assert summary["errors"] == []
+    assert any("Telegram nicht konfiguriert" in entry for entry in summary["skipped"])
+    send.assert_not_awaited()
+    # Nicht als gemeldet markieren: sobald Telegram steht, kommen die Treffer noch.
+    mark.assert_not_awaited()
+
+
+async def test_scan_without_frequency_setting_does_not_fetch(monkeypatch):
+    monkeypatch.setattr(catawiki_scan, "SUPPORTED_DISCOVERY_PLATFORMS", ("CATAWIKI",))
+    monkeypatch.setattr(catawiki_scan, "get_settings_map", AsyncMock(return_value={"catawiki_scan_urls": URL}))
+    discover = AsyncMock()
+    monkeypatch.setattr(catawiki_scan, "_discover_configured_platform", discover)
+    summary = await catawiki_scan._scan_configured_categories_async()
+    assert "CATAWIKI: heute nicht geplant" in summary["skipped"]
+    discover.assert_not_awaited()
+
+
+async def test_collect_scan_returns_partial_results_instead_of_raising(monkeypatch):
+    monkeypatch.setattr(auctions, "validate_marketplace_url", lambda *args: None)
+    found = _result(URL)
+
+    async def partial(**kwargs):
+        kwargs["collected"][URL] = found
+        raise TimeoutError()
+
+    monkeypatch.setattr(auctions, "_discover_for_category", partial)
+    monkeypatch.setattr(auctions, "save_scan", AsyncMock())
+    results, errors = await auctions._collect_scan("CATAWIKI", [URL], None, None, 20)
+    assert results == [found]
+    assert errors and "Zeitlimit" in errors[0]

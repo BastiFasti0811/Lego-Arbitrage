@@ -26,6 +26,9 @@ def scan_configured_categories() -> dict:
 
 async def _scan_configured_categories_async() -> dict:
     summary = {"platforms": 0, "discovered": 0, "notified": 0, "skipped": [], "errors": []}
+    telegram = await get_settings_map(["telegram_bot_token", "telegram_chat_id"])
+    # Ohne Telegram gibt es nichts zu melden -- das ist Konfiguration, kein Fehler.
+    telegram_configured = bool(telegram.get("telegram_bot_token") and telegram.get("telegram_chat_id"))
 
     for platform in SUPPORTED_DISCOVERY_PLATFORMS:
         try:
@@ -36,10 +39,18 @@ async def _scan_configured_categories_async() -> dict:
             if platform == "CATAWIKI" and not catawiki_scan_due(config.get("catawiki_scan_frequency")):
                 summary["skipped"].append("CATAWIKI: heute nicht geplant")
                 continue
-            results = await _discover_configured_platform(platform, max_results_per_url=20)
+            # Teilergebnis nach Zeitlimit oder Sperre trotzdem melden, der Fehler
+            # zaehlt danach weiter und laesst den Task rot enden.
+            results, scan_errors = await _discover_configured_platform(platform, max_results_per_url=20)
             summary["platforms"] += 1
             summary["discovered"] += len(results)
+            summary["errors"].extend(scan_errors)
             candidates = await unnotified_results(platform, [item.model_dump() for item in results])
+            if candidates and not telegram_configured:
+                summary["skipped"].append(
+                    f"{platform}: Telegram nicht konfiguriert, {len(candidates)} Treffer ungemeldet"
+                )
+                continue
             # Telegram renders five per message. Only mark lots actually included.
             for start in range(0, len(candidates), 5):
                 batch = candidates[start:start + 5]
@@ -61,7 +72,9 @@ async def _scan_configured_categories_async() -> dict:
 
 
 def catawiki_scan_due(frequency: str | None, now: datetime | None = None) -> bool:
-    frequency = (frequency or "daily").strip().lower()
+    # Ohne Einstellung aus: Catawiki antwortet dem Scraper mit 403, und der
+    # Parser ist nie gegen echte Los-Seiten gelaufen.
+    frequency = (frequency or "off").strip().lower()
     if frequency not in {"daily", "weekly", "off"}:
         raise ValueError("Catawiki-Intervall muss daily, weekly oder off sein")
     now = (now or datetime.now(ZoneInfo("Europe/Berlin"))).astimezone(ZoneInfo("Europe/Berlin"))
