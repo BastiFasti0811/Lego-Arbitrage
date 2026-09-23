@@ -32,13 +32,13 @@
 **Interfaces:**
 - Produces: Branch `feat/inventar-ki` von origin/main; installierte Pakete `anthropic>=1.0`, `pillow`; Settings-Felder `ai_provider: str = "claude"`, `ai_model: str = "claude-opus-5"`, `anthropic_api_key: str | None = None` (Task 5 konsumiert genau diese Namen).
 
-- [ ] **Step 1: Branch**
+- [x] **Step 1: Branch**
 
 ```bash
 git fetch origin && git checkout -b feat/inventar-ki origin/main && git branch --show-current
 ```
 
-- [ ] **Step 2: Dependencies**
+- [x] **Step 2: Dependencies**
 
 In `backend/pyproject.toml`: `"anthropic>=0.40.0"` → `"anthropic>=1.0"`; unter `# Data Processing` neu `"pillow>=11.0"`. Dann:
 
@@ -48,7 +48,7 @@ cd backend && uv pip install -U "anthropic>=1.0" "pillow>=11.0" && ./.venv/Scrip
 
 Erwartung: anthropic 1.x, Pillow 11.x. Danach Gesamtsuite (`./.venv/Scripts/python.exe -m pytest -q`) — muss grün bleiben (das SDK wird bisher nirgends importiert).
 
-- [ ] **Step 3: Settings-Felder**
+- [x] **Step 3: Settings-Felder**
 
 In `backend/app/config.py` in `class Settings` (bei den anderen Secrets, Stil der Nachbarfelder):
 
@@ -59,7 +59,7 @@ In `backend/app/config.py` in `class Settings` (bei den anderen Secrets, Stil de
     anthropic_api_key: str | None = None
 ```
 
-- [ ] **Step 4: Doku**
+- [x] **Step 4: Doku**
 
 `backend/.env.example`: Block ergänzen:
 
@@ -71,7 +71,7 @@ ANTHROPIC_API_KEY=
 
 `docs/deploy.md`: in der `backend/.env`-Aufzählung (~Zeile 101) ergänzen: "and `ANTHROPIC_API_KEY` for the photo-analysis/listing-text AI (PR 2); without it the AI endpoints return 503 and everything else keeps working."
 
-- [ ] **Step 5: Verifikation + Commit**
+- [x] **Step 5: Verifikation + Commit**
 
 ```bash
 cd backend && ./.venv/Scripts/python.exe -c "from app.config import settings; print(settings.ai_provider, settings.ai_model, settings.anthropic_api_key is None)" && ./.venv/Scripts/python.exe -m ruff check app tests
@@ -94,9 +94,9 @@ git add backend/pyproject.toml backend/app/config.py backend/.env.example docs/d
 **Interfaces:**
 - Produces: `InventoryItem.ai_price_min/ai_price_max: float|None`, `ai_analysis_at: datetime|None (tz)`; `InventoryStatus.DRAFT = "DRAFT"`; `InventoryResponse` liefert die drei ai_-Felder; `portfolio_summary` ignoriert DRAFT-Items vollständig (auch in `total_items`).
 
-- [ ] **Step 1: Failing Migrationstest** (Muster `test_migration_listings.py`: importlib-Load, Mini-Alt-Tabelle mit id+set_number+set_name+buy_price+buy_date+status, eine Zeile einfügen, `upgrade()`, dann: die drei neuen Spalten existieren, sind nullable, Bestandszeile hat NULL-Werte).
-- [ ] **Step 2: FAIL verifizieren** (`ModuleNotFoundError`/fehlende Datei).
-- [ ] **Step 3: Model + Migration**
+- [x] **Step 1: Failing Migrationstest** (Muster `test_migration_listings.py`: importlib-Load, Mini-Alt-Tabelle mit id+set_number+set_name+buy_price+buy_date+status, eine Zeile einfügen, `upgrade()`, dann: die drei neuen Spalten existieren, sind nullable, Bestandszeile hat NULL-Werte).
+- [x] **Step 2: FAIL verifizieren** (`ModuleNotFoundError`/fehlende Datei).
+- [x] **Step 3: Model + Migration**
 
 Model (`inventory.py`, unter `search_query`):
 
@@ -109,8 +109,8 @@ Model (`inventory.py`, unter `search_query`):
 
 (`Float`, `DateTime` zu den sqlalchemy-Imports; `datetime` ist importiert.) `InventoryStatus`: `DRAFT = "DRAFT"` ergänzen (vor HOLDING). Migration: `op.batch_alter_table("inventory_items")` mit drei `add_column`; `down_revision = "d4e8a12f9c30"`; downgrade droppt die drei.
 
-- [ ] **Step 4: Statistik härten** — in `portfolio_summary`: erste Zeile nach dem Laden `items = [i for i in items if i.status != InventoryStatus.DRAFT.value]`. In `InventoryResponse` die drei Felder (`ai_price_min: float | None` …) + Durchreichen in `_to_response`. Test ergänzen (`test_inventory_optional_buy_price.py`): `_item()`-Factory um `ai_price_min=None, ai_price_max=None, ai_analysis_at=None` erweitern; neuer Test `test_portfolio_summary_ignores_drafts` (ein DRAFT-Item in der Fake-Session → taucht in keiner Zahl auf).
-- [ ] **Step 5: Suite + Lint grün, Commit** `feat(inventory): KI-Preisrahmen-Spalten und DRAFT-Status`
+- [x] **Step 4: Statistik härten** — in `portfolio_summary`: erste Zeile nach dem Laden `items = [i for i in items if i.status != InventoryStatus.DRAFT.value]`. In `InventoryResponse` die drei Felder (`ai_price_min: float | None` …) + Durchreichen in `_to_response`. Test ergänzen (`test_inventory_optional_buy_price.py`): `_item()`-Factory um `ai_price_min=None, ai_price_max=None, ai_analysis_at=None` erweitern; neuer Test `test_portfolio_summary_ignores_drafts` (ein DRAFT-Item in der Fake-Session → taucht in keiner Zahl auf).
+- [x] **Step 5: Suite + Lint grün, Commit** `feat(inventory): KI-Preisrahmen-Spalten und DRAFT-Status`
 
 ---
 
@@ -122,7 +122,7 @@ Model (`inventory.py`, unter `search_query`):
 
 **Interfaces:** keine neuen — Härtungen bestehender Verträge.
 
-- [ ] **Step 1: Failing Tests** — in `test_inventory_generic_validation.py` der Validator-Test, in einer neuen `backend/tests/test_update_guards.py` der Handler-Test im Fake-Session-Stil (Muster `test_split_item.py::_SplitSession`, hier reicht execute/commit/refresh):
+- [x] **Step 1: Failing Tests** — in `test_inventory_generic_validation.py` der Validator-Test, in einer neuen `backend/tests/test_update_guards.py` der Handler-Test im Fake-Session-Stil (Muster `test_split_item.py::_SplitSession`, hier reicht execute/commit/refresh):
 
 ```python
 def test_lego_strips_whitespace_search_query():
@@ -146,7 +146,7 @@ async def test_update_allows_product_group_on_generic():
 
 (`_fake_item` = vollständiger SimpleNamespace wie `_item()` in `test_inventory_optional_buy_price.py` — kopieren und um `item_type`-Override ergänzen; der GENERIC-Fall braucht auch `photos=[]`, `listings=[]` und die ai_-Felder aus Task 2.)
 
-- [ ] **Step 2: Implementieren**
+- [x] **Step 2: Implementieren**
 1. Im `InventoryAdd`-Validator: `if not (self.search_query or "").strip(): self.search_query = f"LEGO {self.set_number}"` (statt `if not self.search_query`); zusätzlich am Ende beider Zweige `self.search_query = (self.search_query or "").strip() or None` (bei LEGO ist er nach der Ableitung nie leer).
 2. Backend-Guard NUR im Handler `update_inventory_item` — nach `_get_item`, vor dem setattr-Loop:
 
@@ -157,7 +157,7 @@ async def test_update_allows_product_group_on_generic():
 
 (Kein neues Pydantic-Feld — der Handler ist der Guard. Das Frontend sendet den Key für LEGO seit PR 1 ohnehin nicht mehr.)
 3. `ListingManager.jsx` OpenListing-Kopfzeile: `{listing.current_price != null ? `${Math.round(listing.current_price)}€` : "—"}` statt unguarded `Math.round`.
-- [ ] **Step 3: Suite + ruff + FE lint/build grün, Commit** `fix(inventory): PR-1-Reste - product_group-Guard, search_query-Strip, 0-Euro-Anzeige`
+- [x] **Step 3: Suite + ruff + FE lint/build grün, Commit** `fix(inventory): PR-1-Reste - product_group-Guard, search_query-Strip, 0-Euro-Anzeige`
 
 ---
 
@@ -170,8 +170,8 @@ async def test_update_allows_product_group_on_generic():
 **Interfaces:**
 - Produces: `EbaySoldScraper.get_price_for_query(query: str) -> ScrapedPrice | None` — Sold-Suche (LH_Complete/LH_Sold/PrefLoc, ohne Zustands-Filter, Query URL-enkodiert), Median+Ausreißerfilter über `_calculate_median`, bei <3 Treffern/Bot-Wall Fallback auf aktive BIN-Listings (`is_reliable=False`); Quelle `"EBAY_SOLD"`/`"EBAY_ACTIVE"` wie gehabt. **Der bestehende Lego-Pfad (`get_price`, `_build_sold_url`) wird nicht angefasst** — der wurde gerade erst gehärtet.
 
-- [ ] **Step 1: Failing Tests** — `test_ebay_query_price.py` mit gemocktem `_fetch` (monkeypatch auf die Instanz): (a) Sold-HTML-Fixture (bestehende Karten-Fixture aus `tests/fixtures/` wiederverwenden, sonst minimales `li.s-card`-HTML mit 5 Preisen inline) → Median korrekt, `sold_count == 5`, `is_reliable is True`, `source == "EBAY_SOLD"`; (b) leere Sold-Antwort + BIN-Fixture → `source == "EBAY_ACTIVE"`, `is_reliable is False`; (c) beide leer → `None`; (d) URL-Bau: Query `"Bosch PSB 500"` → `_nkw=Bosch+PSB+500`, kein `LEGO`-Präfix, kein `LH_ItemCondition`.
-- [ ] **Step 2: FAIL, dann implementieren** — neue Methoden nach dem Lego-Block:
+- [x] **Step 1: Failing Tests** — `test_ebay_query_price.py` mit gemocktem `_fetch` (monkeypatch auf die Instanz): (a) Sold-HTML-Fixture (bestehende Karten-Fixture aus `tests/fixtures/` wiederverwenden, sonst minimales `li.s-card`-HTML mit 5 Preisen inline) → Median korrekt, `sold_count == 5`, `is_reliable is True`, `source == "EBAY_SOLD"`; (b) leere Sold-Antwort + BIN-Fixture → `source == "EBAY_ACTIVE"`, `is_reliable is False`; (c) beide leer → `None`; (d) URL-Bau: Query `"Bosch PSB 500"` → `_nkw=Bosch+PSB+500`, kein `LEGO`-Präfix, kein `LH_ItemCondition`.
+- [x] **Step 2: FAIL, dann implementieren** — neue Methoden nach dem Lego-Block:
 
 ```python
     def _build_query_sold_url(self, query: str) -> str:
@@ -190,7 +190,7 @@ async def test_update_allows_product_group_on_generic():
 ```
 
 Körper analog `get_price`: sold laden → `_extract_sold_prices` → bei Preisen Median/min/max/`is_reliable=len>=5`/notes; sonst Challenge-Log + `_price_from_active_listings`-Analogon mit der Query-BIN-URL (kleine private Hilfsmethode oder Inline). `from urllib.parse import quote_plus` ergänzen. Exceptions wie im Lego-Pfad geloggt und verschluckt → `None`.
-- [ ] **Step 3: Suite + ruff grün, Commit** `feat(scrapers): eBay-Sold-Median fuer freie Suchbegriffe`
+- [x] **Step 3: Suite + ruff grün, Commit** `feat(scrapers): eBay-Sold-Median fuer freie Suchbegriffe`
 
 ---
 
@@ -206,7 +206,7 @@ Körper analog `get_price`: sold laden → `_extract_sold_prices` → bei Preise
 - `app.ai.claude_provider`: `class AIProviderError(Exception)` (Attribut `.detail: str`, deutsch); `class ClaudeProvider` mit `async def analyze_photos(self, photos: list[tuple[bytes, str]], hints: str | None, product_groups: list[str]) -> ItemDraft` und `async def write_listing(self, *, name: str, condition: str, notes: str | None, platform: str, price: float, price_type: str) -> ListingText`
 - `app.ai.__init__`: `def get_provider() -> ClaudeProvider` — wirft `AIProviderError("ANTHROPIC_API_KEY fehlt — in backend/.env setzen")` wenn `settings.anthropic_api_key` leer; bei unbekanntem `settings.ai_provider` ebenfalls Fehler.
 
-- [ ] **Step 1: Failing Tests schreiben**
+- [x] **Step 1: Failing Tests schreiben**
 
 `test_ai_schemas_and_prep.py`: ItemDraft/ListingText-Roundtrip (`ItemDraft(**{…}).search_query == …`); `prepare_photo`: mit Pillow im Test ein 2400×1200-JPEG in tmp_path erzeugen → Ergebnis-media_type `image/jpeg` und wiedergeöffnet (`PIL.Image.open(io.BytesIO(out))`) längste Kante ≤ 1600; ein 200×200-PNG < 1,5 MB → Bytes identisch zum Original, media_type `image/png`.
 
@@ -231,7 +231,7 @@ class _FakeMessages:
 
 Provider mit injiziertem Fake-Client (Konstruktor-Parameter `client=None` → intern `AsyncAnthropic(api_key=…, timeout=90.0, max_retries=1)`, im Test Fake übergeben). Tests: (a) `analyze_photos` gibt das ItemDraft aus `parsed_output` zurück und der Call enthält `model == settings.ai_model`, `output_format is ItemDraft`, erste Content-Blocks vom Typ `image` mit base64-Daten, die Warengruppen-Liste im Text-Prompt; (b) `stop_reason == "refusal"` → `AIProviderError` mit deutscher Meldung; (c) `write_listing` reicht Plattform/Preis/price_type in den Prompt und gibt ListingText zurück; (d) `get_provider()` ohne Key (monkeypatch `settings.anthropic_api_key = None`) → `AIProviderError`.
 
-- [ ] **Step 2: FAIL, dann implementieren**
+- [x] **Step 2: FAIL, dann implementieren**
 
 `claude_provider.py` (Kern — Steps exakt so umsetzen):
 
@@ -355,7 +355,7 @@ class ClaudeProvider:
 
 `photo_prep.py`: Pillow-Import lokal in der Funktion (Import-Kosten), `Image.open` → `im.thumbnail((1600, 1600))` bei Überschreitung, `im.convert("RGB").save(buf, "JPEG", quality=85)`. `__init__.py`: `get_provider()` wie im Interface + Re-Exports (`ItemDraft`, `ListingText`, `AIProviderError`, `prepare_photo`, `get_provider`).
 
-- [ ] **Step 3: Suite + ruff grün, Commit** `feat(ai): Claude-Provider mit Foto-Analyse und Anzeigentexten`
+- [x] **Step 3: Suite + ruff grün, Commit** `feat(ai): Claude-Provider mit Foto-Analyse und Anzeigentexten`
 
 ---
 
@@ -372,9 +372,9 @@ class ClaudeProvider:
 - `POST /api/inventory/{item_id}/revalue` (kein Body) → nur GENERIC (400 sonst — Lego hat die Pipeline) und nur mit nicht-leerer `search_query` (400 "search_query fehlt"); holt `get_price_for_query`, setzt bei Treffer `current_market_price = round(median, 2)`, `market_price_updated_at = now UTC`, ruft `_recalculate_unrealized_metrics`, committet → `InventoryResponse`; kein Treffer → 404 mit "Keine eBay-Verkaeufe zu dieser Suche gefunden".
 - Import-Stil: `from app.ai import AIProviderError, get_provider, prepare_photo` + `ItemDraft` nur für Typen; Scraper-Import wie im Bewertungs-Task.
 
-- [ ] **Step 1: Failing Tests** — Fake-Session-Stil (Muster `test_split_item.py::_SplitSession`); Provider + Scraper via `monkeypatch` auf Modulebene in `inventory.py` ersetzen (z. B. `monkeypatch.setattr("app.api.routes.inventory.get_provider", lambda: fake_provider)`). Mindestens: draft-Anlage liefert DRAFT-Status; analyze ohne Fotos → 400; analyze happy path (Fake-Provider liefert ItemDraft, Fake-Query-Preis) → ai_-Felder am Item gesetzt, Response enthält draft+ebay; analyze mit `AIProviderError` → HTTPException 503 und Detail durchgereicht; confirm auf HOLDING-Item → 400; confirm auf DRAFT mit gepflegtem Namen → HOLDING; revalue auf LEGO → 400; revalue GENERIC ohne search_query → 400; revalue happy path setzt current_market_price.
-- [ ] **Step 2: FAIL, implementieren** — die neuen Routen bei den anderen statischen Routen einsortieren (`POST /draft` direkt neben `/lookup`/`/valuation`, gleiche Vorsicht vor `/{item_id}`-Matching; die drei `/{item_id}/<statisch>`-POSTs sind unkritisch). Foto-Bytes: `(_photo_dir(item.id) / photo.filename)` lesen, `prepare_photo(path, photo.content_type)`; fehlende Dateien überspringen; wenn danach 0 → 400. Im Formular-Schritt zeigt das Frontend auch `draft.platform_category` und `draft.description` an (Task 8) — der Analyse-Response-Dump muss beide enthalten (ItemDraft-Dump tut das automatisch).
-- [ ] **Step 3: Suite + ruff grün, Commit** `feat(inventory): Foto-first-Endpoints - Draft, KI-Analyse, Confirm, Neubewertung`
+- [x] **Step 1: Failing Tests** — Fake-Session-Stil (Muster `test_split_item.py::_SplitSession`); Provider + Scraper via `monkeypatch` auf Modulebene in `inventory.py` ersetzen (z. B. `monkeypatch.setattr("app.api.routes.inventory.get_provider", lambda: fake_provider)`). Mindestens: draft-Anlage liefert DRAFT-Status; analyze ohne Fotos → 400; analyze happy path (Fake-Provider liefert ItemDraft, Fake-Query-Preis) → ai_-Felder am Item gesetzt, Response enthält draft+ebay; analyze mit `AIProviderError` → HTTPException 503 und Detail durchgereicht; confirm auf HOLDING-Item → 400; confirm auf DRAFT mit gepflegtem Namen → HOLDING; revalue auf LEGO → 400; revalue GENERIC ohne search_query → 400; revalue happy path setzt current_market_price.
+- [x] **Step 2: FAIL, implementieren** — die neuen Routen bei den anderen statischen Routen einsortieren (`POST /draft` direkt neben `/lookup`/`/valuation`, gleiche Vorsicht vor `/{item_id}`-Matching; die drei `/{item_id}/<statisch>`-POSTs sind unkritisch). Foto-Bytes: `(_photo_dir(item.id) / photo.filename)` lesen, `prepare_photo(path, photo.content_type)`; fehlende Dateien überspringen; wenn danach 0 → 400. Im Formular-Schritt zeigt das Frontend auch `draft.platform_category` und `draft.description` an (Task 8) — der Analyse-Response-Dump muss beide enthalten (ItemDraft-Dump tut das automatisch).
+- [x] **Step 3: Suite + ruff grün, Commit** `feat(inventory): Foto-first-Endpoints - Draft, KI-Analyse, Confirm, Neubewertung`
 
 ---
 
@@ -390,9 +390,9 @@ class ClaudeProvider:
 - `create_listing` („Als eingestellt markieren"): wenn die offene Zeile der Plattform ein **DRAFT** ist, wird SIE aktiviert (Preis/listed_at/url/min_price/price_type/next_check_at setzen, `status=ACTIVE`) statt 400; ACTIVE/PAUSED → weiterhin 400. Titel/Body bleiben erhalten.
 - Draft-Zeilen sind in `open_listing_responses` bereits enthalten (OPEN_LISTING_STATUSES) — Badges zeigen DRAFT nicht (Frontend filtert ACTIVE/PAUSED, bleibt so).
 
-- [ ] **Step 1: Failing Tests** — im bestehenden Fake-Stil: draft-Endpoint legt DRAFT-Zeile mit Texten an (Fake-Provider); draft bei ACTIVE → 400; zweiter draft-Aufruf überschreibt Texte statt neuer Zeile; `create_listing` aktiviert vorhandenes DRAFT (Status ACTIVE, Preis gesetzt, title unverändert); refresh-text auf ENDED → 400; Preis-Fallback-Kette (Item ohne alle Preisquellen → 400).
-- [ ] **Step 2: FAIL, implementieren** — `from app.ai import AIProviderError, get_provider` + `from app.services.listing_rules import …` (bestehend). Kleine private Hilfe `_draft_price(item, listing, body_price)` für die Fallback-Kette (pure, testbar).
-- [ ] **Step 3: Suite + ruff grün, Commit** `feat(listings): KI-Anzeigentexte als DRAFT und Aktivierung vorhandener Entwuerfe`
+- [x] **Step 1: Failing Tests** — im bestehenden Fake-Stil: draft-Endpoint legt DRAFT-Zeile mit Texten an (Fake-Provider); draft bei ACTIVE → 400; zweiter draft-Aufruf überschreibt Texte statt neuer Zeile; `create_listing` aktiviert vorhandenes DRAFT (Status ACTIVE, Preis gesetzt, title unverändert); refresh-text auf ENDED → 400; Preis-Fallback-Kette (Item ohne alle Preisquellen → 400).
+- [x] **Step 2: FAIL, implementieren** — `from app.ai import AIProviderError, get_provider` + `from app.services.listing_rules import …` (bestehend). Kleine private Hilfe `_draft_price(item, listing, body_price)` für die Fallback-Kette (pure, testbar).
+- [x] **Step 3: Suite + ruff grün, Commit** `feat(listings): KI-Anzeigentexte als DRAFT und Aktivierung vorhandener Entwuerfe`
 
 ---
 
@@ -408,14 +408,14 @@ class ClaudeProvider:
 - Inventar.jsx: zweiter Kopf-Button „Per Foto anlegen" (öffnet PhotoFirstModal; onCreated invalidiert `["inventory"]` + `["productGroups"]`); auf GENERIC-Karten Button „Neu bewerten" (nur wenn `search_query`; `revalueItem`-Mutation, Fehler-Toast wie üblich, invalidiert `["inventory"]`).
 - ListingManager.jsx: (a) wenn offenes Listing DRAFT ist: Textblock (title fett, body pre-wrap) + „Text kopieren" (`navigator.clipboard.writeText`) + „Text neu generieren" (`refreshListingText`) + darunter das bestehende `ActivateForm` (aktiviert die DRAFT-Zeile — Backend macht das transparent); (b) wenn KEIN offenes Listing und Artikel nicht SOLD: über dem ActivateForm Button „Text mit KI erstellen" (`draftListingText(item.id, platform, null)`, danach refetch — Zeile erscheint als DRAFT); (c) Fehlerzeile (503-Detail) im Plattform-Block.
 
-- [ ] **Step 1: client.js + PhotoFirstModal + Integrationen implementieren** (kein FE-Testrunner; sorgfältig gegen die Backend-Verträge aus Task 6/7 arbeiten — Feldnamen exakt).
-- [ ] **Step 2: Gates**
+- [x] **Step 1: client.js + PhotoFirstModal + Integrationen implementieren** (kein FE-Testrunner; sorgfältig gegen die Backend-Verträge aus Task 6/7 arbeiten — Feldnamen exakt).
+- [x] **Step 2: Gates**
 
 ```bash
 cd frontend && npm run lint && npm run build
 ```
 
-- [ ] **Step 3: Commit** `feat(frontend): Foto-first-Anlage mit Claude-Analyse und KI-Anzeigentexten`
+- [x] **Step 3: Commit** `feat(frontend): Foto-first-Anlage mit Claude-Analyse und KI-Anzeigentexten`
 
 ---
 

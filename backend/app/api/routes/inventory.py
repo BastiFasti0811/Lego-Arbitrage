@@ -12,6 +12,7 @@ import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
+from PIL import Image
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai import AIProviderError, ItemDraft, get_provider, prepare_photo
 from app.api.routes.listings import ListingResponse, open_listing_responses
 from app.config import settings
+from app.domain.condition import condition_ad_label, condition_ad_title_suffix
 from app.engine.roi_calculator import calculate_ebay_fees
 from app.models import AnalysisHistoryEntry, DealFeedback, LegoSet, get_session
 from app.models.inventory import (
@@ -30,6 +32,7 @@ from app.models.inventory import (
 )
 from app.models.inventory_photo import InventoryPhoto
 from app.models.listing import OPEN_LISTING_STATUSES, ListingStatus
+from app.models.price import PriceSource
 from app.models.valuation_run import (
     ValuationRun,
     ValuationRunItem,
@@ -54,6 +57,7 @@ ALLOWED_IMAGE_TYPES = {
 }
 MAX_PHOTOS_PER_ITEM = settings.inventory_photo_max_count
 MAX_PHOTO_BYTES = settings.inventory_photo_max_bytes
+ABANDONED_DRAFT_AGE = timedelta(days=1)
 
 
 class InventoryPhotoUpload(BaseModel):
@@ -83,6 +87,7 @@ class InventoryAdd(BaseModel):
     condition: str = "NEW_SEALED"
     quantity: int = 1
     notes: str | None = None
+    storage_location: str | None = Field(default=None, max_length=200)
 
     @model_validator(mode="after")
     def _apply_type_rules(self):
@@ -117,6 +122,7 @@ class InventoryUpdate(BaseModel):
     condition: str | None = None
     quantity: int | None = None
     notes: str | None = None
+    storage_location: str | None = Field(default=None, max_length=200)
 
     @model_validator(mode="after")
     def _reject_null_product_group(self):
@@ -166,6 +172,7 @@ class InventoryResponse(BaseModel):
     condition: str
     quantity: int = 1
     notes: str | None
+    storage_location: str | None
     photos: list[InventoryPhotoResponse] = []
     listings: list[ListingResponse] = []
     current_market_price: float | None
@@ -259,6 +266,7 @@ class EbayPriceSummary(BaseModel):
     sold_count: int | None
     is_reliable: bool
     source_url: str | None
+    source: str  # EBAY_SOLD = erzielte Preise, EBAY_ACTIVE = nur Angebotspreise (Fallback)
 
 
 class AnalyzeResponse(BaseModel):
@@ -376,6 +384,7 @@ async def add_inventory_item(data: InventoryAdd, session: AsyncSession = Depends
         condition=data.condition,
         quantity=data.quantity,
         notes=data.notes,
+        storage_location=data.storage_location,
         status=InventoryStatus.HOLDING.value,
     )
     session.add(item)
@@ -496,7 +505,23 @@ async def get_valuation_run(run_id: int, session: AsyncSession = Depends(get_ses
 # "draft" als item_id.
 @router.post("/draft", response_model=InventoryResponse)
 async def create_draft_item(session: AsyncSession = Depends(get_session)):
-    """Foto-first-Einstieg: leerer Entwurf, den /analyze und /confirm fuellen."""
+    """Foto-first-Einstieg: leerer Entwurf, den /analyze und /confirm fuellen.
+
+    Raeumt vorher Entwuerfe ab, die seit ueber einem Tag liegen: Wer nach dem
+    Upload den Tab schliesst statt abzubrechen, hinterlaesst sonst Zeile und
+    Fotos -- unsichtbar, weil Liste und Summary DRAFT ausblenden."""
+    cutoff = datetime.now(UTC) - ABANDONED_DRAFT_AGE
+    stale = (
+        await session.execute(
+            select(InventoryItem).where(
+                InventoryItem.status == InventoryStatus.DRAFT.value, InventoryItem.created_at < cutoff
+            )
+        )
+    ).scalars().all()
+    stale_ids = [old.id for old in stale]
+    for old in stale:
+        await session.delete(old)
+
     item = InventoryItem(
         item_type=InventoryItemType.GENERIC.value,
         set_name="Neuer Artikel",
@@ -507,6 +532,10 @@ async def create_draft_item(session: AsyncSession = Depends(get_session)):
     session.add(item)
     await session.commit()
     await session.refresh(item)
+    for old_id in stale_ids:
+        rmtree(_photo_dir(old_id), ignore_errors=True)
+    if stale_ids:
+        logger.info("inventory.abandoned_drafts_removed", item_ids=stale_ids)
     logger.info("inventory.draft_created", item_id=item.id)
     return _to_response(item)
 
@@ -628,12 +657,15 @@ async def get_sell_links(item_id: int, session: AsyncSession = Depends(get_sessi
     else:
         suggested_price = 0.0
 
+    title_suffix = condition_ad_title_suffix(item.condition)
     if item.set_number:
-        title = f"LEGO {item.set_number} {item.set_name} NEU OVP"
+        title = f"LEGO {item.set_number} {item.set_name}"
         ebay_keyword = f"LEGO {item.set_number}"
     else:
         title = item.set_name
         ebay_keyword = item.set_name
+    if title_suffix:
+        title = f"{title} {title_suffix}"
     if len(title) > 80:
         title = title[:77] + "..."
 
@@ -644,10 +676,12 @@ async def get_sell_links(item_id: int, session: AsyncSession = Depends(get_sessi
     ebay_url = f"https://www.ebay.de/sell/create?{urlencode(ebay_params)}"
 
     set_line = f"LEGO Set {item.set_number} - {item.set_name}\n" if item.set_number else f"{item.set_name}\n"
+    ad_label = condition_ad_label(item.condition)
+    condition_line = f"Zustand: {ad_label}\n" if ad_label else ""
     kleinanzeigen_text = (
         f"{title}\n\n"
         f"{set_line}"
-        f"Zustand: Neu & Originalverpackt (OVP)\n"
+        f"{condition_line}"
         f"Preis: {suggested_price:.0f}\u20ac\n\n"
         f"Versand m\u00f6glich."
     )
@@ -702,13 +736,14 @@ async def analyze_inventory_item(
             continue
         try:
             prepared.append(prepare_photo(path, photo.content_type))
-        except OSError:
+        except (OSError, Image.DecompressionBombError):
             # UnidentifiedImageError (Pillow) ist eine OSError-Unterklasse:
             # _decode_photo_payload prueft beim Upload nur Base64/Content-Type/
             # Groesse, nie ob die Bytes wirklich ein Bild ergeben. Eine defekte
             # oder Content-Type-vorgetaeuschte Datei darf die Analyse nicht mit
             # einem rohen 500 abbrechen -- sie wird wie eine fehlende Datei
-            # behandelt und uebersprungen.
+            # behandelt und uebersprungen. DecompressionBombError (winzige Datei,
+            # riesige Pixelzahl) erbt dagegen direkt von Exception.
             logger.warning("inventory.analyze_photo_undecodable", item_id=item.id, photo_id=photo.id)
             continue
     if not prepared:
@@ -736,6 +771,7 @@ async def analyze_inventory_item(
                 sold_count=price.sold_count,
                 is_reliable=price.is_reliable,
                 source_url=price.source_url,
+                source=price.source,
             )
 
     item.ai_price_min = draft.price_min
@@ -797,6 +833,27 @@ async def revalue_inventory_item(item_id: int, session: AsyncSession = Depends(g
         raise HTTPException(status_code=404, detail="Keine eBay-Verkaeufe zu dieser Suche gefunden")
 
     median = price.median_price if price.median_price is not None else price.price_eur
+    if price.source != PriceSource.EBAY_SOLD:
+        # Aktiv-Fallback: Angebotspreise sind kein Marktwert (Commit fa5e2a3) und
+        # landen nicht in current_market_price -- nur als Hinweis fuer den Nutzer.
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Keine eBay-Verkaeufe zu dieser Suche gefunden. Aktive Angebote liegen im Median bei "
+                f"{median:.0f} € ({price.sold_count} aktive Angebote) — Angebotspreise sind kein "
+                "Marktwert, es wurde nichts gespeichert"
+            ),
+        )
+    if not price.is_reliable:
+        # Die Freitextsuche filtert keine Titel; ein, zwei Treffer koennen
+        # Zubehoer sein. Belastbar ist erst, was get_price_for_query so markiert.
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Nur {price.sold_count} eBay-Verkaeufe gefunden (Median {median:.0f} €) — "
+                "zu wenig fuer einen Marktwert, es wurde nichts gespeichert"
+            ),
+        )
     item.current_market_price = round(median, 2)
     item.market_price_updated_at = datetime.now(UTC)
     _recalculate_unrealized_metrics(item)
@@ -829,6 +886,8 @@ async def mark_as_sold(
     item = await _get_item(item_id, session)
     if item.status == InventoryStatus.SOLD.value:
         raise HTTPException(status_code=400, detail="Item already sold")
+    if item.status == InventoryStatus.DRAFT.value:
+        raise HTTPException(status_code=400, detail="Entwurf zuerst bestaetigen")
 
     item.status = InventoryStatus.SOLD.value
     item.sell_price = data.sell_price
@@ -915,6 +974,7 @@ async def split_inventory_item(item_id: int, data: SplitRequest, session: AsyncS
         condition=item.condition,
         quantity=data.split_quantity,
         notes=item.notes,
+        storage_location=item.storage_location,
         status=item.status,
         current_market_price=item.current_market_price,
         market_price_updated_at=item.market_price_updated_at,
@@ -1296,6 +1356,7 @@ def _to_response(item: InventoryItem) -> InventoryResponse:
         condition=item.condition,
         quantity=item.quantity or 1,
         notes=item.notes,
+        storage_location=item.storage_location,
         photos=[_to_photo_response(photo) for photo in item.photos],
         listings=open_listing_responses(item),
         current_market_price=item.current_market_price,

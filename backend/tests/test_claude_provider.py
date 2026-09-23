@@ -175,6 +175,58 @@ async def test_write_listing_incomplete_response_raises_german_error():
     assert "unvollstaendig" in exc_info.value.detail
 
 
+class _RaisingMessages:
+    """messages.parse, das wie das echte SDK (anthropic 1.x) schon beim Parsen
+    scheitert: abgeschnittenes JSON oder fehlende Pflichtfelder kommen dort als
+    pydantic.ValidationError aus parse() heraus, nicht als parsed_output=None."""
+
+    async def parse(self, **kwargs):
+        ItemDraft.model_validate_json('{"name": "abgeschnit')
+
+
+class _RaisingClient:
+    messages = _RaisingMessages()
+
+
+@pytest.mark.asyncio
+async def test_analyze_photos_schema_violation_raises_german_error():
+    provider = ClaudeProvider(client=_RaisingClient())
+
+    with pytest.raises(AIProviderError) as exc_info:
+        await provider.analyze_photos([(b"data", "image/jpeg")], hints=None, product_groups=["LEGO"])
+
+    assert "unvollstaendig" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_write_listing_schema_violation_raises_german_error():
+    provider = ClaudeProvider(client=_RaisingClient())
+
+    with pytest.raises(AIProviderError) as exc_info:
+        await provider.write_listing(
+            name="Testartikel", condition="USED_COMPLETE", notes=None, platform="ebay", price=10.0, price_type="VB"
+        )
+
+    assert "unvollstaendig" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_write_listing_states_quantity_and_that_price_is_per_piece():
+    # current_market_price ist ein Stueckpreis; ohne Mengenangabe beschreibt der
+    # Text bei einem Posten von drei Stueck nur eines.
+    fake_client = _FakeClient(_FakeParseResponse(_LISTING_TEXT))
+    provider = ClaudeProvider(client=fake_client)
+
+    await provider.write_listing(
+        name="LEGO 75267 Mandalorianer Battle Pack", condition="NEW_SEALED", notes=None,
+        platform="kleinanzeigen", price=20.0, price_type="VB", quantity=3,
+    )
+
+    prompt_text = fake_client.messages.calls[0]["messages"][0]["content"]
+    assert "3 Stueck" in prompt_text
+    assert "pro Stueck" in prompt_text
+
+
 def test_get_provider_without_key_raises(monkeypatch):
     monkeypatch.setattr(settings, "anthropic_api_key", None)
 
@@ -197,3 +249,40 @@ def test_get_provider_returns_claude_provider(monkeypatch):
     provider = get_provider()
 
     assert isinstance(provider, ClaudeProvider)
+
+
+@pytest.mark.parametrize("call", ["analyze", "listing"])
+@pytest.mark.asyncio
+async def test_requests_leave_room_for_thinking_tokens(call):
+    # claude-opus-5 denkt per Default mit, und Denk-Tokens zaehlen gegen
+    # max_tokens. Mit 2048 (Analyse) bzw. 1024 (Anzeigentext) bricht die
+    # Antwort mitten im JSON ab: bezahlter Aufruf, Ergebnis unbrauchbar.
+    fake_client = _FakeClient(_FakeParseResponse(_ITEM_DRAFT if call == "analyze" else _LISTING_TEXT))
+    provider = ClaudeProvider(client=fake_client)
+
+    if call == "analyze":
+        await provider.analyze_photos([(b"data", "image/jpeg")], hints=None, product_groups=["LEGO"])
+    else:
+        await provider.write_listing(
+            name="Testartikel", condition="USED_COMPLETE", notes=None,
+            platform="ebay", price=10.0, price_type="FIXED",
+        )
+
+    assert fake_client.messages.calls[0]["max_tokens"] >= 8000
+
+
+def test_client_timeout_covers_a_long_thinking_turn():
+    # Mit Denkphase dauert eine Foto-Analyse laenger als die urspruenglichen
+    # 90 s; laeuft der HTTP-Timeout ab, ist der Aufruf trotzdem bezahlt.
+    provider = ClaudeProvider()
+
+    assert provider._client.timeout >= 300
+
+
+def test_client_does_not_retry_a_timed_out_call():
+    # Ein Timeout gilt dem SDK als wiederholbar. Bei 300 s Timeout hiesse das:
+    # bis zu 10 min Wartezeit und ein zweites Mal bezahlen fuer denselben
+    # Aufruf. Lieber einmal sauber scheitern.
+    provider = ClaudeProvider()
+
+    assert provider._client.max_retries == 0

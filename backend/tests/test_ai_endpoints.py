@@ -14,14 +14,15 @@ Drei mitgefuehrte Auftraege aus dem Review frueherer Tasks stecken mit drin:
 - AnalyzeRequest.hints ist laengenbegrenzt (Field max_length=500).
 """
 
-from datetime import UTC, date, datetime
+import dataclasses
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.ai import AIProviderError, ItemDraft
@@ -52,6 +53,20 @@ _SCRAPED_PRICE = ScrapedPrice(
     source_url="https://www.ebay.de/sch/i.html?_nkw=Bosch+PSB+500+RE",
     is_reliable=True,
     notes="Median from 5 sold items",
+)
+
+# So sieht die Antwort aus, wenn die Sold-Suche blockiert ist (Prod-Normalfall,
+# 403) und get_price_for_query auf aktive Sofort-Kaufen-Angebote ausweicht.
+_ACTIVE_PRICE = ScrapedPrice(
+    source="EBAY_ACTIVE",
+    price_eur=39.0,
+    median_price=39.0,
+    min_price=25.0,
+    max_price=60.0,
+    sold_count=7,
+    source_url="https://www.ebay.de/sch/i.html?_nkw=Bosch+PSB+500+RE&LH_BIN=1",
+    is_reliable=False,
+    notes="Fallback: Median aus 7 aktiven BIN-Listungen",
 )
 
 
@@ -147,6 +162,9 @@ class _AsyncSessionAdapter:
     def add(self, obj):
         self._session.add(obj)
 
+    async def delete(self, obj):
+        self._session.delete(obj)
+
     async def commit(self):
         self._session.commit()
 
@@ -185,6 +203,7 @@ def _item(**overrides):
         condition="NEW_SEALED",
         quantity=1,
         notes=None,
+        storage_location=None,
         photos=[],
         listings=[],
         current_market_price=None,
@@ -395,6 +414,31 @@ async def test_analyze_happy_path_sets_ai_fields_and_returns_draft_plus_ebay(mon
     assert fake_scraper.queries == [_ITEM_DRAFT.search_query]
     assert fake_provider.calls[0]["hints"] == "Funktioniert einwandfrei"
     assert fake_provider.calls[0]["product_groups"] == sorted({"Werkzeuge"} | set(PRODUCT_GROUP_SUGGESTIONS))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("price", "expected_source"), [(_SCRAPED_PRICE, "EBAY_SOLD"), (_ACTIVE_PRICE, "EBAY_ACTIVE")])
+async def test_analyze_reports_whether_ebay_median_is_sales_or_asking_prices(
+    monkeypatch, tmp_path, price, expected_source
+):
+    # Ohne Quelle beschriftet der Foto-first-Dialog auch den Aktiv-Fallback
+    # als "Verkaeufe" -- Angebotspreise sehen dann aus wie erzielte Preise.
+    monkeypatch.setattr("app.api.routes.inventory.PHOTO_STORAGE_ROOT", tmp_path)
+    photo_dir = tmp_path / "1"
+    photo_dir.mkdir()
+    (photo_dir / "a.jpg").write_bytes(b"fake-jpeg-bytes")
+    monkeypatch.setattr(
+        "app.api.routes.inventory.prepare_photo",
+        lambda path, content_type: (b"prepared-bytes", content_type or "image/jpeg"),
+    )
+    monkeypatch.setattr("app.api.routes.inventory.get_provider", lambda: _FakeProvider(draft=_ITEM_DRAFT))
+    monkeypatch.setattr("app.api.routes.inventory.EbaySoldScraper", lambda: _FakeScraper(price=price))
+
+    session = _ItemSession(_item(photos=[_photo("a.jpg")]), product_group_rows=[])
+
+    response = await inventory.analyze_inventory_item(1, inventory.AnalyzeRequest(), session)
+
+    assert response.ebay.source == expected_source
 
 
 @pytest.mark.asyncio
@@ -620,6 +664,31 @@ async def test_revalue_404_when_no_sales_found(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_revalue_does_not_store_asking_prices_as_market_value(monkeypatch):
+    # Angebotspreise gehoeren nicht in die Geldzahlen (Commit fa5e2a3). Liefert
+    # die Suche nur den Aktiv-Fallback, bleibt der alte Marktwert stehen und
+    # der Nutzer erfaehrt das Angebotsniveau nur als Hinweis.
+    fake_scraper = _FakeScraper(price=_ACTIVE_PRICE)
+    monkeypatch.setattr("app.api.routes.inventory.EbaySoldScraper", lambda: fake_scraper)
+
+    item = _item(
+        item_type="GENERIC", search_query="Bosch PSB 500 RE",
+        buy_price=30.0, buy_shipping=5.0, status="HOLDING",
+        current_market_price=50.0,
+    )
+    session = _ItemSession(item)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await inventory.revalue_inventory_item(1, session)
+
+    assert exc_info.value.status_code == 404
+    assert "39" in exc_info.value.detail
+    assert "7 aktive" in exc_info.value.detail
+    assert item.current_market_price == 50.0
+    assert session.committed is False
+
+
+@pytest.mark.asyncio
 async def test_revalue_503_when_source_is_undecodable(monkeypatch):
     fake_scraper = _FakeScraper(exc=UndecodableResponseError("boom"))
     monkeypatch.setattr("app.api.routes.inventory.EbaySoldScraper", lambda: fake_scraper)
@@ -650,3 +719,102 @@ async def test_revalue_503_when_source_has_transport_error(monkeypatch):
 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail == "eBay ist derzeit nicht erreichbar"
+
+
+# ---------------------------------------------------------------------------
+# Review-Findings PR #25
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_revalue_does_not_store_too_few_sales_as_market_value(monkeypatch):
+    # Zwei Treffer der ungefilterten Freitextsuche (Zubehoer inklusive) sind
+    # kein Marktwert; get_price_for_query markiert das mit is_reliable=False.
+    few_sales = dataclasses.replace(_SCRAPED_PRICE, sold_count=2, is_reliable=False)
+    monkeypatch.setattr("app.api.routes.inventory.EbaySoldScraper", lambda: _FakeScraper(price=few_sales))
+
+    item = _item(item_type="GENERIC", search_query="Bosch PSB 500 RE", status="HOLDING", current_market_price=50.0)
+    session = _ItemSession(item)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await inventory.revalue_inventory_item(1, session)
+
+    assert exc_info.value.status_code == 404
+    assert "2" in exc_info.value.detail
+    assert item.current_market_price == 50.0
+    assert session.committed is False
+
+
+@pytest.mark.asyncio
+async def test_analyze_skips_decompression_bomb_photo(monkeypatch, tmp_path):
+    # DecompressionBombError erbt nicht von OSError -- ohne eigenen Zweig bricht
+    # ein riesiges Bild die ganze Analyse mit 500 ab.
+    from PIL import Image
+
+    monkeypatch.setattr("app.api.routes.inventory.PHOTO_STORAGE_ROOT", tmp_path)
+    photo_dir = tmp_path / "1"
+    photo_dir.mkdir()
+    (photo_dir / "good.jpg").write_bytes(b"x")
+    (photo_dir / "bomb.png").write_bytes(b"x")
+
+    def fake_prepare(path, content_type):
+        if path.name == "bomb.png":
+            raise Image.DecompressionBombError("zu viele Pixel")
+        return b"prepared-bytes", "image/jpeg"
+
+    monkeypatch.setattr("app.api.routes.inventory.prepare_photo", fake_prepare)
+    fake_provider = _FakeProvider(draft=_ITEM_DRAFT)
+    monkeypatch.setattr("app.api.routes.inventory.get_provider", lambda: fake_provider)
+    monkeypatch.setattr("app.api.routes.inventory.EbaySoldScraper", lambda: _FakeScraper(price=None))
+
+    item = _item(photos=[_photo("good.jpg", id=1), _photo("bomb.png", content_type="image/png", id=2)])
+
+    await inventory.analyze_inventory_item(1, inventory.AnalyzeRequest(hints=None), _ItemSession(item))
+
+    assert len(fake_provider.calls[0]["photos"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_draft_removes_abandoned_drafts_older_than_a_day(db_session, monkeypatch, tmp_path):
+    # Schliesst jemand den Tab nach dem Upload, bleiben Entwurf und Fotos liegen
+    # -- unsichtbar, weil Liste und Summary DRAFT ausblenden. Der naechste
+    # Entwurf raeumt alles auf, was aelter als ein Tag ist.
+    monkeypatch.setattr("app.api.routes.inventory.PHOTO_STORAGE_ROOT", tmp_path)
+    now = datetime.now(UTC)
+
+    def add(status, age):
+        row = InventoryItem(
+            item_type="GENERIC", set_name="Neuer Artikel", product_group="Diverses",
+            status=status, buy_date=date.today(), created_at=now - age,
+        )
+        db_session.add(row)
+        return row
+
+    stale = add("DRAFT", timedelta(days=2))
+    fresh = add("DRAFT", timedelta(hours=1))
+    held = add("HOLDING", timedelta(days=30))
+    await db_session.commit()
+    (tmp_path / str(stale.id)).mkdir()
+    (tmp_path / str(stale.id) / "a.jpg").write_bytes(b"x")
+
+    created = await inventory.create_draft_item(session=db_session)
+
+    remaining = {row.id for row in (await db_session.execute(select(InventoryItem))).scalars()}
+    assert stale.id not in remaining
+    assert {fresh.id, held.id, created.id} <= remaining
+    assert not (tmp_path / str(stale.id)).exists()
+
+
+@pytest.mark.asyncio
+async def test_mark_as_sold_rejects_unconfirmed_draft():
+    # Ein verkaufter Entwurf zaehlte in /history und total_realized_profit,
+    # obwohl er nie bestaetigt wurde.
+    item = _item(status="DRAFT")
+    session = _ItemSession(item)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await inventory.mark_as_sold(1, inventory.SellRequest(sell_price=50.0), session)
+
+    assert exc_info.value.status_code == 400
+    assert item.status == "DRAFT"
+    assert session.committed is False

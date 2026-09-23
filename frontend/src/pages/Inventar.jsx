@@ -33,6 +33,7 @@ const emptyAddForm = () => ({
   condition: "NEW_SEALED",
   quantity: "1",
   notes: "",
+  storage_location: "",
 });
 
 function formatMoney(value, digits = 0) {
@@ -306,6 +307,8 @@ export default function Inventar() {
     queryFn: () =>
       api.listInventory({
         status: "HOLDING",
+        // Backend-Default sind 100 Zeilen; ohne Limit fallen die aeltesten Posten still weg.
+        limit: 500,
         ...(typeFilter && { item_type: typeFilter }),
         ...(groupFilter && { product_group: groupFilter }),
       }),
@@ -494,6 +497,7 @@ export default function Inventar() {
       condition: item.condition,
       quantity: String(item.quantity || 1),
       notes: item.notes || "",
+      storage_location: item.storage_location || "",
     });
   };
 
@@ -521,6 +525,7 @@ export default function Inventar() {
         condition: editForm.condition,
         quantity: parseInt(editForm.quantity || "1", 10),
         notes: editForm.notes || null,
+        storage_location: editForm.storage_location || null,
       },
       photoFiles: editPhotoEntries.map((entry) => entry.file),
       deletedPhotoIds: editRemovedPhotoIds,
@@ -537,6 +542,7 @@ export default function Inventar() {
       buy_url: addForm.buy_url || null,
       image_url: addForm.image_url || null,
       notes: addForm.notes || null,
+      storage_location: addForm.storage_location || null,
       photoFiles: addPhotoEntries.map((entry) => entry.file),
     });
   };
@@ -637,6 +643,7 @@ export default function Inventar() {
                     <span>Gekauft: {new Date(item.buy_date).toLocaleDateString("de-DE")}</span>
                     <span>{item.holding_days} Tage</span>
                     {item.buy_platform && <span>{item.buy_platform}</span>}
+                    {item.storage_location && <span>{BOX_ICON} {item.storage_location}</span>}
                     {item.buy_url && <a href={item.buy_url} target="_blank" rel="noreferrer" className="text-lego-yellow hover:text-lego-yellow/80 transition-colors">Original-Link</a>}
                     {item.image_url && <a href={item.image_url} target="_blank" rel="noreferrer" className="text-lego-blue hover:text-lego-blue/80 transition-colors">Externer Foto-Link</a>}
                     {referenceLinks(item).map((link) => (
@@ -800,12 +807,14 @@ export default function Inventar() {
                   <div className="grid grid-cols-2 gap-3">
                     <select value={editForm.condition} onChange={(e) => setEditForm({ ...editForm, condition: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm">
                       <option value="NEW_SEALED">Neu & Versiegelt</option>
-                      <option value="NEW_OPEN">Neu & Geöffnet</option>
+                      <option value="NEW_OPEN_BOX">Neu & Geöffnet</option>
                       <option value="USED_COMPLETE">Gebraucht (komplett)</option>
                       <option value="USED_INCOMPLETE">Gebraucht (unvollständig)</option>
+                      <option value="UNKNOWN">Zustand unbekannt</option>
                     </select>
                     <input type="number" min="1" value={editForm.quantity} onChange={(e) => setEditForm({ ...editForm, quantity: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
                   </div>
+                  <input type="text" value={editForm.storage_location} onChange={(e) => setEditForm({ ...editForm, storage_location: e.target.value })} placeholder="Lagerort, z. B. Dachboden Kiste 3" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
                   <textarea value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} placeholder="Eigene Notizen..." rows={3} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm resize-none" />
                 </div>
                 <PhotoPicker
@@ -976,12 +985,14 @@ export default function Inventar() {
                   <div className="grid grid-cols-2 gap-3">
                     <select value={addForm.condition} onChange={(e) => setAddForm({ ...addForm, condition: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm">
                       <option value="NEW_SEALED">Neu & Versiegelt</option>
-                      <option value="NEW_OPEN">Neu & Geöffnet</option>
+                      <option value="NEW_OPEN_BOX">Neu & Geöffnet</option>
                       <option value="USED_COMPLETE">Gebraucht (komplett)</option>
                       <option value="USED_INCOMPLETE">Gebraucht (unvollständig)</option>
+                      <option value="UNKNOWN">Zustand unbekannt</option>
                     </select>
                     <input type="number" min="1" placeholder="Anzahl" value={addForm.quantity} onChange={(e) => setAddForm({ ...addForm, quantity: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
                   </div>
+                  <input type="text" placeholder="Lagerort, z. B. Dachboden Kiste 3" value={addForm.storage_location} onChange={(e) => setAddForm({ ...addForm, storage_location: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
                   <textarea value={addForm.notes} onChange={(e) => setAddForm({ ...addForm, notes: e.target.value })} placeholder="Eigene Notizen..." rows={3} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm resize-none" />
                 </div>
                 <PhotoPicker

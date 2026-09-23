@@ -47,7 +47,8 @@ export default function PhotoFirstModal({ onClose, onCreated }) {
   const [cancelling, setCancelling] = useState(false);
 
   const photoEntriesRef = useRef([]);
-  const uploadedIdsRef = useRef(new Set());
+  // Lokale Eintrags-ID -> Foto-ID auf dem Server, für schon hochgeladene Fotos.
+  const uploadedIdsRef = useRef(new Map());
 
   useEffect(() => {
     photoEntriesRef.current = photoEntries;
@@ -61,7 +62,20 @@ export default function PhotoFirstModal({ onClose, onCreated }) {
     if (fileList?.length) setPhotoEntries((prev) => [...prev, ...createLocalPhotoEntries(fileList)]);
   }
 
-  function removePhoto(photoId) {
+  async function removePhoto(photoId) {
+    const serverId = uploadedIdsRef.current.get(photoId);
+    if (serverId != null) {
+      // Ein hochgeladenes Foto hängt am Entwurf und flösse sonst in jede
+      // weitere Analyse ein, obwohl es hier nicht mehr zu sehen ist.
+      uploadedIdsRef.current.delete(photoId);
+      try {
+        await api.deleteInventoryPhoto(itemId, serverId);
+      } catch (err) {
+        uploadedIdsRef.current.set(photoId, serverId);
+        setAnalyzeError(err.message);
+        return;
+      }
+    }
     setPhotoEntries((prev) => {
       const removed = prev.find((entry) => entry.id === photoId);
       if (removed) URL.revokeObjectURL(removed.previewUrl);
@@ -84,8 +98,11 @@ export default function PhotoFirstModal({ onClose, onCreated }) {
       // ein zweites Mal an den Artikel hängen.
       const pending = photoEntries.filter((entry) => !uploadedIdsRef.current.has(entry.id));
       if (pending.length > 0) {
-        await api.uploadInventoryPhotos(id, pending.map((entry) => entry.file));
-        pending.forEach((entry) => uploadedIdsRef.current.add(entry.id));
+        const stored = await api.uploadInventoryPhotos(id, pending.map((entry) => entry.file));
+        // Die Antwort ist die komplette Fotoliste des Entwurfs nach sort_order;
+        // die gerade hochgeladenen stehen in Upload-Reihenfolge am Ende.
+        const created = stored.slice(-pending.length);
+        pending.forEach((entry, index) => uploadedIdsRef.current.set(entry.id, created[index].id));
       }
       const result = await api.analyzeItem(id, hints.trim());
       setReview({
@@ -96,10 +113,23 @@ export default function PhotoFirstModal({ onClose, onCreated }) {
         ebayError: result.ebay_error,
       });
     } catch (err) {
-      setAnalyzeError(err.message);
+      if (err.status === 404) {
+        forgetExpiredDraft();
+      } else {
+        setAnalyzeError(err.message);
+      }
     } finally {
       setAnalyzing(false);
     }
+  }
+
+  // POST /draft räumt Entwürfe ab, die seit über einem Tag liegen. Lief dieser
+  // Dialog so lange, ist sein Entwurf weg: neu anfangen statt mit toter ID weiter.
+  function forgetExpiredDraft() {
+    setItemId(null);
+    uploadedIdsRef.current.clear();
+    setReview(null);
+    setAnalyzeError("Der Entwurf war abgelaufen und wurde verworfen — bitte erneut analysieren.");
   }
 
   async function handleCancel() {
@@ -137,7 +167,7 @@ export default function PhotoFirstModal({ onClose, onCreated }) {
       return api.confirmItem(itemId);
     },
     onSuccess: () => onCreated(),
-    onError: (err) => setConfirmError(err.message),
+    onError: (err) => (err.status === 404 ? forgetExpiredDraft() : setConfirmError(err.message)),
   });
 
   function updateForm(patch) {
@@ -186,10 +216,13 @@ export default function PhotoFirstModal({ onClose, onCreated }) {
                 {photoEntries.map((entry) => (
                   <div key={entry.id} className="relative rounded-lg overflow-hidden border border-border bg-bg-primary">
                     <img src={entry.previewUrl} alt={entry.file.name} className="w-full aspect-square object-cover" />
+                    {/* Während Upload und Analyse steht noch nicht fest, welche Fotos schon am
+                        Entwurf hängen – ein Entfernen hätte dann nur die Vorschau getroffen. */}
                     <button
                       type="button"
                       onClick={() => removePhoto(entry.id)}
-                      className="absolute top-1 right-1 bg-black/70 text-white text-xs px-1.5 py-0.5 rounded"
+                      disabled={analyzing}
+                      className="absolute top-1 right-1 bg-black/70 text-white text-xs px-1.5 py-0.5 rounded disabled:opacity-40"
                     >
                       X
                     </button>
@@ -240,7 +273,14 @@ export default function PhotoFirstModal({ onClose, onCreated }) {
           <div className="space-y-4">
             <div className="rounded-lg bg-lego-yellow/10 border border-lego-yellow/30 px-3 py-2 text-xs text-text-primary">
               KI-Schätzung {formatEuro(review.priceMin)}–{formatEuro(review.priceMax)}
-              {review.ebay && (
+              {review.ebay && review.ebay.source === "EBAY_ACTIVE" && (
+                <>
+                  {" · eBay-Angebote "}
+                  {formatEuro(review.ebay.median)} (Median aus {review.ebay.sold_count ?? 0} aktiven Angeboten, keine
+                  Verkaufspreise)
+                </>
+              )}
+              {review.ebay && review.ebay.source !== "EBAY_ACTIVE" && (
                 <>
                   {" · eBay-Median "}
                   {formatEuro(review.ebay.median)} ({review.ebay.sold_count ?? 0} Verkäufe)

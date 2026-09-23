@@ -19,7 +19,9 @@ async function request(path, options = {}) {
     // detail ist meistens ein String, beim 409 auf /valuation/run aber ein
     // Objekt ({message, run_id}) — sonst landet "[object Object]" im UI.
     const detailMessage = typeof err.detail === "string" ? err.detail : err.detail?.message;
-    throw new Error(detailMessage || `API Error ${res.status}`);
+    const error = new Error(detailMessage || `API Error ${res.status}`);
+    error.status = res.status;
+    throw error;
   }
   return res.json();
 }
@@ -92,6 +94,7 @@ export const api = {
 
   // Health
   health: () => fetch(HEALTH_URL).then((r) => r.json()),
+  pipelineStatus: () => request("/system/status"),
 
   // Analysis
   analyze: (data) => request("/analysis/analyze", { method: "POST", body: JSON.stringify(data) }),

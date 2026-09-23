@@ -60,6 +60,9 @@ class InventoryItem(Base):
     condition: Mapped[str] = mapped_column(String(20), default="NEW_SEALED")
     quantity: Mapped[int] = mapped_column(Integer, default=1)
     notes: Mapped[str | None] = mapped_column(Text)
+    # Freitext, z. B. "Dachboden Kiste 3" -- damit ein Posten beim Verkauf
+    # wiederzufinden ist, ohne die ganze Sammlung durchzusuchen.
+    storage_location: Mapped[str | None] = mapped_column(String(200))
 
     # Current valuation (auto-updated by Celery)
     current_market_price: Mapped[float | None] = mapped_column(Float)

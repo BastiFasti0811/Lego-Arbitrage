@@ -8,11 +8,25 @@ import base64
 
 import anthropic
 import structlog
+from pydantic import ValidationError
 
 from app.ai.schemas import ItemDraft, ListingText
 from app.config import settings
 
 logger = structlog.get_logger()
+
+# claude-opus-5 denkt per Default mit (adaptive thinking), und Denk-Tokens zaehlen
+# gegen max_tokens. Ein knappes Limit schneidet deshalb die Antwort ab, obwohl der
+# Aufruf laengst bezahlt ist. Abgerechnet wird nur, was wirklich erzeugt wird --
+# das Limit darf also grosszuegig sein. 16k ist der uebliche Default fuer
+# nicht-gestreamte Anfragen (darueber drohen HTTP-Timeouts).
+_MAX_TOKENS = 16000
+# Eine Analyse mit Denkphase braucht laenger als die urspruenglichen 90 s. Laeuft
+# der Timeout ab, ist der Aufruf bezahlt und das Ergebnis weg. Deshalb keine
+# Wiederholung (max_retries=0): das SDK haelt einen Timeout fuer wiederholbar und
+# wuerde denselben Aufruf ein zweites Mal bezahlen -- und den Nutzer insgesamt
+# bis zu zehn Minuten warten lassen.
+_TIMEOUT_SECONDS = 300.0
 
 _ANALYZE_SYSTEM = (
     "Du katalogisierst gebrauchte Gegenstaende fuer den Privatverkauf auf deutschen "
@@ -39,7 +53,7 @@ class AIProviderError(Exception):
 class ClaudeProvider:
     def __init__(self, client: anthropic.AsyncAnthropic | None = None):
         self._client = client or anthropic.AsyncAnthropic(
-            api_key=settings.anthropic_api_key, timeout=90.0, max_retries=1
+            api_key=settings.anthropic_api_key, timeout=_TIMEOUT_SECONDS, max_retries=0
         )
         self._model = settings.ai_model
 
@@ -73,7 +87,7 @@ class ClaudeProvider:
         try:
             response = await self._client.messages.parse(
                 model=self._model,
-                max_tokens=2048,
+                max_tokens=_MAX_TOKENS,
                 system=_ANALYZE_SYSTEM,
                 messages=[{"role": "user", "content": blocks}],
                 output_format=ItemDraft,
@@ -86,6 +100,12 @@ class ClaudeProvider:
         except anthropic.AnthropicError as exc:
             logger.error("ai.analyze_failed", error_type=type(exc).__name__)
             raise AIProviderError("KI-Aufruf fehlgeschlagen") from exc
+        except ValidationError as exc:
+            # anthropic 1.x validiert schon in parse(): abgeschnittenes JSON
+            # (max_tokens) oder fehlende Felder kommen hier an, nicht als
+            # parsed_output=None.
+            logger.error("ai.analyze_invalid_output", errors=exc.error_count())
+            raise AIProviderError("Die KI-Antwort war unvollstaendig — bitte erneut versuchen") from exc
         if response.stop_reason == "refusal":
             raise AIProviderError("Die KI hat die Analyse dieser Fotos abgelehnt")
         if response.parsed_output is None:
@@ -93,7 +113,15 @@ class ClaudeProvider:
         return response.parsed_output
 
     async def write_listing(
-        self, *, name: str, condition: str, notes: str | None, platform: str, price: float, price_type: str
+        self,
+        *,
+        name: str,
+        condition: str,
+        notes: str | None,
+        platform: str,
+        price: float,
+        price_type: str,
+        quantity: int = 1,
     ) -> ListingText:
         price_suffix = " VB" if price_type == "VB" else ""
         prompt = (
@@ -101,12 +129,14 @@ class ClaudeProvider:
             f"Artikel: {name}\nZustand: {condition}\n"
             f"Preis: {price:.0f} Euro{price_suffix} (in den Text uebernehmen).\n"
         )
+        if quantity > 1:
+            prompt += f"Menge: {quantity} Stueck vorhanden, der Preis gilt pro Stueck.\n"
         if notes:
             prompt += f"Bekannte Details: {notes}\n"
         try:
             response = await self._client.messages.parse(
                 model=self._model,
-                max_tokens=1024,
+                max_tokens=_MAX_TOKENS,
                 system=_LISTING_SYSTEM,
                 messages=[{"role": "user", "content": prompt}],
                 output_format=ListingText,
@@ -119,6 +149,9 @@ class ClaudeProvider:
         except anthropic.AnthropicError as exc:
             logger.error("ai.write_listing_failed", error_type=type(exc).__name__)
             raise AIProviderError("KI-Aufruf fehlgeschlagen") from exc
+        except ValidationError as exc:
+            logger.error("ai.write_listing_invalid_output", errors=exc.error_count())
+            raise AIProviderError("Die KI-Antwort war unvollstaendig — bitte erneut versuchen") from exc
         if response.stop_reason == "refusal":
             raise AIProviderError("Die KI hat die Texterstellung abgelehnt")
         if response.parsed_output is None:
