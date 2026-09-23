@@ -547,6 +547,15 @@ export default function Inventar() {
     });
   };
 
+  // Eingetragener Lagerort passt nicht zum vorhandenen Posten: "Menge erhoehen"
+  // behaelt den alten Ort, das muss der Hinweis sagen.
+  const enteredStorageLocation = addForm.storage_location.trim();
+  const addStorageLocationConflict =
+    duplicates.length > 0 &&
+    enteredStorageLocation !== "" &&
+    !!duplicates[0].storage_location &&
+    duplicates[0].storage_location !== enteredStorageLocation;
+
   const profitColor = (value) => (value > 0 ? "text-go-star" : value < 0 ? "text-no-go" : "text-text-primary");
 
   return (
@@ -814,7 +823,7 @@ export default function Inventar() {
                     </select>
                     <input type="number" min="1" value={editForm.quantity} onChange={(e) => setEditForm({ ...editForm, quantity: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
                   </div>
-                  <input type="text" value={editForm.storage_location} onChange={(e) => setEditForm({ ...editForm, storage_location: e.target.value })} placeholder="Lagerort, z. B. Dachboden Kiste 3" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
+                  <input type="text" maxLength={200} value={editForm.storage_location} onChange={(e) => setEditForm({ ...editForm, storage_location: e.target.value })} placeholder="Lagerort, z. B. Dachboden Kiste 3" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
                   <textarea value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} placeholder="Eigene Notizen..." rows={3} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm resize-none" />
                 </div>
                 <PhotoPicker
@@ -909,7 +918,13 @@ export default function Inventar() {
                             {" "}({duplicates
                               .map((d) => `${new Date(d.buy_date).toLocaleDateString("de-DE")}, ${d.buy_price != null ? `${d.buy_price} €` : "ohne Kaufpreis"}`)
                               .join(" · ")}).
+                            {duplicates[0].storage_location && <> Lagerort: {duplicates[0].storage_location}.</>}
                           </p>
+                          {addStorageLocationConflict && (
+                            <p className="mb-2 text-text-muted">
+                              Dein Lagerort „{addForm.storage_location.trim()}" weicht ab und wird beim Erhöhen nicht übernommen. Liegt das Exemplar woanders, lege es neu an.
+                            </p>
+                          )}
                           <div className="flex flex-wrap gap-2">
                             <button
                               type="button"
@@ -917,10 +932,15 @@ export default function Inventar() {
                               className="px-2 py-1 rounded bg-lego-yellow text-bg-primary font-medium disabled:opacity-50"
                               onClick={() => {
                                 const target = duplicates[0];
+                                const data = { quantity: (target.quantity || 1) + 1 };
+                                // Lagerort nur nachtragen, wenn der vorhandene Posten keinen hat;
+                                // einen abweichenden nicht still ueberschreiben.
+                                const enteredLocation = addForm.storage_location.trim();
+                                if (enteredLocation && !target.storage_location) data.storage_location = enteredLocation;
                                 editMutation.mutate(
                                   {
                                     id: target.id,
-                                    data: { quantity: (target.quantity || 1) + 1 },
+                                    data,
                                     photoFiles: [],
                                     deletedPhotoIds: [],
                                   },
@@ -992,7 +1012,7 @@ export default function Inventar() {
                     </select>
                     <input type="number" min="1" placeholder="Anzahl" value={addForm.quantity} onChange={(e) => setAddForm({ ...addForm, quantity: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
                   </div>
-                  <input type="text" placeholder="Lagerort, z. B. Dachboden Kiste 3" value={addForm.storage_location} onChange={(e) => setAddForm({ ...addForm, storage_location: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
+                  <input type="text" maxLength={200} placeholder="Lagerort, z. B. Dachboden Kiste 3" value={addForm.storage_location} onChange={(e) => setAddForm({ ...addForm, storage_location: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
                   <textarea value={addForm.notes} onChange={(e) => setAddForm({ ...addForm, notes: e.target.value })} placeholder="Eigene Notizen..." rows={3} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm resize-none" />
                 </div>
                 <PhotoPicker
