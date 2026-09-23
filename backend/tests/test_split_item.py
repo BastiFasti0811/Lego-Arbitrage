@@ -123,6 +123,7 @@ def _source_item(**overrides):
         condition="USED_COMPLETE",
         quantity=3,
         notes=None,
+        storage_location=None,
         status="HOLDING",
         current_market_price=None,
         market_price_updated_at=None,

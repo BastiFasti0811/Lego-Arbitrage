@@ -203,6 +203,7 @@ def _item(**overrides):
         condition="NEW_SEALED",
         quantity=1,
         notes=None,
+        storage_location=None,
         photos=[],
         listings=[],
         current_market_price=None,
