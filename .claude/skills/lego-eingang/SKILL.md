@@ -12,7 +12,7 @@ Zweiter Weg ins Inventar neben der Foto-first-Anlage in der App. Spec: `docs/sup
 ## Die zwei Regeln, die den Rest bestimmen
 
 1. **Lego wird als neu verkauft.** Lego-Posten bekommen `NEW_SEALED`, die Fotos dienen nur der Inventarisierung. Ausnahme: sichtbarer Kartonschaden oder Sebastian sagt ausdrücklich „gebraucht mit meinen Fotos". Kartonschaden kommt als Hinweis in die Notiz **und** in die Tabelle.
-2. **Was du nicht sicher erkennst, wird nicht angelegt.** Unlesbare Setnummer, unklare Marke, mögliche Dublette: Zeile in die Tabelle mit Vermerk, Entscheidung bei Sebastian.
+2. **Was du nicht sicher erkennst, wird nicht angelegt.** Unlesbare Setnummer, unklare Marke, mögliche Dublette: Zeile in die Tabelle mit Vermerk, Entscheidung bei Sebastian. Die zugehörigen Originalfotos wandern nach `Eingang/Nachpruefung/<Datum>/` (nicht in `Eingang/neu` liegen lassen — sonst sichtet sie der nächste Durchgang immer wieder mit).
 
 ## Ablauf
 
@@ -26,7 +26,8 @@ Zweiter Weg ins Inventar neben der Foto-first-Anlage in der App. Spec: `docs/sup
    - Prod-Inventar lesen (read-only SQL, siehe unten). Lego über `set_number`, sonst über den Namen.
    - Eigene Anzeigen lesen: Kleinanzeigen „Meine Anzeigen" und eBay-Verkäufercockpit im Browser. Nur lesen.
 4. **Tabelle vorlegen**: je Artikel Bezeichnung, Warengruppe, Zustand, Menge, Anzahl Fotos, schon im Inventar, schon inseriert, geplante Aktion. Abweichungen und Unsicherheiten ausdrücklich nennen.
-5. **Nach Freigabe importieren**: `manifest.json` schreiben, Fotos daneben legen, Sicherungs-Dump ziehen, Probelauf, dann `--apply`.
+5. **Nach Freigabe importieren**: `manifest.json` schreiben, Fotos daneben legen — bei Lego-Artikeln die Fotodateien wenn möglich nach der Setnummer benennen (z.B. `75893.jpg` statt `PXL_...jpg`), das macht den Posten in der Foto-Ablage auf Anhieb erkennbar — Sicherungs-Dump ziehen, Probelauf, dann `--apply`.
+   Bestätigte Dubletten (schon im Inventar oder schon inseriert) bekommen keinen Manifest-Eintrag; ihre Fotos trotzdem aus `Eingang/neu` wegräumen (`mark_processed` + Verschieben nach `Eingang/verarbeitet/<Datum>-dubletten/`), sonst sichtet sie der nächste Durchgang wieder mit.
 6. **Nachhalten**: Ergebnis gegen das Manifest prüfen (Summary nennt `created`, `skipped`, `photos`, `listings`), dann abschließen:
    ```
    PYTHONPATH=backend backend/.venv/Scripts/python.exe -m app.tools.eingang_prepare finish --manifest <manifest-verzeichnis>

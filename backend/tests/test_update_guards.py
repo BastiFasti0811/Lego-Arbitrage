@@ -32,6 +32,7 @@ def _fake_item(**overrides):
         condition="USED_COMPLETE",
         quantity=1,
         notes=None,
+        storage_location=None,
         photos=[],
         listings=[],
         current_market_price=None,

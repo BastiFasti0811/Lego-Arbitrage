@@ -183,6 +183,41 @@ async def test_lego_item_keeps_set_number_and_new_sealed(tmp_path, db):
 
 
 @pytest.mark.asyncio
+async def test_manifest_item_can_carry_purchase_history_and_storage_location(tmp_path, db):
+    # Altbestands-Import (z. B. aus einer Jahre alten Einkaufstabelle): im
+    # Unterschied zum Dachbodenfund sind Kaufpreis und -plattform bekannt.
+    source = _manifest(
+        tmp_path,
+        [
+            {
+                "key": "E05",
+                "item_type": "LEGO",
+                "set_number": "42055",
+                "set_name": "Schaufelradbagger",
+                "condition": "NEW_SEALED",
+                "quantity": 1,
+                "buy_date": "2018-12-03",
+                "buy_price": 142.82,
+                "buy_shipping": 0.0,
+                "buy_platform": "amazon.fr",
+                "storage_location": "Dachboden Kiste 3",
+                "notes": "",
+                "photos": [],
+                "listings": [],
+            }
+        ],
+    )
+
+    await import_inventory.run(source, db, apply=True)
+
+    item = (await _items(db))[0]
+    assert item.buy_price == 142.82
+    assert item.buy_platform == "amazon.fr"
+    assert item.storage_location == "Dachboden Kiste 3"
+    assert item.buy_date == date(2018, 12, 3)
+
+
+@pytest.mark.asyncio
 async def test_active_listing_from_manifest_keeps_url_and_price(tmp_path, db):
     source = _manifest(
         tmp_path,

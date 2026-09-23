@@ -87,6 +87,7 @@ class InventoryAdd(BaseModel):
     condition: str = "NEW_SEALED"
     quantity: int = 1
     notes: str | None = None
+    storage_location: str | None = None
 
     @model_validator(mode="after")
     def _apply_type_rules(self):
@@ -121,6 +122,7 @@ class InventoryUpdate(BaseModel):
     condition: str | None = None
     quantity: int | None = None
     notes: str | None = None
+    storage_location: str | None = None
 
     @model_validator(mode="after")
     def _reject_null_product_group(self):
@@ -170,6 +172,7 @@ class InventoryResponse(BaseModel):
     condition: str
     quantity: int = 1
     notes: str | None
+    storage_location: str | None
     photos: list[InventoryPhotoResponse] = []
     listings: list[ListingResponse] = []
     current_market_price: float | None
@@ -381,6 +384,7 @@ async def add_inventory_item(data: InventoryAdd, session: AsyncSession = Depends
         condition=data.condition,
         quantity=data.quantity,
         notes=data.notes,
+        storage_location=data.storage_location,
         status=InventoryStatus.HOLDING.value,
     )
     session.add(item)
@@ -970,6 +974,7 @@ async def split_inventory_item(item_id: int, data: SplitRequest, session: AsyncS
         condition=item.condition,
         quantity=data.split_quantity,
         notes=item.notes,
+        storage_location=item.storage_location,
         status=item.status,
         current_market_price=item.current_market_price,
         market_price_updated_at=item.market_price_updated_at,
@@ -1351,6 +1356,7 @@ def _to_response(item: InventoryItem) -> InventoryResponse:
         condition=item.condition,
         quantity=item.quantity or 1,
         notes=item.notes,
+        storage_location=item.storage_location,
         photos=[_to_photo_response(photo) for photo in item.photos],
         listings=open_listing_responses(item),
         current_market_price=item.current_market_price,

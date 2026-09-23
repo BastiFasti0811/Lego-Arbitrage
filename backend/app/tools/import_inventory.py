@@ -100,6 +100,13 @@ class ManifestItem(BaseModel):
     quantity: int = Field(default=1, ge=1)
     search_query: str | None = None
     buy_date: date
+    # Dachbodenfunde kennen meist keinen Kaufpreis -- optional, im Unterschied
+    # zu einer Rechnungs-Nachbildung (z. B. Altbestands-Import aus einer Tabelle).
+    buy_price: float | None = None
+    buy_shipping: float = 0.0
+    buy_platform: str | None = None
+    buy_url: str | None = None
+    storage_location: str | None = None
     notes: str = ""
     photos: list[str] = []
     listings: list[ManifestListing] = []
@@ -223,6 +230,11 @@ def _prepare(source: Path, manifest: Manifest) -> list[tuple[ManifestItem, Inven
                 search_query=item.search_query,
                 theme=item.theme,
                 buy_date=item.buy_date,
+                buy_price=item.buy_price,
+                buy_shipping=item.buy_shipping,
+                buy_platform=item.buy_platform,
+                buy_url=item.buy_url,
+                storage_location=item.storage_location,
                 condition=item.condition,
                 quantity=item.quantity,
                 notes=f"[{manifest.mark} {item.key}] {item.notes}".strip(),
