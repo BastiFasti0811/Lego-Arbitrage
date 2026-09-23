@@ -1,7 +1,7 @@
 """Persist auction discovery results and notification identities.
 
 Revision ID: a91c07e54b22
-Revises: f7c3e91a54d2
+Revises: a3f6c8d1b492
 """
 
 import sqlalchemy as sa
@@ -9,7 +9,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "a91c07e54b22"
-down_revision = "f7c3e91a54d2"
+down_revision = "a3f6c8d1b492"
 branch_labels = None
 depends_on = None
 
