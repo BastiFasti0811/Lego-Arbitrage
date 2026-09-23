@@ -279,6 +279,8 @@ class InventoryLookupResponse(BaseModel):
     buy_price: float | None
     buy_date: date
     buy_platform: str | None
+    # Damit der Dubletten-Hinweis zeigt, wo das vorhandene Exemplar liegt.
+    storage_location: str | None = None
 
 
 class AnalyzeRequest(BaseModel):
@@ -446,6 +448,7 @@ async def lookup_by_set_number(
             id=item.id, set_number=item.set_number, set_name=item.set_name,
             quantity=item.quantity or 1, buy_price=item.buy_price,
             buy_date=item.buy_date, buy_platform=item.buy_platform,
+            storage_location=item.storage_location,
         )
         for item in result.scalars().all()
     ]

@@ -40,12 +40,17 @@ Zweiter Weg ins Inventar neben der Foto-first-Anlage in der App. Spec: `docs/sup
 {"mark": "Eingang 2026-09-20",
  "items": [{"key": "E01", "item_type": "LEGO", "set_number": "75192", "set_name": "Millennium Falcon",
             "condition": "NEW_SEALED", "quantity": 1, "buy_date": "2026-09-20", "notes": "",
+            "storage_location": "Dachboden Kiste 3",
             "photos": ["falcon.jpg"],
             "listings": [{"platform": "KLEINANZEIGEN", "status": "DRAFT", "title": "…", "body": "…",
                           "platform_category": "Spielzeug > Bausteine"}]}]}
 ```
 
 `item_type` ist `LEGO` (dann ist `set_number` Pflicht, `product_group` wird automatisch „Lego") oder `GENERIC` mit eigener `product_group`. Listings: `DRAFT` für vorbereitete Texte, `ACTIVE` mit `price` und `url` für Anzeigen, die es schon gibt. Titel maximal 120 Zeichen.
+
+Optionale Felder je Artikel:
+- `storage_location`: Lagerort als Freitext, höchstens 200 Zeichen. Nennt Sebastian beim Eingang einen Ort („liegt alles in Kiste 3"), kommt er hier rein; sonst weglassen.
+- `buy_price`, `buy_shipping`, `buy_platform` (höchstens 100 Zeichen), `buy_url`: nur wenn der Kauf belegt ist, etwa bei einem Altbestands-Import aus einer Einkaufstabelle. Dachbodenfunde bleiben ohne Kaufpreis.
 
 ## Befehle
 
@@ -56,7 +61,7 @@ ssh lego-prod 'D=/mnt/HC_Volume_105179687/lego-arbitrage/backups/manual; mkdir -
 
 Bestand lesen (read-only):
 ```
-ssh lego-prod "docker exec -e PGOPTIONS='-c default_transaction_read_only=on' lego-postgres-prod psql -U lego -d lego_arbitrage --csv -c 'SELECT id, set_number, item_type, product_group, set_name, condition, quantity, status FROM inventory_items ORDER BY id;'"
+ssh lego-prod "docker exec -e PGOPTIONS='-c default_transaction_read_only=on' lego-postgres-prod psql -U lego -d lego_arbitrage --csv -c 'SELECT id, set_number, item_type, product_group, set_name, condition, quantity, status, storage_location FROM inventory_items ORDER BY id;'"
 ```
 
 Import (Verzeichnis mit `manifest.json` und Fotos):
