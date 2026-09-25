@@ -19,6 +19,13 @@ SCAN_ON = {"catawiki_scan_urls": URL, "catawiki_scan_frequency": "daily"}
 TELEGRAM = {"telegram_bot_token": "t", "telegram_chat_id": "c"}
 
 
+
+@pytest.fixture(autouse=True)
+def _server_scans_catawiki(monkeypatch):
+    # Diese Tests pruefen die Mechanik des Server-Scans am Beispiel Catawiki.
+    # Im Betrieb scannt Catawiki der Heimrechner (HOME_RUNNER_PLATFORMS).
+    monkeypatch.setattr(catawiki_scan, "HOME_RUNNER_PLATFORMS", frozenset())
+
 def lot(**changes):
     return CatawikiLotCandidate(**{
         "lot_id": "102824557", "url": URL, "title": "LEGO 10282 versiegelt",
@@ -240,3 +247,14 @@ async def test_unexpected_parser_error_keeps_partial_results(monkeypatch):
     assert results == [found]
     assert "AttributeError" in errors[0]
     save.assert_awaited_once()
+
+
+async def test_server_scan_leaves_catawiki_to_the_home_runner(monkeypatch):
+    monkeypatch.setattr(catawiki_scan, "HOME_RUNNER_PLATFORMS", frozenset({"CATAWIKI"}))
+    monkeypatch.setattr(catawiki_scan, "SUPPORTED_DISCOVERY_PLATFORMS", ("CATAWIKI",))
+    monkeypatch.setattr(catawiki_scan, "get_settings_map", AsyncMock(return_value={**SCAN_ON, **TELEGRAM}))
+    discover = AsyncMock()
+    monkeypatch.setattr(catawiki_scan, "_discover_configured_platform", discover)
+    summary = await catawiki_scan._scan_configured_categories_async()
+    assert "CATAWIKI: laeuft ueber den Heimrechner" in summary["skipped"]
+    discover.assert_not_awaited()

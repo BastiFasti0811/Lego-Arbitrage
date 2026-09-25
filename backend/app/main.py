@@ -8,7 +8,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from app.api.routes import analysis, auctions, auth, feedback, inventory, listings, scout, sets, system, watchlist
+from app.api.routes import (
+    analysis,
+    auctions,
+    auth,
+    feedback,
+    inventory,
+    listings,
+    remote_scan,
+    scout,
+    sets,
+    system,
+    watchlist,
+)
 from app.api.routes import settings as settings_routes
 from app.api.routes.auth import COOKIE_NAME, verify_cookie
 from app.config import settings
@@ -48,6 +60,7 @@ app.add_middleware(
 # ── Auth Middleware ────────────────────────────────────────
 PUBLIC_PATHS = {"/api/auth/login", "/health", "/"}
 DOCS_PATHS = {"/docs", "/openapi.json"}
+RUNNER_PATH_PREFIX = "/api/remote-scan/runner/"
 
 
 @app.middleware("http")
@@ -63,6 +76,10 @@ async def auth_middleware(request: Request, call_next):
         return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
 
     if not path.startswith("/api/"):
+        return await call_next(request)
+
+    if path.startswith(RUNNER_PATH_PREFIX):
+        # Der Heimrechner hat kein Cookie; die Route prueft sein Token selbst.
         return await call_next(request)
 
     # Check cookie on all other /api/* routes
@@ -86,6 +103,7 @@ app.include_router(inventory.router, prefix="/api/inventory", tags=["Inventory"]
 app.include_router(listings.router, prefix="/api/inventory", tags=["Listings"])
 app.include_router(settings_routes.router, prefix="/api/settings", tags=["Settings"])
 app.include_router(system.router, prefix="/api/system", tags=["System"])
+app.include_router(remote_scan.router, prefix="/api/remote-scan", tags=["Remote Scan"])
 
 
 @app.get("/health")

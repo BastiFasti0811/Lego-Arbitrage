@@ -33,6 +33,10 @@ CATAWIKI_USER_AGENT = (
     "Chrome/154.0.0.0 Safari/537.36"
 )
 SHIPPING_DESTINATION = "de"
+# Bei JEDER Aenderung an Parser oder Zustandslogik hochzaehlen. Prod nimmt
+# Heimrechner-Ergebnisse nur mit derselben Version an: ein veralteter Checkout
+# auf dem PC darf keine Lose nach altem Regelwerk als versiegelt melden.
+PARSER_VERSION = "2026-09-25.3"
 
 
 @dataclass

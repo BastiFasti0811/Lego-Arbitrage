@@ -112,6 +112,17 @@ DEFAULT_SETTINGS = [
         "value": "20",
     },
     {
+        "key": "remote_scan_token",
+        "category": "catawiki",
+        "label": "Heimrechner-Token",
+        "description": (
+            "Zufallswert (mind. 24 Zeichen), den auch das Scan-Skript auf dem Heimrechner kennt. "
+            "Oeffnet nur die Catawiki-Scan-Schnittstelle, nicht die App; der Heimrechner "
+            "bekommt damit auch den Catawiki-Cookie-Header von oben."
+        ),
+        "is_secret": True,
+    },
+    {
         "key": "catawiki_scan_frequency",
         "category": "catawiki",
         "label": "Automatischer Scan",
@@ -172,6 +183,9 @@ async def list_settings(category: str | None = None, session: AsyncSession = Dep
     for setting in existing:
         if category and setting.category != category:
             continue
+        if setting.category == "internal":
+            # Zustaende wie "Scan angefordert um", keine Einstellungen.
+            continue
         setting_response = SettingResponse.model_validate(setting)
         length, has_whitespace, tail = describe_stored_value(setting.value)
         setting_response.value_length = length
@@ -190,6 +204,11 @@ async def update_settings(updates: list[SettingUpdate], session: AsyncSession = 
     for update in updates:
         if update.key == "catawiki_scan_frequency" and update.value not in {"daily", "weekly", "off"}:
             raise HTTPException(status_code=400, detail="Catawiki-Intervall: daily, weekly oder off")
+        if (
+            update.key == "remote_scan_token" and update.value and update.value != SECRET_MASK
+            and len(update.value.strip()) < 24
+        ):
+            raise HTTPException(status_code=400, detail="Heimrechner-Token: mindestens 24 Zeichen")
         default = DEFAULT_SETTINGS_BY_KEY.get(update.key)
         if default is None:
             raise HTTPException(status_code=400, detail=f"Unbekannter Setting-Key: {update.key}")
