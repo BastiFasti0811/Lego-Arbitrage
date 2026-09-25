@@ -240,7 +240,7 @@ class BaseScraper(ABC):
         client = await self._get_client()
 
         # Rotate user agent on each request
-        client.headers["User-Agent"] = ua.random
+        client.headers["User-Agent"] = getattr(self, "user_agent_override", None) or ua.random
 
         logger.info("scraper.fetch", scraper=self.name, url=safe_url[:100])
         response = await client.get(safe_url)

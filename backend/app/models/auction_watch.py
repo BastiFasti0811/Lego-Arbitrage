@@ -27,7 +27,8 @@ class AuctionWatchItem(Base):
     notes: Mapped[str | None] = mapped_column(Text)
 
     current_bid: Mapped[float] = mapped_column(Float, nullable=False)
-    purchase_shipping: Mapped[float] = mapped_column(Float, default=0.0)
+    # None = unbekannt; evaluate_auction sperrt dann die Freigabe.
+    purchase_shipping: Mapped[float | None] = mapped_column(Float, nullable=True)
     desired_roi_percent: Mapped[float | None] = mapped_column(Float)
     buyer_fee_rate: Mapped[float | None] = mapped_column(Float)
     buyer_fee_fixed: Mapped[float | None] = mapped_column(Float)

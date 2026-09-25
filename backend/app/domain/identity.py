@@ -38,7 +38,7 @@ _HARD_ACCESSORY_PATTERNS = (
     r"compatible\s+with",
     r"kein\s+lego",
     r"not\s+lego",
-    r"passend\s+f[üu]r\s+lego",
+    r"passend\s+f(?:ü|ue|u)r\s+lego",
     r"wandhalterung",
     r"wall[\s-]*mount",
     r"display[\s-]*case",
@@ -62,7 +62,7 @@ _HARD_ACCESSORY_PATTERNS = (
     # Preisangaben heraus ("fuer 1500 Euro").
     # Dieselbe Preis-Notation wie oben, statt einer zweiten, aermeren Liste:
     # "fuer 1200 VB" ist ein Preis, kein Zubehoer-Verweis auf ein anderes Set.
-    rf"f[üu]r\s+(?:lego\s+)?\d{{4,6}}(?!\s*{_PRICE_TAIL})",
+    rf"f(?:ü|ue|u)r\s+(?:lego\s+)?\d{{4,6}}(?!\s*{_PRICE_TAIL})",
 )
 
 # Phrases that describe an accessory when it IS the product, but appear just as

@@ -132,6 +132,9 @@ export default function DealChecker() {
           setParseMessage("Set-Nummer nicht erkannt -- bitte manuell eingeben");
         }
       }
+      if (data.is_closed) {
+        setParseMessage((message) => `${message} -- Achtung: Auktion ist bereits beendet`);
+      }
       if (data.condition) setCondition(data.condition);
       if (data.url) setSourceUrl(data.url);
       if (data.platform) setSourcePlatform(data.platform);
@@ -418,6 +421,7 @@ export default function DealChecker() {
       desired_roi_percent: auctionTargetRoi ? parseFloat(auctionTargetRoi) : null,
       source_url: sourceUrl || null,
       source_platform: auctionPlatform || sourcePlatform || "CATAWIKI",
+      condition,
     });
   };
 
@@ -429,7 +433,7 @@ export default function DealChecker() {
       source_platform: auctionPlatform || sourcePlatform || "CATAWIKI",
       lot_title: result?.set_name ? `LEGO ${setNumber} - ${result.set_name}` : null,
       current_bid: parseFloat(auctionCurrentBid),
-      purchase_shipping: auctionShipping ? parseFloat(auctionShipping) : 0,
+      purchase_shipping: auctionShipping ? parseFloat(auctionShipping) : null,
       desired_roi_percent: auctionTargetRoi ? parseFloat(auctionTargetRoi) : auctionMaxBid.data.target_roi_percent,
     });
   };

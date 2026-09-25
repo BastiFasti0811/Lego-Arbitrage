@@ -4,10 +4,15 @@ import { api } from "../api/client";
 
 const EURO = "\u20ac";
 
-function formatMoney(value, digits = 0) {
+function formatMoney(value, digits = 2) {
   if (value == null) return "--";
   return `${Number(value).toFixed(digits)}${EURO}`;
 }
+
+const STATUS_LABELS = {
+  NEEDS_REVIEW: "Pruefung noetig", ENDED: "Beendet", UNDER_LIMIT: "Unter Limit",
+  AT_LIMIT: "Am Limit", OVER_LIMIT: "Zu teuer", ACTIVE: "Unter Limit",
+};
 
 function formatStamp(value) {
   if (!value) return "Noch nie";
@@ -20,7 +25,7 @@ export default function AuctionWatch() {
   const [categoryUrls, setCategoryUrls] = useState("");
   const [maxResults, setMaxResults] = useState("20");
 
-  const { data: items = [], isLoading } = useQuery({
+  const { data: items = [], isLoading, error: watchError } = useQuery({
     queryKey: ["auction-watch"],
     queryFn: api.listAuctionWatch,
     refetchInterval: 60_000,
@@ -44,7 +49,18 @@ export default function AuctionWatch() {
 
   const discoverMutation = useMutation({
     mutationFn: (data) => api.discoverAuctions(data),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["auction-discovery"] }),
   });
+
+  const { data: scanReports = [], error: scanError } = useQuery({
+    queryKey: ["auction-discovery"], queryFn: api.latestAuctionDiscovery, refetchInterval: 60_000,
+  });
+  const scheduleMutation = useMutation({
+    mutationFn: (value) => api.updateSettings([{ key: "catawiki_scan_frequency", value }]),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["settings"] }),
+  });
+  const latestScan = scanReports.find((report) => report.source_platform === selectedPlatform);
+  const discoveryItems = latestScan?.results || [];
 
   const addMutation = useMutation({
     mutationFn: (data) => api.addAuctionWatch(data),
@@ -80,7 +96,7 @@ export default function AuctionWatch() {
       source_platform: item.source_platform || "CATAWIKI",
       lot_title: item.lot_title,
       current_bid: item.current_bid,
-      purchase_shipping: item.purchase_shipping || 0,
+      purchase_shipping: item.purchase_shipping,
     });
   };
 
@@ -94,6 +110,9 @@ export default function AuctionWatch() {
 
   return (
     <div>
+      {watchError && <p role="alert" className="text-no-go mb-3">Watchlist konnte nicht geladen werden: {watchError.message}</p>}
+      {refreshMutation.isError && <p role="alert" className="text-no-go mb-3">{refreshMutation.error.message}</p>}
+      {removeMutation.isError && <p role="alert" className="text-no-go mb-3">{removeMutation.error.message}</p>}
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-text-primary">Auktions-Watchlist</h1>
@@ -108,6 +127,22 @@ export default function AuctionWatch() {
       </div>
 
       <div className="bg-bg-card border border-border rounded-xl p-6 mb-6">
+        <div className="flex flex-wrap items-center gap-3 mb-4">
+          <label htmlFor="scan-frequency" className="text-text-secondary text-sm">Catawiki automatisch</label>
+          <select id="scan-frequency" value={settingsMap.catawiki_scan_frequency || "off"}
+            disabled={scheduleMutation.isPending}
+            onChange={(event) => scheduleMutation.mutate(event.target.value)}
+            className="bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm">
+            <option value="daily">Taeglich um 08:40</option>
+            <option value="weekly">Sonntags um 08:40</option>
+            <option value="off">Aus</option>
+          </select>
+          <span className="text-text-muted text-xs">Deutsche Zeit. Verwendet die URLs aus Einstellungen.</span>
+        </div>
+        {scheduleMutation.isError && <p role="alert" className="text-no-go">{scheduleMutation.error.message}</p>}
+        {scanError && <p role="alert" className="text-no-go">Gespeicherter Scan konnte nicht geladen werden.</p>}
+        {latestScan && <p className="text-text-muted text-sm mb-3">Letzter Scan: {formatStamp(latestScan.scanned_at)}</p>}
+        {latestScan?.errors?.map((error, index) => <p key={index} role="alert" className="text-no-go mb-2">{error}</p>)}
         <div className="flex items-start justify-between gap-4 mb-4">
           <div>
             <h2 className="text-text-primary text-lg font-semibold">Discovery-Scan</h2>
@@ -152,7 +187,7 @@ export default function AuctionWatch() {
             <input
               type="number"
               min="1"
-              max="100"
+              max="50"
               value={maxResults}
               onChange={(event) => setMaxResults(event.target.value)}
               className="w-full bg-bg-primary border border-border rounded-lg px-3 py-3 text-text-primary font-[family-name:var(--font-mono)]"
@@ -178,19 +213,19 @@ export default function AuctionWatch() {
           <p className="text-go text-sm mt-3">Lot zur Watchlist hinzugefuegt.</p>
         )}
 
-        {discoverMutation.data && (
+        {latestScan && (
           <div className="mt-4 border border-border rounded-xl overflow-hidden">
             <div className="px-4 py-3 bg-bg-hover border-b border-border flex items-center justify-between">
               <h3 className="text-text-primary font-medium">Gefundene Lots</h3>
-              <span className="text-text-muted text-xs">{discoverMutation.data.length} Treffer</span>
+              <span className="text-text-muted text-xs">{discoveryItems.length} Treffer</span>
             </div>
-            {discoverMutation.data.length === 0 ? (
+            {discoveryItems.length === 0 ? (
               <div className="p-4 text-sm text-text-muted">
-                Kein passendes Lot gefunden oder aktuell liegt nichts im Zielkorridor.
+                {latestScan.status === "FAILED" ? "Scan fehlgeschlagen. Siehe Hinweis oben." : "Keine passenden Lose gefunden."}
               </div>
             ) : (
               <div className="divide-y divide-border">
-                {discoverMutation.data.map((item) => (
+                {discoveryItems.map((item) => (
                   <div key={item.source_url} className="p-4">
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0">
@@ -203,9 +238,16 @@ export default function AuctionWatch() {
                               item.can_bid_now ? "bg-go/15 text-go" : "bg-no-go/15 text-no-go"
                             }`}
                           >
-                            {item.can_bid_now ? "Unter Limit" : "Zu teuer"}
+                            {STATUS_LABELS[item.bid_status] || "Pruefung noetig"}
                           </span>
                         </div>
+                        <div className="text-text-muted text-sm mt-1">
+                          Versand {formatMoney(item.purchase_shipping)} | Gebuehr {formatMoney(item.buyer_fee_current)}
+                          {" | "}Gesamt {formatMoney(item.all_in_cost_current)}
+                        </div>
+                        {Object.keys(item.source_prices || {}).length > 0 && <div className="text-text-muted text-xs mt-1">
+                          Vergleich: {Object.entries(item.source_prices).map(([source, price]) => `${source}: ${formatMoney(price)}`).join(" | ")}
+                        </div>}
                         <div className="text-text-primary font-medium mt-1">{item.lot_title}</div>
                         <div className="text-text-muted text-sm mt-1">
                           Aktuell {formatMoney(item.current_bid)} - Max {formatMoney(item.recommended_max_bid)} - ROI{" "}
@@ -228,7 +270,7 @@ export default function AuctionWatch() {
                         <button
                           type="button"
                           onClick={() => handleAddDiscovery(item)}
-                          disabled={addMutation.isPending || !item.set_number || item.current_bid == null}
+                          disabled={addMutation.isPending || !item.set_number || item.current_bid == null || item.bid_status === "ENDED"}
                           className="px-3 py-2 rounded-lg bg-lego-yellow text-black text-sm font-bold hover:bg-lego-yellow/90 transition-colors disabled:opacity-50"
                         >
                           Beobachten
@@ -262,10 +304,10 @@ export default function AuctionWatch() {
                     </span>
                     <span
                       className={`px-2 py-1 rounded-full text-xs font-medium ${
-                        (item.bid_gap || 0) >= 0 ? "bg-go/15 text-go" : "bg-no-go/15 text-no-go"
+                        ["UNDER_LIMIT", "AT_LIMIT"].includes(item.bid_status) ? "bg-go/15 text-go" : "bg-check/15 text-check"
                       }`}
                     >
-                      {item.bid_status || item.status}
+                      {STATUS_LABELS[item.bid_status || item.status] || "Pruefung noetig"}
                     </span>
                   </div>
                   <h2 className="text-text-primary font-semibold mt-1">{item.set_name}</h2>

@@ -4,11 +4,14 @@ import asyncio
 from dataclasses import dataclass
 
 import structlog
+from billiard.exceptions import SoftTimeLimitExceeded
 
 from app.config import settings
+from app.domain.condition import condition_value_factor, normalize_condition
 from app.domain.metadata import merge_set_info, needs_metadata_retry
 from app.domain.platforms import detect_source_platform
 from app.engine.decision_engine import analyze_deal
+from app.engine.market_consensus import is_persistable_consensus
 from app.engine.roi_calculator import calculate_ebay_fees, estimate_shipping
 from app.scrapers import (
     METADATA_SCRAPERS,
@@ -35,10 +38,7 @@ class AuctionFeeProfile:
 class AuctionBidResult:
     platform: str
     target_roi_percent: float
-    # ACHTUNG: nicht dasselbe wie AnalysisResult.expected_sale_price. Hier steht
-    # der unkorrigierte Referenzpreis, dort der um den Zustand geminderte
-    # Erloes. Folgenlos nur, solange analyze_deal hier ohne condition laeuft —
-    # wer das aendert, muss auch diese Zeile anfassen.
+    # Conservative market value adjusted for the actual lot's condition.
     expected_sale_price: float
     net_sale_revenue: float
     purchase_shipping: float
@@ -136,6 +136,8 @@ async def retry_authoritative_metadata(
                     uvp=uvp,
                     eol_status=eol_status,
                 )
+        except SoftTimeLimitExceeded:
+            raise
         except Exception as exc:
             logger.warning(
                 "auction_watch.metadata_retry_failed",
@@ -168,6 +170,8 @@ async def gather_market_context(
                 info = await scraper.get_set_info(requested_set_number)
                 price = await scraper.get_price(requested_set_number)
                 return info, price
+        except SoftTimeLimitExceeded:
+            raise
         except Exception as exc:
             logger.warning("auction_watch.scraper_failed", scraper=scraper_cls.__name__, error=str(exc))
             return None, None
@@ -356,6 +360,8 @@ async def evaluate_auction(
     release_year: int | None = None,
     uvp: float | None = None,
     eol_status: str | None = None,
+    condition: str = "UNKNOWN",
+    box_damage: bool = False,
 ) -> AuctionEvaluation:
     prices, set_name, theme, release_year, uvp, eol_status = await gather_market_context(
         set_number=set_number,
@@ -385,6 +391,8 @@ async def evaluate_auction(
         monthly_sales=estimate_monthly_sales(prices),
         still_in_retail=still_in_retail,
         purchase_shipping=purchase_shipping,
+        condition=condition,
+        box_damage=box_damage,
     )
 
     target_roi = desired_roi_percent if desired_roi_percent is not None else default_target_roi_for_category(
@@ -396,8 +404,12 @@ async def evaluate_auction(
         buyer_fee_fixed=buyer_fee_fixed,
         fee_applies_to_shipping=fee_applies_to_shipping,
     )
+    consensus = analysis.market_consensus
+    resale_reference = consensus.consensus_price
+    if still_in_retail and uvp and uvp > 0:
+        resale_reference = min(resale_reference, uvp)
     bid_result = calculate_max_bid(
-        expected_sale_price=analysis.reference_price,
+        expected_sale_price=round(resale_reference * condition_value_factor(condition, box_damage), 2),
         target_roi_percent=target_roi,
         fee_profile=fee_profile,
         purchase_shipping=purchase_shipping,
@@ -415,7 +427,7 @@ async def evaluate_auction(
         else 0.0
     )
     current_bid_gap = round(bid_result.max_bid - current_bid, 2)
-    can_bid_now = current_bid_gap >= 0
+    can_bid_now = current_bid_gap >= 0 and bid_result.max_bid > 0
     if current_bid_gap >= 5:
         bid_status = "UNDER_LIMIT"
         recommendation_text = "Noch Luft bis zum Maximalgebot."
@@ -438,6 +450,19 @@ async def evaluate_auction(
         warnings.insert(0, "BrickLink ist meist Fixpreis. Versand und Shop-Mindestbestaende extra gegenpruefen.")
     if analysis.market_consensus.num_sources < 2:
         warnings.append("Datenlage duenn. Maximalgebot besser konservativ ansetzen.")
+
+    review_reasons = []
+    if not is_persistable_consensus(consensus) or not consensus.is_reliable:
+        review_reasons.append("Kein belastbarer Marktvergleich aus mindestens zwei passenden Quellen.")
+    if purchase_shipping is None:
+        review_reasons.append("Versandkosten fehlen; Rechnung ist nur eine Schaetzung.")
+    if normalize_condition(condition) == "UNKNOWN":
+        review_reasons.append("Zustand unbekannt; vor einem Gebot pruefen.")
+    if review_reasons:
+        can_bid_now = False
+        bid_status = "NEEDS_REVIEW"
+        recommendation_text = " ".join(review_reasons)
+        warnings = review_reasons + warnings
 
     return AuctionEvaluation(
         analysis=analysis,
