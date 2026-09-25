@@ -96,32 +96,48 @@ def _page_props(html: str) -> dict | None:
     return props if isinstance(props, dict) else None
 
 
-# "Verpackung" ist Freitext des Verkaeufers. Deshalb Wortanfaenge statt
-# Teilwoerter, und Verneinungen werden vor jeder positiven Pruefung gesperrt:
-# "nicht versiegelt", "Unversiegelte OVP", "unsealed" waren sonst NEW_SEALED.
-_NOT_A_WORD_BEFORE = r"(?<![a-zäöüß])"
-_NOT_SEALED = re.compile(
-    r"\b(?:nicht|kein\w*|ohne)\s+(?:\w+\s+)?(?:versiegel|sealed)|unversiegel|\bun-?sealed|\bnot\s+sealed",
-    re.IGNORECASE,
-)
-_UNOPENED = re.compile(_NOT_A_WORD_BEFORE + r"unge(?:ö|oe)ffnet", re.IGNORECASE)
-_OPENED = re.compile(r"(?<!un)ge(?:ö|oe)ffnet", re.IGNORECASE)
-_SEALED = re.compile(_NOT_A_WORD_BEFORE + r"(?:versiegelt|sealed)", re.IGNORECASE)
-_SEAL_BROKEN = re.compile(
-    r"(?:Dichtung|Siegel|Versiegelung)\w*\s+(?:\w+\s+)?"
-    r"(?:defekt|besch(?:ä|ae)digt|gebrochen|fehl\w*|angerissen|aufgerissen|offen|entfernt|ge(?:ö|oe)ffnet)"
-    r"|(?:angerissen|aufgerissen|gebrochen|defekt|besch(?:ä|ae)digt)\w*\s+(?:Dichtung|Siegel|Versiegelung)",
-    re.IGNORECASE,
-)
-_DAMAGED = re.compile(
-    r"(?<!un)besch(?:ä|ae)digt|besch(?:ä|ae)digung|dellen?\b|eingedr(?:ü|ue)ckt|knick|\briss|\bdent|crushed|(?<!un)damaged",
-    re.IGNORECASE,
-)
-# Verneinte Schadensangaben ("ohne Beschaedigungen", "keine Dellen") vor der
-# Schadenssuche entfernen; "unbeschaedigt" faengt _DAMAGED selbst ab.
-_NEGATED_PHRASE = re.compile(r"\b(?:ohne|keine?[nrs]?)\s+\w+", re.IGNORECASE)
+# Zustand und Verpackung sind bei Catawiki feste Katalogwerte mit ID (Filter
+# 914 bzw. 900), kein Freitext. Werte und IDs aus 45 echten Losen vom
+# 25.09.2026. NEW_SEALED gibt es NUR ueber diese Positivliste: ein Textmuster
+# kann nie hochstufen ("nicht mehr ganz versiegelt", "Re-sealed", "Siegel
+# eingerissen" waren mit Regex sonst NEW_SEALED). Unbekannte Werte -> UNKNOWN,
+# und das sperrt jede Freigabe.
+ZUSTAND_UNUSED_ID = 165212  # "Unbenutzt"
+ZUSTAND_USED_IDS = frozenset({
+    62422,  # "Gebraucht"
+    67508,  # "Viel gebraucht"
+    63877,  # "Neuwertig" -- meist gebraucht, nie neu
+    62421,  # "Gut"
+})
+ZUSTAND_ID_BY_TEXT = {
+    "Unbenutzt": 165212, "Gebraucht": 62422, "Viel gebraucht": 67508, "Neuwertig": 63877, "Gut": 62421,
+}
+# Verpackung bei Zustand "Unbenutzt": (Zustand, Kartonschaden).
+VERPACKUNG_CONDITION = {
+    80575: ("NEW_SEALED", False),    # "In unbeschädigter und versiegelter Originalverpackung"
+    80577: ("NEW_SEALED", True),     # "In beschädigter ungeöffneter Originalverpackung"
+    92699: ("NEW_OPEN_BOX", False),  # "ungeöffnete Schachtel Dichtungen defekt"
+    80579: ("NEW_OPEN_BOX", False),  # "In unbeschädigter geöffneter Originalverpackung"
+    92711: ("NEW_OPEN_BOX", False),  # "mit Handbuch in geöffneter Box"
+    80571: ("NEW_OPEN_BOX", False),  # "Ausgepackt"
+    # Bewusst UNKNOWN (sagen nichts ueber das Siegel): 92701 "in geschlossener Box",
+    # 93427 "Mit Original-Kasten", 92715 "mit Handbuch", 70592 "In Ersatzverpackung",
+    # 64305 "Ohne Originalverpackung".
+}
+VERPACKUNG_ID_BY_TEXT = {
+    "In unbeschädigter und versiegelter Originalverpackung": 80575,
+    "In beschädigter ungeöffneter Originalverpackung": 80577,
+    "ungeöffnete Schachtel Dichtungen defekt": 92699,
+    "In unbeschädigter geöffneter Originalverpackung": 80579,
+    "mit Handbuch in geöffneter Box": 92711,
+    "Ausgepackt": 80571,
+    "in geschlossener Box": 92701,
+    "Mit Original-Kasten": 93427,
+    "mit Handbuch": 92715,
+    "In Ersatzverpackung": 70592,
+    "Ohne Originalverpackung": 64305,
+}
 _NO_MINIFIGS = re.compile(r"\b(?:no|keine?|ohne|without)\s+(?:mini-?)?fig", re.IGNORECASE)
-_NEW_OR_UNUSED = re.compile(r"(?:neu|unbenutzt)(?![a-zäöüß])", re.IGNORECASE)
 
 
 def condition_from_catawiki(
@@ -129,32 +145,25 @@ def condition_from_catawiki(
     verpackung: str | None,
     complete: str | None = None,
     title: str = "",
+    zustand_id: int | None = None,
+    verpackung_id: int | None = None,
 ) -> tuple[str, bool]:
-    """Zustand und Kartonschaden aus den Catawiki-Detailangaben.
+    """Zustand und Kartonschaden aus den Catawiki-Katalogangaben.
 
-    Beobachtete Werte (Auktion 1256209): Zustand "Unbenutzt"/"Gebraucht";
-    Verpackung z. B. "In unbeschaedigter und versiegelter Originalverpackung",
-    "In beschaedigter ungeoeffneter Originalverpackung", "ungeoeffnete Schachtel
-    Dichtungen defekt", "In unbeschaedigter geoeffneter Originalverpackung",
-    "in geschlossener Box"; "Vollstaendiges Set" "Ja"/"Nein".
-    NEW_SEALED nur bei eindeutiger Angabe; Unklares wird UNKNOWN, und das
-    sperrt jede Freigabe.
+    Massgeblich sind die Katalog-IDs; ohne ID (Losliste, Heimrechner-Text) der
+    exakte Katalogtext. Fehlende Minifiguren oder "Vollstaendiges Set: Nein"
+    machen jedes Los unvollstaendig.
     """
-    zustand = (zustand or "").strip().lower()
-    verpackung = verpackung or ""
     if (complete or "").strip().lower() == "nein" or _NO_MINIFIGS.search(title or ""):
         return "USED_INCOMPLETE", False
-    if zustand.startswith("gebraucht"):
+    zustand_id = zustand_id if isinstance(zustand_id, int) else ZUSTAND_ID_BY_TEXT.get((zustand or "").strip())
+    if zustand_id in ZUSTAND_USED_IDS:
         return "USED_COMPLETE", False
-    # "Neuwertig" ist meist gebraucht: nur "Neu"/"Unbenutzt" als ganzes Wort.
-    if not _NEW_OR_UNUSED.match(zustand):
+    if zustand_id != ZUSTAND_UNUSED_ID:
         return "UNKNOWN", False
-    damaged = bool(_DAMAGED.search(_NEGATED_PHRASE.sub(" ", verpackung)))
-    if _NOT_SEALED.search(verpackung) or _SEAL_BROKEN.search(verpackung) or _OPENED.search(verpackung):
-        return "NEW_OPEN_BOX", damaged
-    if _SEALED.search(verpackung) or _UNOPENED.search(verpackung):
-        return "NEW_SEALED", damaged
-    return "UNKNOWN", False
+    if not isinstance(verpackung_id, int):
+        verpackung_id = VERPACKUNG_ID_BY_TEXT.get((verpackung or "").strip())
+    return VERPACKUNG_CONDITION.get(verpackung_id, ("UNKNOWN", False))
 
 
 def _condition_from_subtitle(subtitle: str | None, title: str) -> tuple[str, bool]:
@@ -293,12 +302,17 @@ def parse_lot_page(html: str, url: str) -> CatawikiLotCandidate:
 
     title = details.get("lotTitle") or ""
     specs = {
-        spec.get("name"): spec.get("value")
+        spec.get("name"): spec
         for spec in specs_raw or []
         if isinstance(spec, dict) and isinstance(spec.get("value"), (str, type(None)))
     }
+
+    def spec(name: str, field: str = "value"):
+        return (specs.get(name) or {}).get(field)
+
     condition, box_damage = condition_from_catawiki(
-        specs.get("Zustand"), specs.get("Verpackung"), specs.get("Vollständiges Set"), title,
+        spec("Zustand"), spec("Verpackung"), spec("Vollständiges Set"), title,
+        zustand_id=spec("Zustand", "valueId"), verpackung_id=spec("Verpackung", "valueId"),
     )
 
     bidding = _dict(props.get("biddingBlockResponse"))
@@ -316,7 +330,7 @@ def parse_lot_page(html: str, url: str) -> CatawikiLotCandidate:
     )
 
     set_numbers = _extract_set_numbers(title)
-    serial = str(specs.get("Seriennummer") or "").strip()
+    serial = str(spec("Seriennummer") or "").strip()
     if serial.isdigit() and set_numbers != [serial]:
         # Titel und Detailangabe widersprechen sich: pruefen statt raten.
         set_numbers = list(dict.fromkeys([*set_numbers, serial]))
