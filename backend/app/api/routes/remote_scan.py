@@ -47,7 +47,14 @@ async def post_runner_results(data: RemoteScanResults, session: AsyncSession = D
     except JobRejectedError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     # Bewertung dauert je Los mehrere Marktabfragen: im Worker, nicht im Request.
-    celery_app.send_task(EVALUATE_TASK, args=[data.model_dump()], queue="analysis")
+    # Erst einreihen, dann committen -- faellt der Broker aus, bleibt der Auftrag offen.
+    try:
+        celery_app.send_task(EVALUATE_TASK, args=[data.model_dump()], queue="analysis")
+    except Exception as exc:  # noqa: BLE001 -- Broker-Fehler jeder Art
+        await session.rollback()
+        logger.error("remote_scan.enqueue_failed", job_id=data.job_id, error=repr(exc)[:300])
+        raise HTTPException(status_code=503, detail="Bewertung nicht startbar, spaeter erneut senden") from exc
+    await session.commit()
     logger.info("remote_scan.results_accepted", job_id=data.job_id, lots=len(data.lots), errors=len(data.errors))
     return {"accepted": len(data.lots)}
 

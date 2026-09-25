@@ -49,8 +49,10 @@ INTERNAL_CATEGORY = "internal"
 REQUESTED_KEY = "catawiki_scan_requested_at"
 RUNNER_SEEN_KEY = "catawiki_runner_seen_at"
 JOB_KEY = "catawiki_scan_job"
-# Laenger als Scan am PC plus Bewertungs-Task (time_limit 1800 s).
+# Ausgegeben, noch nicht geliefert: Scan am PC (Aufgabe bis 30 min) plus Luft.
 JOB_LEASE = timedelta(minutes=60)
+# Geliefert: Warteschlange plus Bewertungs-Task (time_limit 1800 s) plus Luft.
+DELIVERED_LEASE = timedelta(minutes=45)
 # Wie der fruehere Beat-Termin des Server-Scans.
 SCHEDULED_TIME = time(8, 40)
 MIN_TOKEN_LENGTH = 24
@@ -162,6 +164,10 @@ async def _set_job(session: AsyncSession, job: dict | None) -> None:
 
 
 def _job_active(job: dict | None, now: datetime) -> bool:
+    delivered_at = _parse_time((job or {}).get("delivered_at"))
+    if delivered_at:
+        # Ab der Lieferung zaehlt die Bewertung, nicht mehr der Scan am PC.
+        return now - delivered_at < DELIVERED_LEASE
     issued_at = _parse_time((job or {}).get("issued_at"))
     return bool(issued_at and now - issued_at < JOB_LEASE)
 
@@ -246,7 +252,12 @@ class JobRejectedError(Exception):
 
 
 async def accept_results(session: AsyncSession, data: RemoteScanResults, now: datetime | None = None) -> dict:
-    """Ergebnisse genau einmal fuer den ausgegebenen Auftrag annehmen."""
+    """Ergebnisse genau einmal fuer den ausgegebenen Auftrag annehmen.
+
+    Committet NICHT: der Aufrufer committet erst, wenn der Bewertungs-Task
+    eingereiht ist -- sonst stuende der Auftrag als geliefert da, ohne dass
+    je bewertet wird (Broker weg), und die Anforderung waere verloren.
+    """
     now = now or datetime.now(UTC)
     if data.parser_version != PARSER_VERSION:
         raise JobRejectedError(409, f"Heimrechner-Parser {data.parser_version}, Prod erwartet {PARSER_VERSION}: "
@@ -261,7 +272,6 @@ async def accept_results(session: AsyncSession, data: RemoteScanResults, now: da
     requested_at = await _get_internal(session, REQUESTED_KEY)
     if requested_at and job.get("request_at") and requested_at <= _parse_time(job["request_at"]):
         await _set_internal(session, REQUESTED_KEY, None)
-    await session.commit()
     return job
 
 

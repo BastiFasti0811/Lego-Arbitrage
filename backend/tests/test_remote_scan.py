@@ -238,11 +238,17 @@ async def test_request_then_job_then_results_clear_the_request(db, monkeypatch):
     await remote_scan.request_scan(db, now=t0 + timedelta(minutes=5))
     data = remote_scan.RemoteScanResults(**_payload(job_id=job["job_id"]))
     await remote_scan.accept_results(db, data, now=t0 + timedelta(minutes=12))
+    await db.commit()
     assert (await remote_scan.scan_status(db))["requested_at"] is not None
 
     # Doppelte Lieferung wird abgelehnt.
     with pytest.raises(remote_scan.JobRejectedError):
         await remote_scan.accept_results(db, data, now=t0 + timedelta(minutes=13))
+
+    # Geliefert nach 55 Min.: die Bewertung darf noch 45 Min. laufen (Review #33, a).
+    assert remote_scan._job_active({"issued_at": t0.isoformat(),
+                                    "delivered_at": (t0 + timedelta(minutes=55)).isoformat()},
+                                   t0 + timedelta(minutes=70))
 
     # Erst nach der Bewertung (finish_job) gibt es den naechsten Auftrag.
     assert (await remote_scan.runner_job(db, now=t0 + timedelta(minutes=20)))["run"] is False
@@ -285,3 +291,27 @@ async def test_internal_state_is_hidden_from_the_settings_page(db):
     listed = await settings_routes.list_settings(session=db)
     assert all(item.key != remote_scan.REQUESTED_KEY for item in listed)
     assert any(item.key == "remote_scan_token" for item in listed)
+
+
+
+async def test_results_stay_open_when_the_broker_is_down(db, monkeypatch):
+    # Review #33, b: ohne eingereihten Task bleibt der Auftrag offen, Antwort 503.
+    monkeypatch.setattr(remote_scan, "get_settings_map", AsyncMock(return_value={
+        "catawiki_scan_urls": "https://www.catawiki.com/de/a/1\n", "catawiki_scan_frequency": "off",
+    }))
+
+    class _Broken:
+        def send_task(self, *args, **kwargs):
+            raise ConnectionError("broker down")
+
+    rollback = AsyncMock()
+    db.rollback = rollback
+    monkeypatch.setattr(remote_scan_routes, "celery_app", _Broken())
+    await remote_scan.request_scan(db)
+    job = await remote_scan.runner_job(db)
+    with pytest.raises(HTTPException) as exc:
+        await remote_scan_routes.post_runner_results(
+            remote_scan.RemoteScanResults(**_payload(job_id=job["job_id"])), session=db,
+        )
+    assert exc.value.status_code == 503
+    rollback.assert_awaited_once()
