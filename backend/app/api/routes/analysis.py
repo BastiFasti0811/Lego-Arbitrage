@@ -7,12 +7,13 @@ from datetime import datetime
 import structlog
 from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.condition import classify_listing_condition
 from app.domain.platforms import detect_source_platform as infer_source_platform
+from app.engine.market_consensus import price_basis_from_sources
 from app.models import AnalysisHistoryEntry, async_session, get_session
 from app.runtime_settings import get_settings_map
 from app.scrapers.kleinanzeigen import _parse_ka_price
@@ -179,6 +180,8 @@ class AuctionMaxBidResponse(BaseModel):
     expected_roi_at_recommended_bid: float
     warnings: list[str]
     source_prices: dict[str, float]
+    # Aus der Bewertung: bei Abweichung >30 % rechnet sie mit BrickMerge.
+    price_basis: str | None = None
 
 
 class CodeLookupResponse(SetLookupResponse):
@@ -230,6 +233,20 @@ class AnalysisResponse(BaseModel):
     analyzed_at: str
     source_url: str | None = None
     source_platform: str | None = None
+
+    @computed_field
+    @property
+    def price_basis(self) -> str | None:
+        """CONSENSUS (gruen), BRICKMERGE_ONLY (gelb) oder None (neutral).
+
+        BRICKMERGE_ONLY nur, wenn die angezeigte Zahl auch der BrickMerge-Preis
+        ist. Bei Abweichung rechnet das Deal-Verdikt mit dem gewichteten Konsens,
+        dann waere "nur BrickMerge" an einer anderen Zahl falsch.
+        """
+        basis = price_basis_from_sources(self.source_prices)
+        if basis == "BRICKMERGE_ONLY" and self.market_price != self.source_prices.get("BRICKMERGE"):
+            return None
+        return basis
 
 
 def _detect_source_platform(source_url: str | None, source_platform: str | None) -> str | None:
@@ -511,7 +528,8 @@ async def calculate_auction_max_bid(request: AuctionMaxBidRequest):
         eol_status=evaluation.eol_status,
         source_platform=evaluation.detected_platform,
         source_url=request.source_url,
-        market_price=evaluation.analysis.market_consensus.consensus_price,
+        market_price=evaluation.market_price_used,
+        price_basis=evaluation.price_basis,
         reference_price=evaluation.bid_result.expected_sale_price,
         reference_label="MARKT_ZUSTAND",
         target_roi_percent=evaluation.bid_result.target_roi_percent,

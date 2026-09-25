@@ -5,6 +5,7 @@ import StatCard from "../components/StatCard";
 import ListingBadges from "../components/ListingBadges";
 import ListingManager from "../components/ListingManager";
 import PhotoFirstModal from "../components/PhotoFirstModal";
+import PriceBasis from "../components/PriceBasis";
 import ValuationStatus from "../components/ValuationStatus";
 import { referenceLinks } from "./inventoryLinks";
 
@@ -699,11 +700,18 @@ export default function Inventar() {
                   {item.current_market_price && (
                     <>
                       <div className="text-text-muted text-xs mt-2">Marktwert</div>
-                      <div className="text-lego-yellow font-[family-name:var(--font-mono)] font-semibold">{formatMoney(item.current_market_price)}</div>
-                      <div className={`font-[family-name:var(--font-mono)] text-sm font-bold ${profitColor(item.unrealized_profit || 0)}`}>
-                        {(item.unrealized_profit || 0) > 0 ? "+" : ""}{formatMoney(item.unrealized_profit || 0)}
-                        <span className="text-xs ml-1">({item.unrealized_roi_percent?.toFixed(1)}%)</span>
+                      <div className="text-lego-yellow font-[family-name:var(--font-mono)] font-semibold">
+                        <PriceBasis basis={item.market_price_basis}>{formatMoney(item.current_market_price)}</PriceBasis>
                       </div>
+                      {/* Ohne Kaufpreis (Dachbodenfund) gibt es keinen Gewinn -- nicht "+0 €" zeigen. */}
+                      {item.unrealized_profit != null && (
+                        <div className={`font-[family-name:var(--font-mono)] text-sm font-bold ${profitColor(item.unrealized_profit)}`}>
+                          {item.unrealized_profit > 0 ? "+" : ""}{formatMoney(item.unrealized_profit)}
+                          {item.unrealized_roi_percent != null && (
+                            <span className="text-xs ml-1">({item.unrealized_roi_percent.toFixed(1)}%)</span>
+                          )}
+                        </div>
+                      )}
                     </>
                   )}
                   <div className="mt-2 flex justify-end">

@@ -124,6 +124,7 @@ def _source_item(**overrides):
         quantity=3,
         notes=None,
         storage_location=None,
+        market_price_basis=None,
         status="HOLDING",
         current_market_price=None,
         market_price_updated_at=None,
