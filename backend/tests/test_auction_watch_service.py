@@ -12,7 +12,8 @@ from app.services.auction_watch import (
 
 def test_detect_source_platform_handles_supported_sources():
     assert detect_source_platform("https://www.catawiki.com/de/l/102824557", None) == "CATAWIKI"
-    assert detect_source_platform("https://www.whatnot.com/de-DE/listing/123", None) == "WHATNOT"
+    # Whatnot ist keine unterstuetzte Quelle mehr.
+    assert detect_source_platform("https://www.whatnot.com/de-DE/listing/123", None) != "WHATNOT"
     assert (
         detect_source_platform("https://www.bricklink.com/v2/catalog/catalogitem.page?S=75313-1", None)
         == "BRICKLINK"

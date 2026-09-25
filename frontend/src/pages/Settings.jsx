@@ -30,19 +30,6 @@ const FIELD_CONFIG = [
     ],
   },
   {
-    category: "whatnot",
-    title: "Whatnot Scan",
-    description:
-      "Optional fuer Discovery-Scans. Besonders nuetzlich fuer Live-Listings und aktuelle Store-Angebote.",
-    enabled: true,
-    fields: [
-      { key: "whatnot_cookie_header", label: "Cookie Header", type: "password" },
-      { key: "whatnot_user_agent", label: "User Agent", type: "text" },
-      { key: "whatnot_scan_urls", label: "Kategorie-URLs", type: "textarea", rows: 5 },
-      { key: "whatnot_max_results_per_url", label: "Max Ergebnisse pro URL", type: "number" },
-    ],
-  },
-  {
     category: "bricklink",
     title: "BrickLink Scan",
     description:

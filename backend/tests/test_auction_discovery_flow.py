@@ -111,7 +111,7 @@ async def test_no_config_reports_skipped_without_fetching(monkeypatch):
     discover = AsyncMock()
     monkeypatch.setattr(catawiki_scan, "_discover_configured_platform", discover)
     result = await catawiki_scan._scan_configured_categories_async()
-    assert result["platforms"] == 0 and len(result["skipped"]) == 3
+    assert result["platforms"] == 0 and len(result["skipped"]) == len(catawiki_scan.SUPPORTED_DISCOVERY_PLATFORMS)
     discover.assert_not_awaited()
 
 

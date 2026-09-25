@@ -16,7 +16,9 @@ from app.tasks.celery_app import celery_app
 
 logger = structlog.get_logger()
 
-SUPPORTED_DISCOVERY_PLATFORMS = ("CATAWIKI", "WHATNOT", "BRICKLINK")
+# Whatnot entfernt (25.09.2026): Live-Auktionen haben keinen Stand, den ein
+# taeglicher Scan bewerten koennte.
+SUPPORTED_DISCOVERY_PLATFORMS = ("CATAWIKI", "BRICKLINK")
 # Vom Server aus gesperrt (Akamai, IP-Sperre): diese Plattformen scannt der
 # Heimrechner und liefert ueber evaluate_remote_scan ab.
 HOME_RUNNER_PLATFORMS = frozenset({"CATAWIKI"})

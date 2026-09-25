@@ -23,7 +23,6 @@ ALLOWED_HOSTS_BY_PLATFORM: dict[str, set[str]] = {
     "KLEINANZEIGEN": {"kleinanzeigen.de"},
     "LEGO": {"lego.com"},
     "LEGO_COM": {"lego.com"},
-    "WHATNOT": {"whatnot.com"},
 }
 
 SCRAPER_PLATFORM_BY_NAME = {
@@ -36,7 +35,6 @@ SCRAPER_PLATFORM_BY_NAME = {
     "IdealoScraper": "IDEALO",
     "KleinanzeigenScraper": "KLEINANZEIGEN",
     "LegoComScraper": "LEGO",
-    "WhatnotScraper": "WHATNOT",
 }
 
 

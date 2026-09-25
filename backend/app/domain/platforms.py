@@ -17,8 +17,6 @@ def detect_source_platform(source_url: str | None, source_platform: str | None =
         return "EBAY"
     if "amazon" in lowered:
         return "AMAZON"
-    if "whatnot" in lowered:
-        return "WHATNOT"
     if "bricklink" in lowered:
         return "BRICKLINK"
     if "lego.com" in lowered:
