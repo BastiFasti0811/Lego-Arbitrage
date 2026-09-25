@@ -20,7 +20,7 @@ from app.security.url_policy import UnsafeUrlError, validate_marketplace_url
 from app.services.auction_watch import evaluate_auction
 from app.services.bricklink import BrickLinkScraper
 from app.services.bricklink import parse_listing_page as parse_bricklink_listing_page
-from app.services.catawiki import CatawikiParseError, CatawikiScraper, parse_lot_page
+from app.services.catawiki import CatawikiScraper
 from app.services.deal_analysis import (
     DealAnalysisCommand,
     DealAnalysisUseCase,
@@ -673,7 +673,11 @@ async def parse_listing_url(request: ParseUrlRequest):
             async with CatawikiScraper(
                 cookie_header=config.get("catawiki_cookie_header"), user_agent=config.get("catawiki_user_agent"),
             ) as scraper:
-                html = await scraper._fetch(url)
+                # get_lot statt _fetch: Versand und Gebuehr stehen nicht im HTML,
+                # sondern kommen aus den JSON-Endpunkten. Eine unlesbare Seite
+                # (CatawikiParseError) faellt unten in den URL-Fallback.
+                catawiki_lot = await scraper.get_lot(url)
+                html = ""
         elif platform == "WHATNOT":
             async with WhatnotScraper() as scraper:
                 html = await scraper._fetch(url)
@@ -740,13 +744,7 @@ async def parse_listing_url(request: ParseUrlRequest):
             if m:
                 price = float(m.group(1))
     elif platform == "CATAWIKI":
-        try:
-            lot = parse_lot_page(html, url)
-        except CatawikiParseError as e:
-            # Consent-, Challenge- oder Fehlerseite mit Status 200: kein 500,
-            # sondern derselbe URL-Fallback wie bei einem Ladefehler.
-            logger.warning("parse_url.catawiki_unreadable", url=url, error=str(e))
-            return url_only_response()
+        lot = catawiki_lot
         title = lot.title
         price = lot.current_bid
         shipping = lot.shipping_eur

@@ -1,19 +1,36 @@
-"""Helpers for scanning Catawiki category pages and lot pages."""
+"""Helpers for scanning Catawiki category pages and lot pages.
+
+Grundlage sind echte Seiten vom 25.09.2026 (tests/fixtures/catawiki_*):
+Catawiki ist eine Next.js-App. Los- und Listendaten stehen strukturiert in
+`__NEXT_DATA__`; Versand und Kaeuferschutzgebuehr laedt die Seite erst im
+Browser nach und stehen deshalb nicht im HTML, sondern kommen aus zwei
+JSON-Endpunkten. Der Fliesstext der Seite taugt fuer keine dieser Angaben:
+er enthaelt KI-Zusammenfassungen, "Verkauft von <Shop>" und Empfehlungs-Lose.
+"""
 
 import json
 import re
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlsplit
 
+import httpx
 import structlog
 from bs4 import BeautifulSoup
 
-from app.domain.condition import classify_listing_condition
 from app.scrapers.base import BaseScraper
+from app.security.url_policy import validate_url_for_scraper
 
 logger = structlog.get_logger()
 
 CATAWIKI_BASE = "https://www.catawiki.com"
+# Akamai vor catawiki.com beantwortet Los-Seiten mit 403, wenn der User-Agent
+# zufaellig rotiert (fake-useragent); ein fester aktueller Chrome kommt durch
+# (geprueft am 25.09.2026). Die JSON-Endpunkte waren in beiden Faellen offen.
+CATAWIKI_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/154.0.0.0 Safari/537.36"
+)
+SHIPPING_DESTINATION = "de"
 
 
 @dataclass
@@ -48,29 +65,6 @@ def canonical_lot_url(url: str) -> str:
     return f"{CATAWIKI_BASE}/de/l/{match.group(1)}"
 
 
-def _parse_money(text: str | None) -> float | None:
-    if not text:
-        return None
-    normalized = text.replace("\xa0", " ").replace("EUR", "").replace("€", "").replace("â‚¬", "").strip()
-    match = re.search(r"(\d[\d.,]*)", normalized)
-    if not match:
-        return None
-    value = match.group(1)
-    if "," in value and "." in value:
-        if value.rfind(",") > value.rfind("."):
-            value = value.replace(".", "").replace(",", ".")
-        else:
-            value = value.replace(",", "")
-    elif "," in value:
-        value = value.replace(",", "" if re.fullmatch(r"\d{1,3}(,\d{3})+", value) else ".")
-    elif re.fullmatch(r"\d{1,3}(\.\d{3})+", value):
-        value = value.replace(".", "")
-    try:
-        return float(value)
-    except ValueError:
-        return None
-
-
 def _extract_set_numbers(text: str) -> list[str]:
     numbers = []
     for match in re.finditer(r"\b(\d{4,6})(?:-1)?\b", text or ""):
@@ -81,22 +75,6 @@ def _extract_set_numbers(text: str) -> list[str]:
             continue
         numbers.append(number)
     return list(dict.fromkeys(numbers))
-
-
-def _extract_current_bid(text: str | None) -> float | None:
-    if not text:
-        return None
-
-    for label in (r"Aktuelles Gebot|Current bid", r"Startgebot|Starting bid"):
-        if not re.search(label, text, re.IGNORECASE):
-            continue
-        for amount in (r"(?:EUR|€)\s*(\d[\d.,]*)", r"(\d[\d.,]*)\s*(?:EUR|€)"):
-            match = re.search(rf"(?:{label})\s*[:\-]?\s*{amount}", text, re.IGNORECASE)
-            if match:
-                return _parse_money(match.group(1))
-        return None
-
-    return None
 
 
 def _extract_next_json(html: str) -> dict | None:
@@ -110,71 +88,125 @@ def _extract_next_json(html: str) -> dict | None:
         return None
 
 
-def parse_category_page(html: str, source_url: str) -> list[CatawikiLotCandidate]:
-    """Extract auction lots from a Catawiki category/result page."""
-    soup = BeautifulSoup(html, "lxml")
-    candidates: list[CatawikiLotCandidate] = []
-    seen_urls: set[str] = set()
+def _page_props(html: str) -> dict | None:
+    payload = _extract_next_json(html)
+    props = (payload or {}).get("props", {}).get("pageProps")
+    return props if isinstance(props, dict) else None
 
-    for anchor in soup.select("a[href*='/l/']"):
-        href = anchor.get("href") or ""
-        if "/l/" not in href:
+
+_UNOPENED = re.compile(r"unge(?:ö|oe)ffnet", re.IGNORECASE)
+_OPENED = re.compile(r"(?<!un)ge(?:ö|oe)ffnet", re.IGNORECASE)
+_SEALED = re.compile(r"versiegelt|sealed", re.IGNORECASE)
+_DAMAGED = re.compile(r"(?<!un)besch(?:ä|ae)digt|damaged", re.IGNORECASE)
+_SEAL_BROKEN = re.compile(
+    r"(?:Dichtung|Siegel)\w*\s+(?:defekt|besch(?:ä|ae)digt|gebrochen|fehl)", re.IGNORECASE,
+)
+_NO_MINIFIGS = re.compile(r"\b(?:no|keine?|ohne)\s+minifig", re.IGNORECASE)
+
+
+def condition_from_catawiki(
+    zustand: str | None,
+    verpackung: str | None,
+    complete: str | None = None,
+    title: str = "",
+) -> tuple[str, bool]:
+    """Zustand und Kartonschaden aus den Catawiki-Detailangaben.
+
+    Beobachtete Werte (Auktion 1256209): Zustand "Unbenutzt"/"Gebraucht";
+    Verpackung z. B. "In unbeschaedigter und versiegelter Originalverpackung",
+    "In beschaedigter ungeoeffneter Originalverpackung", "ungeoeffnete Schachtel
+    Dichtungen defekt", "In unbeschaedigter geoeffneter Originalverpackung",
+    "in geschlossener Box"; "Vollstaendiges Set" "Ja"/"Nein".
+    NEW_SEALED nur bei eindeutiger Angabe; Unklares wird UNKNOWN, und das
+    sperrt jede Freigabe.
+    """
+    zustand = (zustand or "").strip().lower()
+    verpackung = verpackung or ""
+    if (complete or "").strip().lower() == "nein" or _NO_MINIFIGS.search(title or ""):
+        return "USED_INCOMPLETE", False
+    if zustand.startswith("gebraucht"):
+        return "USED_COMPLETE", False
+    if not (zustand.startswith("unbenutzt") or zustand.startswith("neu")):
+        return "UNKNOWN", False
+    damaged = bool(_DAMAGED.search(verpackung))
+    if _SEAL_BROKEN.search(verpackung) or _OPENED.search(verpackung):
+        return "NEW_OPEN_BOX", damaged
+    if _SEALED.search(verpackung) or _UNOPENED.search(verpackung):
+        return "NEW_SEALED", damaged
+    return "UNKNOWN", False
+
+
+def _condition_from_subtitle(subtitle: str | None, title: str) -> tuple[str, bool]:
+    # Loslisten zeigen "Unbenutzt - In unbeschaedigter und versiegelter Originalverpackung".
+    zustand, _, verpackung = (subtitle or "").partition(" - ")
+    return condition_from_catawiki(zustand, verpackung, None, title)
+
+
+def _candidates_from_list(lots: list) -> list[CatawikiLotCandidate]:
+    candidates: list[CatawikiLotCandidate] = []
+    seen: set[str] = set()
+    for node in lots:
+        if not isinstance(node, dict):
             continue
+        title, lot_id = node.get("title"), str(node.get("id", ""))
+        if not isinstance(title, str) or "lego" not in title.lower() or not lot_id.isdigit() or lot_id in seen:
+            continue
+        condition, box_damage = _condition_from_subtitle(node.get("subtitle"), title)
+        candidates.append(CatawikiLotCandidate(
+            lot_id=lot_id, title=title, url=f"{CATAWIKI_BASE}/de/l/{lot_id}",
+            set_numbers=_extract_set_numbers(title), condition=condition, box_damage=box_damage,
+        ))
+        seen.add(lot_id)
+    return candidates
+
+
+def parse_category_page(html: str, source_url: str) -> list[CatawikiLotCandidate]:
+    """Lose einer Catawiki-Auktionsseite (/a/) oder Kategorieseite (/c/).
+
+    Quelle ist die Losliste in __NEXT_DATA__ ("lots" bzw. "categoryLots.lots"),
+    nie "similarLots" oder Navigationslinks. Gebote stehen dort nicht, die
+    liest get_lot je Los nach.
+    """
+    props = _page_props(html)
+    if props is not None:
+        lots = props.get("lots")
+        if not isinstance(lots, list):
+            lots = (props.get("categoryLots") or {}).get("lots")
+        if isinstance(lots, list):
+            return _candidates_from_list(lots)
+
+    # Fallback ohne __NEXT_DATA__: nur Loslinks, ohne Gebot und Zustand.
+    candidates: list[CatawikiLotCandidate] = []
+    seen: set[str] = set()
+    for anchor in BeautifulSoup(html, "lxml").select("a[href*='/l/']"):
         try:
-            full_url = canonical_lot_url(urljoin(source_url, href))
+            full_url = canonical_lot_url(urljoin(source_url, anchor.get("href") or ""))
         except CatawikiParseError:
             continue
-        if full_url in seen_urls:
-            continue
         title = anchor.get_text(" ", strip=True)
-        if not title or "lego" not in title.lower():
+        if full_url in seen or not title or "lego" not in title.lower():
             continue
-        lot_match = re.search(r"/l/(\d+)", full_url)
-        if not lot_match:
-            continue
-
-        container = anchor.find_parent(["article", "div", "li"]) or anchor
-        text = container.get_text(" ", strip=True)
-        current_bid = _extract_current_bid(text)
-        set_numbers = _extract_set_numbers(title)
-        candidates.append(
-            CatawikiLotCandidate(
-                lot_id=lot_match.group(1),
-                title=title,
-                url=full_url,
-                current_bid=current_bid,
-                set_numbers=set_numbers,
-            )
-        )
-        seen_urls.add(full_url)
-
-    if candidates:
-        return candidates
-
-    payload = _extract_next_json(html)
-    if not payload:
-        return []
-
-    # Walk objects, never regex across serialized neighbouring lots.
-    def walk(node):
-        if isinstance(node, dict):
-            title = node.get("title")
-            lot_id = str(node.get("id", ""))
-            if isinstance(title, str) and "lego" in title.lower() and lot_id.isdigit():
-                full_url = f"{CATAWIKI_BASE}/de/l/{lot_id}"
-                if full_url not in seen_urls:
-                    candidates.append(CatawikiLotCandidate(
-                        lot_id=lot_id, title=title, url=full_url, set_numbers=_extract_set_numbers(title),
-                    ))
-                    seen_urls.add(full_url)
-            for value in node.values():
-                walk(value)
-        elif isinstance(node, list):
-            for value in node:
-                walk(value)
-
-    walk(payload)
+        candidates.append(CatawikiLotCandidate(
+            lot_id=full_url.rsplit("/", 1)[-1], title=title, url=full_url,
+            set_numbers=_extract_set_numbers(title),
+        ))
+        seen.add(full_url)
     return candidates
+
+
+def needs_lot_details(lot: CatawikiLotCandidate) -> bool:
+    """Vorfilter aus der Losliste: Details nur fuer moegliche Einzelsets in OVP laden.
+
+    Jedes Los kostet drei Abrufe mit Pause. Was laut Liste gebraucht, geoeffnet
+    oder ein Sammelposten ist, wird ohnehin nie freigegeben.
+    """
+    from app.domain.identity import is_set_offer
+
+    if not lot.set_numbers or len(lot.set_numbers) != 1:
+        return False
+    if not is_set_offer(lot.title, lot.set_numbers[0]):
+        return False
+    return lot.condition in {"NEW_SEALED", "UNKNOWN"}
 
 
 def lot_review_reasons(lot: CatawikiLotCandidate) -> list[str]:
@@ -184,7 +216,7 @@ def lot_review_reasons(lot: CatawikiLotCandidate) -> list[str]:
     if lot.is_closed:
         reasons.append("Auktion beendet.")
     if not lot.details_verified:
-        reasons.append("Losdetails konnten nicht gelesen werden.")
+        reasons.append("Losdetails nicht geladen oder nicht lesbar.")
     if not lot.set_numbers or len(lot.set_numbers) != 1:
         reasons.append("Set-Zuordnung unklar oder mehrere Sets: Posten einzeln pruefen.")
     elif not is_set_offer(lot.title, lot.set_numbers[0]):
@@ -198,49 +230,94 @@ def lot_review_reasons(lot: CatawikiLotCandidate) -> list[str]:
     return reasons
 
 
+def _eur(value) -> float | None:
+    if isinstance(value, dict):
+        value = value.get("EUR")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
 def parse_lot_page(html: str, url: str) -> CatawikiLotCandidate:
-    """Extract details from a specific Catawiki lot page."""
-    soup = BeautifulSoup(html, "lxml")
-    title_el = soup.select_one("h1")
-    title = title_el.get_text(" ", strip=True) if title_el else ""
-    if not title:
-        raise CatawikiParseError("Catawiki-Losseite nicht lesbar (Titel fehlt)")
-    content = soup.select_one("main") or soup
-    for element in content.select("script, style, nav, footer, aside"):
-        element.decompose()
-    body_text = content.get_text(" ", strip=True)
+    """Los-Details aus __NEXT_DATA__ einer Catawiki-Losseite.
+
+    Gebot, Status und Zustand kommen nur aus den strukturierten Daten des Loses
+    (lotDetailsData, biddingBlockResponse). Versand und Gebuehr stehen nicht im
+    HTML; die holt CatawikiScraper.get_lot nach. Ohne passende __NEXT_DATA__
+    bleibt das Los unverifiziert und damit gesperrt.
+    """
     url = canonical_lot_url(url)
-    lot_match = re.search(r"/l/(\d+)", url)
+    lot_id = url.rsplit("/", 1)[-1]
+    props = _page_props(html) or {}
+    details = props.get("lotDetailsData")
+    if not isinstance(details, dict) or str(details.get("lotId")) != lot_id:
+        title_el = BeautifulSoup(html, "lxml").select_one("h1")
+        title = title_el.get_text(" ", strip=True) if title_el else ""
+        if not title:
+            raise CatawikiParseError("Catawiki-Losseite nicht lesbar (Titel fehlt)")
+        return CatawikiLotCandidate(lot_id=lot_id, title=title, url=url, set_numbers=_extract_set_numbers(title))
 
-    shipping = None
-    shipping_match = re.search(r"(\d[\d.,]*)\s*(?:EUR|€|â‚¬)\s+aus:", body_text, re.IGNORECASE)
-    if shipping_match:
-        shipping = _parse_money(shipping_match.group(1))
-
-    current_bid = _extract_current_bid(body_text)
-    condition, box_damage = classify_listing_condition(None, body_text)
-    closed = bool(re.search(r"\b(?:Auktion beendet|Bieten beendet|Verkauft|Auction closed|Bidding closed)\b",
-                            body_text, re.IGNORECASE))
-    fee_match = re.search(
-        r"(?:Käuferschutzgebühr|Kaeuferschutzgebuehr|Buyer Protection fee)\s*:?\s*"
-        r"(\d+(?:[.,]\d+)?)\s*%\s*\+\s*(?:€\s*)?(\d+(?:[.,]\d+)?)",
-        body_text, re.IGNORECASE,
+    title = details.get("lotTitle") or ""
+    specs = {
+        spec.get("name"): spec.get("value")
+        for spec in details.get("specifications") or []
+        if isinstance(spec, dict)
+    }
+    condition, box_damage = condition_from_catawiki(
+        specs.get("Zustand"), specs.get("Verpackung"), specs.get("Vollständiges Set"), title,
     )
 
+    bidding = props.get("biddingBlockResponse") or {}
+    live_lot = (bidding.get("live") or {}).get("lot") or {}
+    in_eur = (props.get("userData") or {}).get("currencyCode") == "EUR"
+    current_bid = _eur(live_lot.get("bid"))
+    if current_bid is None and in_eur:
+        current_bid = _eur(bidding.get("localizedCurrentBidAmount"))
+    if not current_bid:
+        # Ohne Gebot steht dort 0; zu zahlen ist dann mindestens der Startpreis.
+        current_bid = _eur(bidding.get("localizedStartBidAmount")) if in_eur else None
+    closed = bool(
+        details.get("isClosed") or bidding.get("closed") or bidding.get("sold")
+        or live_lot.get("closeStatus") not in (None, "Open")
+    )
+
+    set_numbers = _extract_set_numbers(title)
+    serial = str(specs.get("Seriennummer") or "").strip()
+    if serial.isdigit() and set_numbers != [serial]:
+        # Titel und Detailangabe widersprechen sich: pruefen statt raten.
+        set_numbers = list(dict.fromkeys([*set_numbers, serial]))
+
     return CatawikiLotCandidate(
-        lot_id=lot_match.group(1) if lot_match else "",
+        lot_id=lot_id,
         title=title,
         url=url,
         current_bid=current_bid,
-        shipping_eur=shipping,
-        set_numbers=_extract_set_numbers(title),
+        set_numbers=set_numbers,
         condition=condition,
         box_damage=box_damage,
         is_closed=closed,
         details_verified=True,
-        buyer_fee_rate=_parse_money(fee_match.group(1)) / 100 if fee_match else None,
-        buyer_fee_fixed=_parse_money(fee_match.group(2)) if fee_match else None,
     )
+
+
+def parse_shipping_rates(payload: dict, destination: str = SHIPPING_DESTINATION) -> float | None:
+    """Versand nach `destination` aus /buyer/api/v2/lots/<id>/shipping (Preise in Cent)."""
+    for rate in (payload.get("shipping") or {}).get("rates") or []:
+        if rate.get("region_code") == destination and rate.get("currency_code") == "EUR":
+            price = rate.get("price")
+            return round(float(price) / 100, 2) if isinstance(price, (int, float)) else None
+    return None
+
+
+def parse_commission(payload: dict) -> tuple[float | None, float | None]:
+    """Kaeuferschutzgebuehr aus /fees/api/v1/buyer/lots/<id>/commission: (Anteil, fix in EUR)."""
+    if payload.get("currency_code") != "EUR":
+        return None, None
+    percentage = (payload.get("variable") or {}).get("percentage")
+    fixed = (payload.get("fixed") or {}).get("amount")
+    rate = float(percentage) / 100 if isinstance(percentage, (int, float)) else None
+    fixed_eur = round(float(fixed) / 100, 2) if isinstance(fixed, (int, float)) else None
+    return rate, fixed_eur
 
 
 class CatawikiScraper(BaseScraper):
@@ -249,14 +326,14 @@ class CatawikiScraper(BaseScraper):
     def __init__(self, cookie_header: str | None = None, user_agent: str | None = None):
         super().__init__()
         self.cookie_header = cookie_header
-        self.user_agent_override = user_agent
+        # BaseScraper._fetch rotiert sonst je Abruf einen Zufalls-UA, darauf antwortet Akamai mit 403.
+        self.user_agent_override = user_agent or CATAWIKI_USER_AGENT
 
     async def _get_client(self):
         client = await super()._get_client()
         if self.cookie_header:
             client.headers["Cookie"] = self.cookie_header
-        if self.user_agent_override:
-            client.headers["User-Agent"] = self.user_agent_override
+        client.headers["User-Agent"] = self.user_agent_override
         client.headers["Referer"] = CATAWIKI_BASE
         return client
 
@@ -273,6 +350,39 @@ class CatawikiScraper(BaseScraper):
             raise CatawikiParseError("Keine Catawiki-Lose lesbar: Seite oder Zugriff pruefen")
         return lots
 
+    async def _fetch_json(self, url: str) -> dict:
+        # Nicht ueber BaseScraper._fetch: dessen looks_undecoded erkennt Text an
+        # HTML-Markern und haelt jede JSON-Antwort fuer Binaerdaten.
+        safe_url = validate_url_for_scraper(url, self.name)
+        await self._delay()
+        client = await self._get_client()
+        logger.info("scraper.fetch_json", scraper=self.name, url=safe_url[:100])
+        response = await client.get(safe_url, headers={"Accept": "application/json"})
+        validate_url_for_scraper(str(response.url), self.name)
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Catawiki-API lieferte kein JSON-Objekt")
+        return payload
+
     async def get_lot(self, lot_url: str) -> CatawikiLotCandidate:
-        html = await self._fetch(lot_url)
-        return parse_lot_page(html, lot_url)
+        lot = parse_lot_page(await self._fetch(lot_url), lot_url)
+        if not lot.details_verified:
+            return lot
+        amount_cents = int(round((lot.current_bid or 0) * 100))
+        try:
+            lot.shipping_eur = parse_shipping_rates(await self._fetch_json(
+                f"{CATAWIKI_BASE}/buyer/api/v2/lots/{lot.lot_id}/shipping"
+                f"?locale=de&currency_code=EUR&amount={amount_cents}"
+            ))
+        except (ValueError, httpx.HTTPError) as exc:
+            # Fehlender Versand sperrt die Freigabe ueber lot_review_reasons.
+            logger.warning("catawiki.shipping_unavailable", lot_id=lot.lot_id, error=type(exc).__name__)
+        try:
+            lot.buyer_fee_rate, lot.buyer_fee_fixed = parse_commission(await self._fetch_json(
+                f"{CATAWIKI_BASE}/fees/api/v1/buyer/lots/{lot.lot_id}/commission?currency_code=EUR"
+            ))
+        except (ValueError, httpx.HTTPError) as exc:
+            # Ohne Gebuehr rechnet evaluate_auction mit dem Plattform-Standard.
+            logger.warning("catawiki.commission_unavailable", lot_id=lot.lot_id, error=type(exc).__name__)
+        return lot

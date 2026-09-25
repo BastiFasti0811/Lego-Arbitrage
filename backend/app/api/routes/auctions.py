@@ -19,7 +19,13 @@ from app.services.auction_scan_state import save_scan
 from app.services.auction_tracking import refresh_watch_item
 from app.services.auction_watch import evaluate_auction
 from app.services.bricklink import BrickLinkScraper
-from app.services.catawiki import CatawikiParseError, CatawikiScraper, canonical_lot_url, lot_review_reasons
+from app.services.catawiki import (
+    CatawikiParseError,
+    CatawikiScraper,
+    canonical_lot_url,
+    lot_review_reasons,
+    needs_lot_details,
+)
 from app.services.whatnot import WhatnotScraper
 
 logger = structlog.get_logger()
@@ -325,7 +331,9 @@ async def _discover_for_category(
             category_url, limit=max_results,
         )
         for lot in lots:
-            if platform == "CATAWIKI" and not direct_lot:
+            # Details nur fuer Lose, die laut Liste ein versiegeltes Einzelset sein koennen;
+            # der Rest geht mit Pruefhinweis durch, ohne drei weitere Abrufe.
+            if platform == "CATAWIKI" and not direct_lot and needs_lot_details(lot):
                 lot = await scraper.get_lot(lot.url)
             evaluated = await _evaluate_lot(category_url=category_url, platform=platform, lot=lot)
             results.append(evaluated)
