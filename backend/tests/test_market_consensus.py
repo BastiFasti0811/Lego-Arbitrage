@@ -53,3 +53,20 @@ def test_price_basis_from_sources_matches_the_persist_rule():
     assert price_basis_from_sources({"EBAY_SOLD": 350.0, "BRICKMERGE": 540.0}) is None
     assert price_basis_from_sources({"BRICKECONOMY": 90.0}) is None
     assert price_basis_from_sources({}) is None
+
+
+def test_deal_checker_marks_brickmerge_only_when_it_shows_the_brickmerge_price():
+    from app.api.routes.analysis import AnalysisResponse
+
+    base = {
+        "set_number": "1", "set_name": "x", "release_year": 2020, "theme": "t", "set_age": 1, "category": "c",
+        "uvp": None, "offer_price": 1.0, "discount_vs_uvp": None, "num_sources": 1, "roi_percent": 0.0,
+        "annualized_roi": 0.0, "net_profit": 0.0, "total_purchase_cost": 1.0, "total_selling_costs": 0.0,
+        "risk_score": 0, "risk_rating": "LOW", "recommendation": "X", "reason": "", "suggestions": [],
+        "opportunity_score": 0.0, "confidence": 1.0, "warnings": [], "analyzed_at": "2026-09-25T00:00:00",
+    }
+    only_bm = AnalysisResponse(**base, market_price=300.0, source_prices={"BRICKMERGE": 300.0})
+    divergent = AnalysisResponse(**base, market_price=400.0, source_prices={"EBAY_SOLD": 500.0, "BRICKMERGE": 300.0})
+    assert only_bm.price_basis == "BRICKMERGE_ONLY"
+    # Verdikt rechnet mit 400 (Konsens), nicht mit BrickMerge: keine gelbe "nur BrickMerge"-Zahl.
+    assert divergent.price_basis is None

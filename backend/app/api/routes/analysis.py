@@ -237,8 +237,16 @@ class AnalysisResponse(BaseModel):
     @computed_field
     @property
     def price_basis(self) -> str | None:
-        """CONSENSUS (gruen), BRICKMERGE_ONLY (gelb) oder None (neutral)."""
-        return price_basis_from_sources(self.source_prices)
+        """CONSENSUS (gruen), BRICKMERGE_ONLY (gelb) oder None (neutral).
+
+        BRICKMERGE_ONLY nur, wenn die angezeigte Zahl auch der BrickMerge-Preis
+        ist. Bei Abweichung rechnet das Deal-Verdikt mit dem gewichteten Konsens,
+        dann waere "nur BrickMerge" an einer anderen Zahl falsch.
+        """
+        basis = price_basis_from_sources(self.source_prices)
+        if basis == "BRICKMERGE_ONLY" and self.market_price != self.source_prices.get("BRICKMERGE"):
+            return None
+        return basis
 
 
 def _detect_source_platform(source_url: str | None, source_platform: str | None) -> str | None:
