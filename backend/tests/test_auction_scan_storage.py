@@ -14,6 +14,12 @@ from app.services import auction_scan_state
 from app.tasks import catawiki_scan
 
 
+@pytest.fixture(autouse=True)
+def _server_scans_catawiki(monkeypatch):
+    # Diese Tests pruefen die Mechanik des Server-Scans am Beispiel Catawiki.
+    # Im Betrieb scannt Catawiki der Heimrechner (HOME_RUNNER_PLATFORMS).
+    monkeypatch.setattr(catawiki_scan, "HOME_RUNNER_PLATFORMS", frozenset())
+
 def test_scan_migration_matches_model_and_can_rollback():
     path = Path(__file__).resolve().parents[1] / "alembic/versions/a91c07e54b22_auction_scan_states.py"
     spec = importlib.util.spec_from_file_location("auction_migration", path)

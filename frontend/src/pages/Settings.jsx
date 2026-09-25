@@ -18,9 +18,11 @@ const FIELD_CONFIG = [
     category: "catawiki",
     title: "Catawiki Scan",
     description:
-      "Optional fuer Discovery-Scans. Cookie und User Agent helfen, wenn Catawiki anonyme Requests einschraenkt.",
+      "Der Scan laeuft ueber den Heimrechner (Catawiki sperrt den Server). Das Token muss dort in " +
+      "home-scan.env identisch stehen. Cookie und User Agent helfen, wenn Catawiki anonyme Requests einschraenkt.",
     enabled: true,
     fields: [
+      { key: "remote_scan_token", label: "Heimrechner-Token (mind. 24 Zeichen)", type: "password" },
       { key: "catawiki_cookie_header", label: "Cookie Header", type: "password" },
       { key: "catawiki_user_agent", label: "User Agent", type: "text" },
       { key: "catawiki_scan_urls", label: "Kategorie-URLs", type: "textarea", rows: 5 },
