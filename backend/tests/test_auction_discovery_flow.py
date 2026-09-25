@@ -222,3 +222,21 @@ async def test_collect_scan_returns_partial_results_instead_of_raising(monkeypat
     results, errors = await auctions._collect_scan("CATAWIKI", [URL], None, None, 20)
     assert results == [found]
     assert errors and "Zeitlimit" in errors[0]
+
+
+async def test_unexpected_parser_error_keeps_partial_results(monkeypatch):
+    # Review S4: Strukturdrift bei Catawiki darf den Scan nicht ohne save_scan beenden.
+    monkeypatch.setattr(auctions, "validate_marketplace_url", lambda *args: None)
+    found = _result(URL)
+
+    async def partial(**kwargs):
+        kwargs["collected"][URL] = found
+        raise AttributeError("'list' object has no attribute 'get'")
+
+    monkeypatch.setattr(auctions, "_discover_for_category", partial)
+    save = AsyncMock()
+    monkeypatch.setattr(auctions, "save_scan", save)
+    results, errors = await auctions._collect_scan("CATAWIKI", [URL], None, None, 20)
+    assert results == [found]
+    assert "AttributeError" in errors[0]
+    save.assert_awaited_once()

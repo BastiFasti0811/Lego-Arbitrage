@@ -132,6 +132,9 @@ export default function DealChecker() {
           setParseMessage("Set-Nummer nicht erkannt -- bitte manuell eingeben");
         }
       }
+      if (data.is_closed) {
+        setParseMessage((message) => `${message} -- Achtung: Auktion ist bereits beendet`);
+      }
       if (data.condition) setCondition(data.condition);
       if (data.url) setSourceUrl(data.url);
       if (data.platform) setSourcePlatform(data.platform);

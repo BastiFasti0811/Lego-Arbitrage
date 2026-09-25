@@ -26,6 +26,8 @@ CATAWIKI_BASE = "https://www.catawiki.com"
 # Akamai vor catawiki.com beantwortet Los-Seiten mit 403, wenn der User-Agent
 # zufaellig rotiert (fake-useragent); ein fester aktueller Chrome kommt durch
 # (geprueft am 25.09.2026). Die JSON-Endpunkte waren in beiden Faellen offen.
+# Der Wert altert mit jedem Chrome-Release; ueberschreibbar per Einstellung
+# `catawiki_user_agent`, falls Akamai ihn irgendwann nicht mehr durchlaesst.
 CATAWIKI_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/154.0.0.0 Safari/537.36"
@@ -94,14 +96,32 @@ def _page_props(html: str) -> dict | None:
     return props if isinstance(props, dict) else None
 
 
-_UNOPENED = re.compile(r"unge(?:ö|oe)ffnet", re.IGNORECASE)
-_OPENED = re.compile(r"(?<!un)ge(?:ö|oe)ffnet", re.IGNORECASE)
-_SEALED = re.compile(r"versiegelt|sealed", re.IGNORECASE)
-_DAMAGED = re.compile(r"(?<!un)besch(?:ä|ae)digt|damaged", re.IGNORECASE)
-_SEAL_BROKEN = re.compile(
-    r"(?:Dichtung|Siegel)\w*\s+(?:defekt|besch(?:ä|ae)digt|gebrochen|fehl)", re.IGNORECASE,
+# "Verpackung" ist Freitext des Verkaeufers. Deshalb Wortanfaenge statt
+# Teilwoerter, und Verneinungen werden vor jeder positiven Pruefung gesperrt:
+# "nicht versiegelt", "Unversiegelte OVP", "unsealed" waren sonst NEW_SEALED.
+_NOT_A_WORD_BEFORE = r"(?<![a-zäöüß])"
+_NOT_SEALED = re.compile(
+    r"\b(?:nicht|kein\w*|ohne)\s+(?:\w+\s+)?(?:versiegel|sealed)|unversiegel|\bun-?sealed|\bnot\s+sealed",
+    re.IGNORECASE,
 )
-_NO_MINIFIGS = re.compile(r"\b(?:no|keine?|ohne)\s+minifig", re.IGNORECASE)
+_UNOPENED = re.compile(_NOT_A_WORD_BEFORE + r"unge(?:ö|oe)ffnet", re.IGNORECASE)
+_OPENED = re.compile(r"(?<!un)ge(?:ö|oe)ffnet", re.IGNORECASE)
+_SEALED = re.compile(_NOT_A_WORD_BEFORE + r"(?:versiegelt|sealed)", re.IGNORECASE)
+_SEAL_BROKEN = re.compile(
+    r"(?:Dichtung|Siegel|Versiegelung)\w*\s+(?:\w+\s+)?"
+    r"(?:defekt|besch(?:ä|ae)digt|gebrochen|fehl\w*|angerissen|aufgerissen|offen|entfernt|ge(?:ö|oe)ffnet)"
+    r"|(?:angerissen|aufgerissen|gebrochen|defekt|besch(?:ä|ae)digt)\w*\s+(?:Dichtung|Siegel|Versiegelung)",
+    re.IGNORECASE,
+)
+_DAMAGED = re.compile(
+    r"(?<!un)besch(?:ä|ae)digt|besch(?:ä|ae)digung|dellen?\b|eingedr(?:ü|ue)ckt|knick|\briss|\bdent|crushed|(?<!un)damaged",
+    re.IGNORECASE,
+)
+# Verneinte Schadensangaben ("ohne Beschaedigungen", "keine Dellen") vor der
+# Schadenssuche entfernen; "unbeschaedigt" faengt _DAMAGED selbst ab.
+_NEGATED_PHRASE = re.compile(r"\b(?:ohne|keine?[nrs]?)\s+\w+", re.IGNORECASE)
+_NO_MINIFIGS = re.compile(r"\b(?:no|keine?|ohne|without)\s+(?:mini-?)?fig", re.IGNORECASE)
+_NEW_OR_UNUSED = re.compile(r"(?:neu|unbenutzt)(?![a-zäöüß])", re.IGNORECASE)
 
 
 def condition_from_catawiki(
@@ -126,10 +146,11 @@ def condition_from_catawiki(
         return "USED_INCOMPLETE", False
     if zustand.startswith("gebraucht"):
         return "USED_COMPLETE", False
-    if not (zustand.startswith("unbenutzt") or zustand.startswith("neu")):
+    # "Neuwertig" ist meist gebraucht: nur "Neu"/"Unbenutzt" als ganzes Wort.
+    if not _NEW_OR_UNUSED.match(zustand):
         return "UNKNOWN", False
-    damaged = bool(_DAMAGED.search(verpackung))
-    if _SEAL_BROKEN.search(verpackung) or _OPENED.search(verpackung):
+    damaged = bool(_DAMAGED.search(_NEGATED_PHRASE.sub(" ", verpackung)))
+    if _NOT_SEALED.search(verpackung) or _SEAL_BROKEN.search(verpackung) or _OPENED.search(verpackung):
         return "NEW_OPEN_BOX", damaged
     if _SEALED.search(verpackung) or _UNOPENED.search(verpackung):
         return "NEW_SEALED", damaged
@@ -230,12 +251,19 @@ def lot_review_reasons(lot: CatawikiLotCandidate) -> list[str]:
     return reasons
 
 
-def _eur(value) -> float | None:
-    if isinstance(value, dict):
-        value = value.get("EUR")
+def _number(value) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
+
+
+def _eur_amount(value) -> float | None:
+    """Nur die ausdruecklich waehrungsbezogene Form {"EUR": ...}, nie ein nackter Skalar."""
+    return _number(value.get("EUR")) if isinstance(value, dict) else None
+
+
+def _dict(value) -> dict:
+    return value if isinstance(value, dict) else {}
 
 
 def parse_lot_page(html: str, url: str) -> CatawikiLotCandidate:
@@ -250,7 +278,13 @@ def parse_lot_page(html: str, url: str) -> CatawikiLotCandidate:
     lot_id = url.rsplit("/", 1)[-1]
     props = _page_props(html) or {}
     details = props.get("lotDetailsData")
-    if not isinstance(details, dict) or str(details.get("lotId")) != lot_id:
+    specs_raw = details.get("specifications") if isinstance(details, dict) else None
+    if (
+        not isinstance(details, dict)
+        or str(details.get("lotId")) != lot_id
+        or not isinstance(specs_raw, (list, type(None)))
+    ):
+        # Kein oder fremdes Los, oder die Datenform hat sich geaendert: unverifiziert.
         title_el = BeautifulSoup(html, "lxml").select_one("h1")
         title = title_el.get_text(" ", strip=True) if title_el else ""
         if not title:
@@ -260,22 +294,22 @@ def parse_lot_page(html: str, url: str) -> CatawikiLotCandidate:
     title = details.get("lotTitle") or ""
     specs = {
         spec.get("name"): spec.get("value")
-        for spec in details.get("specifications") or []
-        if isinstance(spec, dict)
+        for spec in specs_raw or []
+        if isinstance(spec, dict) and isinstance(spec.get("value"), (str, type(None)))
     }
     condition, box_damage = condition_from_catawiki(
         specs.get("Zustand"), specs.get("Verpackung"), specs.get("Vollständiges Set"), title,
     )
 
-    bidding = props.get("biddingBlockResponse") or {}
-    live_lot = (bidding.get("live") or {}).get("lot") or {}
-    in_eur = (props.get("userData") or {}).get("currencyCode") == "EUR"
-    current_bid = _eur(live_lot.get("bid"))
+    bidding = _dict(props.get("biddingBlockResponse"))
+    live_lot = _dict(_dict(bidding.get("live")).get("lot"))
+    in_eur = _dict(props.get("userData")).get("currencyCode") == "EUR"
+    current_bid = _eur_amount(live_lot.get("bid"))
     if current_bid is None and in_eur:
-        current_bid = _eur(bidding.get("localizedCurrentBidAmount"))
+        current_bid = _number(bidding.get("localizedCurrentBidAmount"))
     if not current_bid:
         # Ohne Gebot steht dort 0; zu zahlen ist dann mindestens der Startpreis.
-        current_bid = _eur(bidding.get("localizedStartBidAmount")) if in_eur else None
+        current_bid = _number(bidding.get("localizedStartBidAmount")) if in_eur else None
     closed = bool(
         details.get("isClosed") or bidding.get("closed") or bidding.get("sold")
         or live_lot.get("closeStatus") not in (None, "Open")
@@ -301,22 +335,29 @@ def parse_lot_page(html: str, url: str) -> CatawikiLotCandidate:
 
 
 def parse_shipping_rates(payload: dict, destination: str = SHIPPING_DESTINATION) -> float | None:
-    """Versand nach `destination` aus /buyer/api/v2/lots/<id>/shipping (Preise in Cent)."""
-    for rate in (payload.get("shipping") or {}).get("rates") or []:
-        if rate.get("region_code") == destination and rate.get("currency_code") == "EUR":
-            price = rate.get("price")
-            return round(float(price) / 100, 2) if isinstance(price, (int, float)) else None
-    return None
+    """Versand nach `destination` aus /buyer/api/v2/lots/<id>/shipping (Preise in Cent).
+
+    Mehrere Tarife nach DE: der guenstigste, so wie ihn Catawiki anzeigt.
+    """
+    rates = _dict(_dict(payload).get("shipping")).get("rates")
+    prices = [
+        _number(rate.get("price"))
+        for rate in (rates if isinstance(rates, list) else [])
+        if isinstance(rate, dict) and rate.get("region_code") == destination and rate.get("currency_code") == "EUR"
+    ]
+    prices = [price for price in prices if price is not None]
+    return round(min(prices) / 100, 2) if prices else None
 
 
 def parse_commission(payload: dict) -> tuple[float | None, float | None]:
     """Kaeuferschutzgebuehr aus /fees/api/v1/buyer/lots/<id>/commission: (Anteil, fix in EUR)."""
+    payload = _dict(payload)
     if payload.get("currency_code") != "EUR":
         return None, None
-    percentage = (payload.get("variable") or {}).get("percentage")
-    fixed = (payload.get("fixed") or {}).get("amount")
-    rate = float(percentage) / 100 if isinstance(percentage, (int, float)) else None
-    fixed_eur = round(float(fixed) / 100, 2) if isinstance(fixed, (int, float)) else None
+    percentage = _number(_dict(payload.get("variable")).get("percentage"))
+    fixed = _number(_dict(payload.get("fixed")).get("amount"))
+    rate = percentage / 100 if percentage is not None else None
+    fixed_eur = round(fixed / 100, 2) if fixed is not None else None
     return rate, fixed_eur
 
 
@@ -375,14 +416,14 @@ class CatawikiScraper(BaseScraper):
                 f"{CATAWIKI_BASE}/buyer/api/v2/lots/{lot.lot_id}/shipping"
                 f"?locale=de&currency_code=EUR&amount={amount_cents}"
             ))
-        except (ValueError, httpx.HTTPError) as exc:
+        except (ValueError, TypeError, AttributeError, httpx.HTTPError) as exc:
             # Fehlender Versand sperrt die Freigabe ueber lot_review_reasons.
             logger.warning("catawiki.shipping_unavailable", lot_id=lot.lot_id, error=type(exc).__name__)
         try:
             lot.buyer_fee_rate, lot.buyer_fee_fixed = parse_commission(await self._fetch_json(
                 f"{CATAWIKI_BASE}/fees/api/v1/buyer/lots/{lot.lot_id}/commission?currency_code=EUR"
             ))
-        except (ValueError, httpx.HTTPError) as exc:
+        except (ValueError, TypeError, AttributeError, httpx.HTTPError) as exc:
             # Ohne Gebuehr rechnet evaluate_auction mit dem Plattform-Standard.
             logger.warning("catawiki.commission_unavailable", lot_id=lot.lot_id, error=type(exc).__name__)
         return lot

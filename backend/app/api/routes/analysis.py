@@ -73,6 +73,8 @@ class ParseUrlResponse(BaseModel):
     platform: str = "UNKNOWN"
     url: str = ""
     seller_url: str | None = None
+    # Beendete Auktion (bisher nur Catawiki): Gebot ist dann kein aktuelles mehr.
+    is_closed: bool = False
 
 
 class SellerCheckRequest(BaseModel):
@@ -704,6 +706,7 @@ async def parse_listing_url(request: ParseUrlRequest):
     # unterstellen. Sonst haette der Default jede Nicht-Erkennung auf 1.0
     # gehoben und die Titel-Lesung unten wirkungslos gemacht.
     condition = "UNKNOWN"
+    is_closed = False
 
     if platform == "KLEINANZEIGEN":
         # Extract title
@@ -749,6 +752,7 @@ async def parse_listing_url(request: ParseUrlRequest):
         price = lot.current_bid
         shipping = lot.shipping_eur
         condition = lot.condition
+        is_closed = lot.is_closed
     elif platform == "WHATNOT":
         lot = parse_whatnot_listing_page(html, url)
         title = lot.title
@@ -809,6 +813,7 @@ async def parse_listing_url(request: ParseUrlRequest):
         condition=condition,
         platform=platform,
         url=url,
+        is_closed=is_closed,
     )
 
 

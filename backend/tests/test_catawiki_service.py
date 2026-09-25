@@ -190,6 +190,23 @@ def test_scraper_sends_a_fixed_browser_user_agent():
      ("USED_INCOMPLETE", False)),
     ("Gebraucht", "Mit Original-Kasten", "Ja", "", ("USED_COMPLETE", False)),
     (None, None, None, "", ("UNKNOWN", False)),
+    # Review B1: Verneinungen und Teilwoerter duerfen nie NEW_SEALED ergeben.
+    ("Unbenutzt", "nicht versiegelt", "Ja", "", ("NEW_OPEN_BOX", False)),
+    ("Unbenutzt", "Unversiegelte Originalverpackung", "Ja", "", ("NEW_OPEN_BOX", False)),
+    ("Unbenutzt", "unsealed box", "Ja", "", ("NEW_OPEN_BOX", False)),
+    ("Unbenutzt", "Siegel angerissen, versiegelt", "Ja", "", ("NEW_OPEN_BOX", False)),
+    ("Unbenutzt", "ohne Versiegelung", "Ja", "", ("NEW_OPEN_BOX", False)),
+    # Review S1: weitere Schadensworte, Verneinungen davon nicht.
+    ("Unbenutzt", "mit Beschädigungen, versiegelt", "Ja", "", ("NEW_SEALED", True)),
+    ("Unbenutzt", "versiegelt, Karton mit Dellen", "Ja", "", ("NEW_SEALED", True)),
+    ("Unbenutzt", "versiegelt, ohne Beschädigungen", "Ja", "", ("NEW_SEALED", False)),
+    ("Unbenutzt", "versiegelt, keine Dellen", "Ja", "", ("NEW_SEALED", False)),
+    # Review S2: "Neuwertig" ist nicht neu.
+    ("Neuwertig", "versiegelt", "Ja", "", ("UNKNOWN", False)),
+    ("Neu", "versiegelt", "Ja", "", ("NEW_SEALED", False)),
+    # Review S3: weitere Schreibweisen fehlender Figuren.
+    ("Unbenutzt", "versiegelt", None, "LEGO 10352 without minifigures", ("USED_INCOMPLETE", False)),
+    ("Unbenutzt", "versiegelt", None, "Set ohne Figuren", ("USED_INCOMPLETE", False)),
 ])
 def test_condition_from_catawiki_specifications(zustand, verpackung, complete, title, expected):
     assert condition_from_catawiki(zustand, verpackung, complete, title) == expected
@@ -253,3 +270,41 @@ async def test_unrecognized_page_is_failure_not_empty_success(monkeypatch):
     monkeypatch.setattr(scraper, "_fetch", fetch)
     with pytest.raises(CatawikiParseError):
         await scraper.scan_category("https://www.catawiki.com/de/c/708-lego")
+
+
+# --- Review S4/S5/N2: Strukturdrift und Waehrung --------------------------------
+
+
+def _lot_html(**props) -> str:
+    base = {"lotDetailsData": {"lotId": 102824557, "lotTitle": "LEGO 10282 Adidas", "specifications": []}}
+    base.update(props)
+    return f'<script id="__NEXT_DATA__">{json.dumps({"props": {"pageProps": base}})}</script>'
+
+
+def test_changed_data_shape_is_unverified_not_a_crash():
+    html = _lot_html(lotDetailsData={"lotId": 102824557, "lotTitle": "LEGO 10282", "specifications": {"x": 1}})
+    with pytest.raises(CatawikiParseError):
+        # Keine h1 und keine brauchbaren Daten: lesbar ist davon nichts.
+        parse_lot_page(html, "https://www.catawiki.com/de/l/102824557")
+    lot = parse_lot_page(_lot_html(biddingBlockResponse=["kaputt"], userData="x"),
+                         "https://www.catawiki.com/de/l/102824557")
+    assert lot.details_verified and lot.current_bid is None
+
+
+def test_live_bid_must_name_its_currency():
+    # Ein nackter Skalar koennte Nutzerwaehrung sein: nicht als EUR lesen.
+    lot = parse_lot_page(_lot_html(biddingBlockResponse={"live": {"lot": {"bid": 150}}}),
+                         "https://www.catawiki.com/de/l/102824557")
+    assert lot.current_bid is None
+
+
+def test_shipping_takes_cheapest_german_rate_and_survives_odd_shapes():
+    payload = {"shipping": {"rates": [
+        {"region_code": "de", "price": 2500.0, "currency_code": "EUR"},
+        {"region_code": "de", "price": 1300.0, "currency_code": "EUR"},
+        "kaputt",
+    ]}}
+    assert parse_shipping_rates(payload) == 13.0
+    assert parse_shipping_rates({"shipping": ["x"]}) is None
+    assert parse_shipping_rates(["x"]) is None
+    assert parse_commission(["x"]) == (None, None)

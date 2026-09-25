@@ -392,6 +392,13 @@ async def _collect_scan(platform, category_urls, cookie_header, user_agent, max_
                     errors.append(f"{platform}: Quelle gesperrt oder Seite nicht lesbar ({type(exc).__name__}).")
                     # Stop on source failure instead of multiplying requests against a block.
                     break
+                except (SoftTimeLimitExceeded, TimeoutError):
+                    # Worker-Limit und Scan-Zeitlimit haben eigene Behandlung (aussen).
+                    raise
+                except Exception as exc:  # noqa: BLE001 -- Teilergebnis muss gespeichert werden
+                    logger.error("auction.scan_unexpected_error", platform=platform, error=repr(exc)[:300])
+                    errors.append(f"{platform}: Unerwarteter Fehler beim Lesen ({type(exc).__name__}).")
+                    break
     except TimeoutError:
         errors.append(f"{platform}: Zeitlimit erreicht. Weniger Lose oder URLs pro Scan einstellen.")
     results = sorted(discovered.values(), key=lambda item: (item.can_bid_now, item.expected_profit_current or 0),
