@@ -1237,7 +1237,11 @@ export default function DealChecker() {
                 </div>
               ))}
               <div className="flex justify-between text-sm pt-2 border-t border-border/50">
-                <span className="text-text-secondary font-medium">Markt-Konsens ({result.num_sources} Quellen)</span>
+                <span className="text-text-secondary font-medium">
+                  {result.price_basis === "BRICKMERGE_ONLY"
+                    ? "Marktpreis (nur BrickMerge)"
+                    : `Markt-Konsens (${result.num_sources} ${result.num_sources === 1 ? "Quelle" : "Quellen"})`}
+                </span>
                 <span className="text-lego-yellow font-[family-name:var(--font-mono)] font-bold">
                   <PriceBasis basis={result.price_basis}>{formatMoney(result.market_price)}</PriceBasis>
                 </span>

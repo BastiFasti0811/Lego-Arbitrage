@@ -532,6 +532,8 @@ async def test_the_loop_writes_exactly_one_row_per_item_with_the_reason_the_inpu
     # Ohne Kaufpreis kein erfundener Gewinn -- frueher TypeError bei buy_price None.
     assert items[5].unrealized_profit is None
     assert items[0].market_price_basis == "CONSENSUS"
+    # Haltedauer seit 2025 erreicht -> Signal, auf reinem BrickMerge-Preis gekennzeichnet.
+    assert items[5].sell_signal_active and items[5].sell_signal_reason.endswith("(nur BrickMerge)")
 
     assert result == {"run_id": 99, "total": 6, "valued": 2, "skipped": 3, "failed": 1}
     assert run.status == ValuationRunStatus.SUCCESS.value

@@ -307,6 +307,8 @@ async def _update_valuations_async(run_id: int | None = None) -> dict:
                     if signals:
                         item.sell_signal_active = True
                         item.sell_signal_reason = " | ".join(signals)
+                        if basis == PriceBasis.BRICKMERGE_ONLY:
+                            item.sell_signal_reason += " (nur BrickMerge)"
                     else:
                         item.sell_signal_active = False
                         item.sell_signal_reason = None

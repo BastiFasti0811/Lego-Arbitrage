@@ -68,8 +68,8 @@ def test_solve_max_bid_when_fee_also_applies_to_shipping():
     ("NEW_SEALED", None, ["EBAY_SOLD", "BRICKMERGE"], False),
     ("NEW_SEALED", 13, ["EBAY_ACTIVE"], False),
     ("NEW_SEALED", 13, [], False),
-    # Nur BrickMerge: bewertet, aber als BRICKMERGE_ONLY markiert (Entscheidung 25.09.2026).
-    ("NEW_SEALED", 13, ["BRICKMERGE"], True),
+    # Nur BrickMerge: Limit wird berechnet (gelb), aber nie automatisch freigegeben.
+    ("NEW_SEALED", 13, ["BRICKMERGE"], False),
     # Einzelquelle ohne BrickMerge bleibt gesperrt.
     ("NEW_SEALED", 13, ["BRICKECONOMY"], False),
 ])
@@ -116,4 +116,18 @@ async def test_brickmerge_fallback_is_marked_and_used_for_the_ceiling(monkeypatc
     assert (result.price_basis, result.market_price_used) == ("BRICKMERGE_ONLY", 180)
     assert result.bid_result.expected_sale_price == 180
     assert result.warnings[0].startswith("Nur BrickMerge-Bestpreis")
-    assert result.can_bid_now
+    # Gerechnet ja, freigegeben nein: kein "Jetzt bieten" ohne Gegenprobe.
+    assert not result.can_bid_now and result.bid_status == "NEEDS_REVIEW"
+
+
+async def test_brickmerge_above_resale_is_never_the_fallback(monkeypatch):
+    # Ausgelaufenes Set: Haendlerpreis ueber den eBay-Verkaeufen (Review #32, Blocker 2).
+    async def context(**kwargs):
+        prices = [ScrapedPrice(source="EBAY_SOLD", price_eur=350), ScrapedPrice(source="BRICKMERGE", price_eur=540)]
+        return prices, "LEGO", "Harry Potter", 2023, 430, "RETIRED"
+    monkeypatch.setattr(auction_watch, "gather_market_context", context)
+    result = await auction_watch.evaluate_auction(
+        set_number="76417", current_bid=10, purchase_shipping=13, condition="NEW_SEALED",
+    )
+    assert result.price_basis is None
+    assert result.bid_status == "NEEDS_REVIEW" and not result.can_bid_now

@@ -461,7 +461,9 @@ async def evaluate_auction(
     if price_basis is None or (price_basis == PriceBasis.CONSENSUS and not consensus.is_reliable):
         review_reasons.append("Kein belastbarer Marktpreis: weder Konsens aus zwei Quellen noch BrickMerge.")
     elif price_basis == PriceBasis.BRICKMERGE_ONLY:
-        warnings.insert(0, "Nur BrickMerge-Bestpreis: kein Konsens aus mehreren Quellen.")
+        # Maximalgebot wird angezeigt (gelb), aber nie automatisch freigegeben:
+        # keine "Jetzt bieten"-Meldung auf einem Haendlerpreis ohne Gegenprobe.
+        review_reasons.append("Nur BrickMerge-Bestpreis, kein Konsens: Marktwert vor einem Gebot pruefen.")
     if purchase_shipping is None:
         review_reasons.append("Versandkosten fehlen; Rechnung ist nur eine Schaetzung.")
     if normalize_condition(condition) == "UNKNOWN":

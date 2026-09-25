@@ -37,6 +37,8 @@ def test_resolve_market_price_prefers_consensus_then_brickmerge():
     assert resolve_market_price(consensus(("EBAY_SOLD", 200.0), ("BRICKMERGE", 120.0))) == (
         120.0, PriceBasis.BRICKMERGE_ONLY,
     )
+    # Abweichung, aber BrickMerge liegt hoeher (EOL-Haendlerpreis): kein Rueckfall.
+    assert resolve_market_price(consensus(("EBAY_SOLD", 350.0), ("BRICKMERGE", 540.0))) is None
     # Einzelquelle ohne BrickMerge: kein Preis.
     assert resolve_market_price(consensus(("BRICKECONOMY", 90.0))) is None
 
@@ -46,6 +48,8 @@ def test_price_basis_from_sources_matches_the_persist_rule():
 
     assert price_basis_from_sources({"EBAY_SOLD": 100.0, "BRICKMERGE": 105.0}) == "CONSENSUS"
     assert price_basis_from_sources({"BRICKMERGE": 114.99}) == "BRICKMERGE_ONLY"
-    assert price_basis_from_sources({"EBAY_SOLD": 200.0, "BRICKMERGE": 120.0}) is None
+    # Abweichung >30 %: BrickMerge nur als niedrigster Wert.
+    assert price_basis_from_sources({"EBAY_SOLD": 200.0, "BRICKMERGE": 120.0}) == "BRICKMERGE_ONLY"
+    assert price_basis_from_sources({"EBAY_SOLD": 350.0, "BRICKMERGE": 540.0}) is None
     assert price_basis_from_sources({"BRICKECONOMY": 90.0}) is None
     assert price_basis_from_sources({}) is None
