@@ -180,36 +180,47 @@ def test_scraper_sends_a_fixed_browser_user_agent():
 
 
 @pytest.mark.parametrize(("zustand", "verpackung", "complete", "title", "expected"), [
+    # Katalogtexte (Losliste, Heimrechner) wie auf den echten Losen.
     ("Unbenutzt", "In unbeschädigter und versiegelter Originalverpackung", "Ja", "", ("NEW_SEALED", False)),
     ("Unbenutzt", "In beschädigter ungeöffneter Originalverpackung", "Ja", "", ("NEW_SEALED", True)),
     ("Unbenutzt", "ungeöffnete Schachtel Dichtungen defekt", "Ja", "", ("NEW_OPEN_BOX", False)),
     ("Unbenutzt", "In unbeschädigter geöffneter Originalverpackung", "Ja", "", ("NEW_OPEN_BOX", False)),
     ("Unbenutzt", "in geschlossener Box", "Ja", "", ("UNKNOWN", False)),
+    ("Unbenutzt", "Ohne Originalverpackung", "Ja", "", ("UNKNOWN", False)),
     ("Unbenutzt", "In unbeschädigter und versiegelter Originalverpackung", "Nein", "", ("USED_INCOMPLETE", False)),
     ("Unbenutzt", "In unbeschädigter und versiegelter Originalverpackung", None, "Set - NO MINIFIGURES",
      ("USED_INCOMPLETE", False)),
+    ("Unbenutzt", "In unbeschädigter und versiegelter Originalverpackung", None, "LEGO 10352 without minifigures",
+     ("USED_INCOMPLETE", False)),
+    ("Unbenutzt", "In unbeschädigter und versiegelter Originalverpackung", None, "Set ohne Figuren",
+     ("USED_INCOMPLETE", False)),
     ("Gebraucht", "Mit Original-Kasten", "Ja", "", ("USED_COMPLETE", False)),
+    ("Neuwertig", "In unbeschädigter und versiegelter Originalverpackung", "Ja", "", ("USED_COMPLETE", False)),
     (None, None, None, "", ("UNKNOWN", False)),
-    # Review B1: Verneinungen und Teilwoerter duerfen nie NEW_SEALED ergeben.
-    ("Unbenutzt", "nicht versiegelt", "Ja", "", ("NEW_OPEN_BOX", False)),
-    ("Unbenutzt", "Unversiegelte Originalverpackung", "Ja", "", ("NEW_OPEN_BOX", False)),
-    ("Unbenutzt", "unsealed box", "Ja", "", ("NEW_OPEN_BOX", False)),
-    ("Unbenutzt", "Siegel angerissen, versiegelt", "Ja", "", ("NEW_OPEN_BOX", False)),
-    ("Unbenutzt", "ohne Versiegelung", "Ja", "", ("NEW_OPEN_BOX", False)),
-    # Review S1: weitere Schadensworte, Verneinungen davon nicht.
-    ("Unbenutzt", "mit Beschädigungen, versiegelt", "Ja", "", ("NEW_SEALED", True)),
-    ("Unbenutzt", "versiegelt, Karton mit Dellen", "Ja", "", ("NEW_SEALED", True)),
-    ("Unbenutzt", "versiegelt, ohne Beschädigungen", "Ja", "", ("NEW_SEALED", False)),
-    ("Unbenutzt", "versiegelt, keine Dellen", "Ja", "", ("NEW_SEALED", False)),
-    # Review S2: "Neuwertig" ist nicht neu.
-    ("Neuwertig", "versiegelt", "Ja", "", ("UNKNOWN", False)),
-    ("Neu", "versiegelt", "Ja", "", ("NEW_SEALED", False)),
-    # Review S3: weitere Schreibweisen fehlender Figuren.
-    ("Unbenutzt", "versiegelt", None, "LEGO 10352 without minifigures", ("USED_INCOMPLETE", False)),
-    ("Unbenutzt", "versiegelt", None, "Set ohne Figuren", ("USED_INCOMPLETE", False)),
+    # Freitext ausserhalb des Katalogs stuft nie hoch (Review B1 und Delta fc7bf64).
+    ("Unbenutzt", "versiegelt", "Ja", "", ("UNKNOWN", False)),
+    ("Unbenutzt", "nicht versiegelt", "Ja", "", ("UNKNOWN", False)),
+    ("Unbenutzt", "nicht mehr ganz versiegelt", "Ja", "", ("UNKNOWN", False)),
+    ("Unbenutzt", "Unversiegelte Originalverpackung", "Ja", "", ("UNKNOWN", False)),
+    ("Unbenutzt", "Re-sealed", "Ja", "", ("UNKNOWN", False)),
+    ("Unbenutzt", "OVP versiegelt (Siegel leicht eingerissen)", "Ja", "", ("UNKNOWN", False)),
+    ("Unbenutzt", "sealed, seal torn", "Ja", "", ("UNKNOWN", False)),
+    ("Neu mit Mängeln", "In unbeschädigter und versiegelter Originalverpackung", "Ja", "", ("UNKNOWN", False)),
 ])
 def test_condition_from_catawiki_specifications(zustand, verpackung, complete, title, expected):
     assert condition_from_catawiki(zustand, verpackung, complete, title) == expected
+
+
+def test_catalog_ids_win_over_text():
+    # Mit ID (Losseite) zaehlt die ID, auch wenn der Text anders aussieht.
+    assert condition_from_catawiki("Unbenutzt", "irgendwas", "Ja", "", zustand_id=165212, verpackung_id=80575) == (
+        "NEW_SEALED", False,
+    )
+    assert condition_from_catawiki("Unbenutzt", "In unbeschädigter und versiegelter Originalverpackung", "Ja", "",
+                                   zustand_id=165212, verpackung_id=92701) == ("UNKNOWN", False)
+    assert condition_from_catawiki("Unbenutzt", "", "Ja", "", zustand_id=99999, verpackung_id=80575) == (
+        "UNKNOWN", False,
+    )
 
 
 # --- Auktions- und Kategorieseiten --------------------------------------------
