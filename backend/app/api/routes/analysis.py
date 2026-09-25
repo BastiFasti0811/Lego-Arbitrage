@@ -28,8 +28,6 @@ from app.services.deal_analysis import (
     ScraperMarketContextProvider,
     SqlAlchemyAnalysisRepository,
 )
-from app.services.whatnot import WhatnotScraper
-from app.services.whatnot import parse_listing_page as parse_whatnot_listing_page
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -637,7 +635,6 @@ async def parse_listing_url(request: ParseUrlRequest):
     - ebay.de listing URLs
     - amazon.de product URLs
     - catawiki.com lot URLs
-    - whatnot.com listing URLs
     - bricklink.com item URLs
     """
     url = request.url.strip()
@@ -652,8 +649,6 @@ async def parse_listing_url(request: ParseUrlRequest):
         platform = "AMAZON"
     elif "catawiki.com" in url:
         platform = "CATAWIKI"
-    elif "whatnot.com" in url:
-        platform = "WHATNOT"
     elif "bricklink.com" in url:
         platform = "BRICKLINK"
 
@@ -698,9 +693,6 @@ async def parse_listing_url(request: ParseUrlRequest):
                 # (CatawikiParseError) faellt unten in den URL-Fallback.
                 catawiki_lot = await scraper.get_lot(url)
                 html = ""
-        elif platform == "WHATNOT":
-            async with WhatnotScraper() as scraper:
-                html = await scraper._fetch(url)
         elif platform == "BRICKLINK":
             async with BrickLinkScraper() as scraper:
                 html = await scraper._fetch(url)
@@ -771,11 +763,6 @@ async def parse_listing_url(request: ParseUrlRequest):
         shipping = lot.shipping_eur
         condition = lot.condition
         is_closed = lot.is_closed
-    elif platform == "WHATNOT":
-        lot = parse_whatnot_listing_page(html, url)
-        title = lot.title
-        price = lot.current_bid
-        shipping = lot.shipping_eur
     elif platform == "BRICKLINK":
         lot = parse_bricklink_listing_page(html, url)
         title = lot.title

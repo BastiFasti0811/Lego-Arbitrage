@@ -73,7 +73,6 @@ export default function AuctionWatch() {
   const hasConfiguredScanUrls = Boolean(settingsMap[scanUrlKey] && settingsMap[scanUrlKey].trim());
   const placeholderByPlatform = {
     CATAWIKI: "https://www.catawiki.com/de/c/708-lego\r\nhttps://www.catawiki.com/de/c/714-vintage-toys",
-    WHATNOT: "https://www.whatnot.com/category/toys\r\nhttps://www.whatnot.com/search?query=lego",
     BRICKLINK: "https://www.bricklink.com/v2/search.page?q=lego%2075313\r\nhttps://store.bricklink.com/",
   };
 
@@ -158,7 +157,6 @@ export default function AuctionWatch() {
               className="bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm"
             >
               <option value="CATAWIKI">Catawiki</option>
-              <option value="WHATNOT">Whatnot</option>
               <option value="BRICKLINK">BrickLink</option>
             </select>
             <div className="text-right text-xs text-text-muted">

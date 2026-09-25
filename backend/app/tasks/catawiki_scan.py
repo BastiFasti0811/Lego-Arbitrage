@@ -16,7 +16,9 @@ from app.tasks.celery_app import celery_app
 
 logger = structlog.get_logger()
 
-SUPPORTED_DISCOVERY_PLATFORMS = ("CATAWIKI", "WHATNOT", "BRICKLINK")
+# Whatnot entfernt (25.09.2026): Live-Auktionen haben keinen Stand, den ein
+# taeglicher Scan bewerten koennte.
+SUPPORTED_DISCOVERY_PLATFORMS = ("CATAWIKI", "BRICKLINK")
 
 
 @celery_app.task(name="app.tasks.catawiki_scan.scan_configured_categories")

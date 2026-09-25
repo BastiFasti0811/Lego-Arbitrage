@@ -26,7 +26,6 @@ from app.services.catawiki import (
     lot_review_reasons,
     needs_lot_details,
 )
-from app.services.whatnot import WhatnotScraper
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -37,12 +36,6 @@ DISCOVERY_SETTINGS_BY_PLATFORM = {
         "user_agent": "catawiki_user_agent",
         "scan_urls": "catawiki_scan_urls",
         "max_results": "catawiki_max_results_per_url",
-    },
-    "WHATNOT": {
-        "cookie_header": "whatnot_cookie_header",
-        "user_agent": "whatnot_user_agent",
-        "scan_urls": "whatnot_scan_urls",
-        "max_results": "whatnot_max_results_per_url",
     },
     "BRICKLINK": {
         "cookie_header": "bricklink_cookie_header",
@@ -188,8 +181,6 @@ def _build_configured_discovery_payload(
 
 def _make_scraper(platform: str, cookie_header: str | None, user_agent: str | None):
     normalized = _normalize_platform(platform)
-    if normalized == "WHATNOT":
-        return WhatnotScraper(cookie_header=cookie_header, user_agent=user_agent)
     if normalized == "BRICKLINK":
         return BrickLinkScraper(cookie_header=cookie_header, user_agent=user_agent)
     return CatawikiScraper(cookie_header=cookie_header, user_agent=user_agent)

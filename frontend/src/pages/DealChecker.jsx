@@ -139,7 +139,7 @@ export default function DealChecker() {
       if (data.condition) setCondition(data.condition);
       if (data.url) setSourceUrl(data.url);
       if (data.platform) setSourcePlatform(data.platform);
-      if (["CATAWIKI", "WHATNOT", "BRICKLINK"].includes(data.platform)) {
+      if (["CATAWIKI", "BRICKLINK"].includes(data.platform)) {
         setAuctionPlatform(data.platform);
         if (data.price != null) setAuctionCurrentBid(String(data.price));
         if (data.shipping != null) setAuctionShipping(String(data.shipping));
@@ -499,7 +499,7 @@ export default function DealChecker() {
     setOfferPrice(String(item.offer_price));
     setSourceUrl(item.source_url || "");
     setSourcePlatform(item.source_platform || "");
-    if (["CATAWIKI", "WHATNOT", "BRICKLINK"].includes(item.source_platform)) {
+    if (["CATAWIKI", "BRICKLINK"].includes(item.source_platform)) {
       setAuctionPlatform(item.source_platform);
       setAuctionCurrentBid(String(item.offer_price));
     }
@@ -922,7 +922,6 @@ export default function DealChecker() {
             className="bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm"
           >
             <option value="CATAWIKI">Catawiki</option>
-            <option value="WHATNOT">Whatnot</option>
             <option value="BRICKLINK">BrickLink</option>
             <option value="AUCTION">Andere Auktion</option>
           </select>

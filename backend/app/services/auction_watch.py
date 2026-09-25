@@ -450,8 +450,6 @@ async def evaluate_auction(
             0,
             "Catawiki all-in = Hammerpreis + 9% + 3 EUR Kaeuferschutz + Versand. Zoll/Import sind nicht enthalten.",
         )
-    elif detected_platform == "WHATNOT":
-        warnings.insert(0, "Whatnot-Kosten pruefen: Versand ist enthalten, weitere Plattformkosten koennen variieren.")
     elif detected_platform == "BRICKLINK":
         warnings.insert(0, "BrickLink ist meist Fixpreis. Versand und Shop-Mindestbestaende extra gegenpruefen.")
     if analysis.market_consensus.num_sources < 2:
