@@ -5,6 +5,7 @@ from binascii import Error as BinasciiError
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from shutil import copy2, rmtree
+from typing import Annotated
 from urllib.parse import urlencode
 from uuid import uuid4
 
@@ -13,7 +14,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from PIL import Image
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +22,7 @@ from app.ai import AIProviderError, ItemDraft, get_provider, prepare_photo
 from app.api.routes.listings import ListingResponse, open_listing_responses
 from app.config import settings
 from app.domain.condition import condition_ad_label, condition_ad_title_suffix
+from app.engine.market_consensus import PriceBasis
 from app.engine.roi_calculator import calculate_ebay_fees
 from app.models import AnalysisHistoryEntry, DealFeedback, LegoSet, get_session
 from app.models.inventory import (
@@ -60,6 +62,20 @@ MAX_PHOTO_BYTES = settings.inventory_photo_max_bytes
 ABANDONED_DRAFT_AGE = timedelta(days=1)
 
 
+def _blank_to_none(value):
+    """Leerer oder nur aus Leerzeichen bestehender Lagerort wird zu NULL."""
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    return value
+
+
+# Postgres erzwingt die VARCHAR-Laengen des Modells und antwortet sonst mit
+# einem 500. Die Grenzen hier spiegeln app/models/inventory.py, damit zu lange
+# Eingaben als 422 zurueckkommen. SQLite in den Tests prueft das nicht.
+StorageLocation = Annotated[Annotated[str, Field(max_length=200)] | None, BeforeValidator(_blank_to_none)]
+
+
 class InventoryPhotoUpload(BaseModel):
     filename: str
     content_type: str | None = None
@@ -72,22 +88,25 @@ class InventoryPhotoUploadRequest(BaseModel):
 
 class InventoryAdd(BaseModel):
     item_type: str = InventoryItemType.LEGO.value
+    # set_number, product_group und search_query erst nach der Normalisierung
+    # pruefen: der Validator verwirft oder ersetzt sie je nach item_type, ein zu
+    # langer Eingabewert ist dann folgenlos.
     set_number: str | None = None
-    set_name: str
+    set_name: str = Field(max_length=300)
     product_group: str | None = None
     search_query: str | None = None
-    theme: str | None = None
+    theme: str | None = Field(default=None, max_length=100)
     image_url: str | None = None
     buy_price: float | None = None
     buy_shipping: float = 0.0
     buy_date: date
-    buy_platform: str | None = None
+    buy_platform: str | None = Field(default=None, max_length=100)
     buy_url: str | None = None
     reference_url: str | None = None
-    condition: str = "NEW_SEALED"
+    condition: str = Field(default="NEW_SEALED", max_length=20)
     quantity: int = 1
     notes: str | None = None
-    storage_location: str | None = Field(default=None, max_length=200)
+    storage_location: StorageLocation = None
 
     @model_validator(mode="after")
     def _apply_type_rules(self):
@@ -104,25 +123,33 @@ class InventoryAdd(BaseModel):
             self.set_number = None
             self.product_group = (self.product_group or "").strip() or "Diverses"
             self.search_query = (self.search_query or "").strip() or None
+        for field, label, limit in (
+            ("set_number", "Setnummer", 20),
+            ("product_group", "Warengruppe", 100),
+            ("search_query", "Such-Query", 300),
+        ):
+            value = getattr(self, field)
+            if value is not None and len(value) > limit:
+                raise ValueError(f"{label} darf höchstens {limit} Zeichen haben")
         return self
 
 
 class InventoryUpdate(BaseModel):
-    set_name: str | None = None
-    product_group: str | None = None
-    search_query: str | None = None
-    theme: str | None = None
+    set_name: str | None = Field(default=None, max_length=300)
+    product_group: str | None = Field(default=None, max_length=100)
+    search_query: str | None = Field(default=None, max_length=300)
+    theme: str | None = Field(default=None, max_length=100)
     image_url: str | None = None
     buy_price: float | None = None
     buy_shipping: float | None = None
     buy_date: date | None = None
-    buy_platform: str | None = None
+    buy_platform: str | None = Field(default=None, max_length=100)
     buy_url: str | None = None
     reference_url: str | None = None
-    condition: str | None = None
+    condition: str | None = Field(default=None, max_length=20)
     quantity: int | None = None
     notes: str | None = None
-    storage_location: str | None = Field(default=None, max_length=200)
+    storage_location: StorageLocation = None
 
     @model_validator(mode="after")
     def _reject_null_product_group(self):
@@ -134,7 +161,7 @@ class InventoryUpdate(BaseModel):
 class SellRequest(BaseModel):
     sell_price: float
     sell_date: date | None = None
-    sell_platform: str | None = None
+    sell_platform: str | None = Field(default=None, max_length=100)
 
 
 class SplitRequest(BaseModel):
@@ -176,6 +203,7 @@ class InventoryResponse(BaseModel):
     photos: list[InventoryPhotoResponse] = []
     listings: list[ListingResponse] = []
     current_market_price: float | None
+    market_price_basis: str | None = None
     market_price_updated_at: datetime | None
     unrealized_profit: float | None
     unrealized_roi_percent: float | None
@@ -253,6 +281,8 @@ class InventoryLookupResponse(BaseModel):
     buy_price: float | None
     buy_date: date
     buy_platform: str | None
+    # Damit der Dubletten-Hinweis zeigt, wo das vorhandene Exemplar liegt.
+    storage_location: str | None = None
 
 
 class AnalyzeRequest(BaseModel):
@@ -420,6 +450,7 @@ async def lookup_by_set_number(
             id=item.id, set_number=item.set_number, set_name=item.set_name,
             quantity=item.quantity or 1, buy_price=item.buy_price,
             buy_date=item.buy_date, buy_platform=item.buy_platform,
+            storage_location=item.storage_location,
         )
         for item in result.scalars().all()
     ]
@@ -856,6 +887,7 @@ async def revalue_inventory_item(item_id: int, session: AsyncSession = Depends(g
         )
     item.current_market_price = round(median, 2)
     item.market_price_updated_at = datetime.now(UTC)
+    item.market_price_basis = PriceBasis.EBAY_SOLD
     _recalculate_unrealized_metrics(item)
     await session.commit()
     await session.refresh(item)
@@ -978,6 +1010,7 @@ async def split_inventory_item(item_id: int, data: SplitRequest, session: AsyncS
         status=item.status,
         current_market_price=item.current_market_price,
         market_price_updated_at=item.market_price_updated_at,
+        market_price_basis=item.market_price_basis,
         sell_signal_active=False,
         sell_signal_reason=None,
         sell_price=None,
@@ -1101,6 +1134,7 @@ async def _hydrate_market_snapshot(item: InventoryItem, session: AsyncSession) -
 
     market_price: float | None = None
     updated_at: datetime | None = None
+    basis: str | None = None
 
     set_result = await session.execute(
         select(LegoSet.current_market_price, LegoSet.market_price_updated_at).where(
@@ -1110,6 +1144,8 @@ async def _hydrate_market_snapshot(item: InventoryItem, session: AsyncSession) -
     set_snapshot = set_result.one_or_none()
     if set_snapshot and set_snapshot[0] and set_snapshot[0] > 0:
         market_price, updated_at = set_snapshot
+        # LegoSet.current_market_price speichert nur belastbare Konsenswerte.
+        basis = PriceBasis.CONSENSUS
     else:
         history_result = await session.execute(
             select(AnalysisHistoryEntry.market_price, AnalysisHistoryEntry.analyzed_at)
@@ -1126,6 +1162,8 @@ async def _hydrate_market_snapshot(item: InventoryItem, session: AsyncSession) -
 
     item.current_market_price = round(market_price, 2)
     item.market_price_updated_at = updated_at
+    # Aus der Analyse-Historie: ungeprueft, Herkunft unbekannt -> keine Farbe.
+    item.market_price_basis = basis
     _recalculate_unrealized_metrics(item)
     return True
 
@@ -1360,6 +1398,7 @@ def _to_response(item: InventoryItem) -> InventoryResponse:
         photos=[_to_photo_response(photo) for photo in item.photos],
         listings=open_listing_responses(item),
         current_market_price=item.current_market_price,
+        market_price_basis=item.market_price_basis,
         market_price_updated_at=item.market_price_updated_at,
         unrealized_profit=item.unrealized_profit,
         unrealized_roi_percent=item.unrealized_roi_percent,

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import HomeScanPanel from "../components/HomeScanPanel";
+import PriceBasis from "../components/PriceBasis";
 
 const EURO = "\u20ac";
 
@@ -254,6 +255,12 @@ export default function AuctionWatch() {
                         <div className="text-text-muted text-sm mt-1">
                           Aktuell {formatMoney(item.current_bid)} - Max {formatMoney(item.recommended_max_bid)} - ROI{" "}
                           {item.expected_roi_current != null ? `${item.expected_roi_current.toFixed(1)}%` : "--"}
+                          {item.market_price != null && (
+                            <>
+                              {" - Markt "}
+                              <PriceBasis basis={item.price_basis}>{formatMoney(item.market_price)}</PriceBasis>
+                            </>
+                          )}
                         </div>
                         {item.recommendation_text && (
                           <div className="text-text-secondary text-sm mt-2">{item.recommendation_text}</div>

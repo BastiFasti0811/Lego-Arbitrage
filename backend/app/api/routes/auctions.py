@@ -144,6 +144,8 @@ class AuctionDiscoverResult(BaseModel):
     all_in_cost_current: float | None = None
     buyer_fee_current: float | None = None
     source_prices: dict[str, float] = Field(default_factory=dict)
+    # CONSENSUS (gruen) / BRICKMERGE_ONLY (gelb) / None, siehe market_consensus.PriceBasis.
+    price_basis: str | None = None
 
 
 def _normalize_platform(platform: str | None) -> str:
@@ -296,7 +298,8 @@ async def _evaluate_lot(
         recommendation_text=evaluation.recommendation_text,
         expected_roi_current=evaluation.expected_roi_at_current_bid,
         expected_profit_current=evaluation.expected_profit_at_current_bid,
-        market_price=evaluation.analysis.market_consensus.consensus_price,
+        market_price=evaluation.market_price_used,
+        price_basis=evaluation.price_basis,
         reference_price=evaluation.bid_result.expected_sale_price,
         warning_text=" ".join(evaluation.warnings) or None,
         bid_status=evaluation.bid_status,

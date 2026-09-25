@@ -141,3 +141,33 @@ async def test_ebay_price_falls_back_when_sold_fetch_raises(monkeypatch):
 
     assert price is not None
     assert price.source == "EBAY_ACTIVE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("fixture", "set_number", "expected"), [
+    # Ausgelaufen, Titel ohne ab-Preis, Infozeile "ab 539,99 €" bei 7 Haendlern (25.09.2026).
+    ("brickmerge_eol_title_without_price_76417.html", "76417", 539.99),
+    # Ausgelaufen seit 12/2024, Marktpreis weit ueber UVP 799,99.
+    ("brickmerge_eol_market_75313.html", "75313", 1499.99),
+])
+async def test_brickmerge_reads_current_price_of_retired_sets(monkeypatch, fixture, set_number, expected):
+    detail = _load(fixture)
+
+    async def fake_detail(self, number):
+        return detail
+
+    monkeypatch.setattr(BrickMergeScraper, "_fetch_detail_page", fake_detail)
+    async with BrickMergeScraper() as scraper:
+        price = await scraper.get_price(set_number)
+
+    assert price is not None and price.price_eur == expected
+    assert "Bestpreis 30 Tage" in price.notes
+
+
+def test_brickmerge_best_prices_from_info_line():
+    from bs4 import BeautifulSoup
+
+    from app.scrapers.brickmerge import parse_best_prices
+
+    text = BeautifulSoup(_load("brickmerge_eol_title_without_price_76417.html"), "lxml").get_text(" ", strip=True)
+    assert parse_best_prices(text) == {"30 Tage": 429.99, "180 Tage": 387.0, "bisher": 343.99}

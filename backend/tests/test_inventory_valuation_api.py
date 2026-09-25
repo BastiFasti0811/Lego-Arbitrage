@@ -285,6 +285,16 @@ async def test_lookup_returns_empty_list_when_the_set_has_no_holdings(db_session
 
 
 @pytest.mark.asyncio
+async def test_lookup_shows_where_the_existing_copy_is_stored(db_session):
+    db_session.add(_holding_item(storage_location="Dachboden Kiste 3"))
+    await db_session.commit()
+
+    result = await inventory.lookup_by_set_number(set_number="40800", session=db_session)
+
+    assert result[0].storage_location == "Dachboden Kiste 3"
+
+
+@pytest.mark.asyncio
 async def test_reference_url_survives_the_round_trip_when_set(db_session):
     data = inventory.InventoryAdd(
         set_number="40800", set_name="Yoda", buy_price=19.99, buy_date=date(2026, 1, 10),

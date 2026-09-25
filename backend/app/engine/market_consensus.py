@@ -27,6 +27,62 @@ def is_persistable_consensus(consensus: "MarketConsensus") -> bool:
     )
 
 
+class PriceBasis:
+    """Worauf ein Marktpreis beruht; das Frontend faerbt danach (gruen/gelb)."""
+
+    CONSENSUS = "CONSENSUS"
+    BRICKMERGE_ONLY = "BRICKMERGE_ONLY"
+    # Manuelle Neubewertung eines Nicht-Lego-Postens ueber belastbare eBay-Verkaeufe.
+    EBAY_SOLD = "EBAY_SOLD"
+
+
+def _brickmerge_fallback(source_prices: dict[str, float] | None) -> float | None:
+    """BrickMerge-Preis, wenn er als Rueckfall taugt: allein, oder bei Abweichung der niedrigste.
+
+    Bei ausgelaufenen Sets liegt der BrickMerge-ab-Preis (verbliebene Haendler)
+    oft ueber den eBay-Verkaeufen (76417: 539,99 bei UVP 429,99). Waere BM bei
+    einer Abweichung auch als HOEHERER Wert der Rueckfall, rechnete das
+    Gebotslimit mit dem Haendlerpreis statt mit dem Wiederverkauf.
+    """
+    prices = {source: price for source, price in (source_prices or {}).items() if price and price > 0}
+    brickmerge = prices.get("BRICKMERGE")
+    if not brickmerge:
+        return None
+    return brickmerge if brickmerge <= min(prices.values()) else None
+
+
+def price_basis_from_sources(source_prices: dict[str, float] | None) -> str | None:
+    """Anzeige-Basis allein aus den Quellpreisen -- dieselbe Regel wie resolve_market_price.
+
+    Mindestens zwei Quellen mit hoechstens 30 % Abweichung -> CONSENSUS; sonst
+    BRICKMERGE_ONLY, wenn BrickMerge als Rueckfall taugt; sonst None (neutral,
+    die Warnungen des Konsenses sagen dann, warum). Ableitbar auch fuer
+    gespeicherte Analysen, die nur source_prices kennen.
+    """
+    prices = [price for price in (source_prices or {}).values() if price and price > 0]
+    if len(prices) >= 2:
+        mean = sum(prices) / len(prices)
+        if (max(prices) - min(prices)) / mean <= 0.30:
+            return PriceBasis.CONSENSUS
+    return PriceBasis.BRICKMERGE_ONLY if _brickmerge_fallback(source_prices) else None
+
+
+def resolve_market_price(consensus: "MarketConsensus") -> tuple[float, str] | None:
+    """Marktpreis fuer Bewertung und Gebotslimit: Konsens, sonst BrickMerge.
+
+    Entscheidung vom 25.09.2026: Bevor gar kein Preis da ist, gilt der
+    BrickMerge-Bestpreis -- sichtbar als BRICKMERGE_ONLY markiert. Das greift,
+    wenn der Konsens nicht belastbar ist und BrickMerge entweder die einzige
+    Quelle oder bei >30 % Abweichung die niedrigste ist (_brickmerge_fallback).
+    Fuer eine Bietfreigabe reicht BRICKMERGE_ONLY nicht (evaluate_auction).
+    Der Part-Out-Value (POV) von BrickMerge ist ausdruecklich KEIN Marktpreis.
+    """
+    if is_persistable_consensus(consensus):
+        return consensus.consensus_price, PriceBasis.CONSENSUS
+    brickmerge = _brickmerge_fallback(consensus.source_prices)
+    return (brickmerge, PriceBasis.BRICKMERGE_ONLY) if brickmerge else None
+
+
 def _median(values: list[float]) -> float:
     """True median. Taking the upper of two values drifted every two-source
     consensus upwards — and with three price sources that is the common case.

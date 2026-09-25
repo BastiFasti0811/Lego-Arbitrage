@@ -115,6 +115,8 @@ ZUSTAND_ID_BY_TEXT = {
 # Verpackung bei Zustand "Unbenutzt": (Zustand, Kartonschaden).
 VERPACKUNG_CONDITION = {
     80575: ("NEW_SEALED", False),    # "In unbeschädigter und versiegelter Originalverpackung"
+    # Belegt an Los 107053796 (21368 Peanuts, 25.09.2026). "Ungeoeffnet" ist nicht
+    # woertlich "versiegelt": bewusst NEW_SEALED mit Kartonschaden-Abschlag.
     80577: ("NEW_SEALED", True),     # "In beschädigter ungeöffneter Originalverpackung"
     92699: ("NEW_OPEN_BOX", False),  # "ungeöffnete Schachtel Dichtungen defekt"
     80579: ("NEW_OPEN_BOX", False),  # "In unbeschädigter geöffneter Originalverpackung"

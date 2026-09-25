@@ -85,11 +85,15 @@ class ValuationRunRecorder:
     def record_valued(
         self, *, item_id: int | None, set_number: str,
         consensus_price: float, probes: list[SourceProbe],
+        basis_note: str | None = None,
     ) -> None:
+        detail = describe_sources(probes)
+        if basis_note:
+            detail = f"{basis_note} | {detail}" if detail else basis_note
         self._append(
             item_id=item_id, set_number=set_number,
             outcome=ValuationOutcome.VALUED, reason=None,
-            probes=probes, consensus_price=consensus_price,
+            probes=probes, consensus_price=consensus_price, detail=detail,
         )
 
     def record_skipped(

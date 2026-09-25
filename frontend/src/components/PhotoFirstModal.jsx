@@ -21,15 +21,20 @@ function formatEuro(value) {
   return `${Math.round(value)}€`;
 }
 
+// Spaltenlaengen im Backend (app/models/inventory.py). maxLength am Feld
+// greift nur beim Tippen, deshalb kuerzt draftToForm auch KI-Vorschlaege.
+const FIELD_MAX = { set_name: 300, product_group: 100, search_query: 300, storage_location: 200 };
+
 function draftToForm(draft) {
   return {
-    set_name: draft.name || "",
-    product_group: draft.product_group || "",
+    set_name: (draft.name || "").slice(0, FIELD_MAX.set_name),
+    product_group: (draft.product_group || "").slice(0, FIELD_MAX.product_group),
     condition: draft.condition || "NEW_SEALED",
     notes: draft.description || "",
-    search_query: draft.search_query || "",
+    search_query: (draft.search_query || "").slice(0, FIELD_MAX.search_query),
     buy_price: "",
     quantity: "1",
+    storage_location: "",
   };
 }
 
@@ -163,6 +168,7 @@ export default function PhotoFirstModal({ onClose, onCreated }) {
         search_query: form.search_query.trim() || null,
         buy_price: form.buy_price === "" ? null : Number(form.buy_price),
         quantity: parseInt(form.quantity || "1", 10),
+        storage_location: form.storage_location.trim() || null,
       });
       return api.confirmItem(itemId);
     },
@@ -298,6 +304,7 @@ export default function PhotoFirstModal({ onClose, onCreated }) {
                 <input
                   type="text"
                   value={review.form.set_name}
+                  maxLength={FIELD_MAX.set_name}
                   onChange={(e) => updateForm({ set_name: e.target.value })}
                   className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm"
                 />
@@ -308,6 +315,7 @@ export default function PhotoFirstModal({ onClose, onCreated }) {
                   type="text"
                   list="product-groups-photo-first-list"
                   value={review.form.product_group}
+                  maxLength={FIELD_MAX.product_group}
                   onChange={(e) => updateForm({ product_group: e.target.value })}
                   className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm"
                 />
@@ -344,7 +352,20 @@ export default function PhotoFirstModal({ onClose, onCreated }) {
                 <input
                   type="text"
                   value={review.form.search_query}
+                  maxLength={FIELD_MAX.search_query}
                   onChange={(e) => updateForm({ search_query: e.target.value })}
+                  className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm"
+                />
+              </div>
+              <div>
+                <label htmlFor="photo-first-storage-location" className="block text-text-muted text-xs mb-1">Lagerort</label>
+                <input
+                  id="photo-first-storage-location"
+                  type="text"
+                  maxLength={FIELD_MAX.storage_location}
+                  placeholder="z. B. Dachboden Kiste 3"
+                  value={review.form.storage_location}
+                  onChange={(e) => updateForm({ storage_location: e.target.value })}
                   className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm"
                 />
               </div>

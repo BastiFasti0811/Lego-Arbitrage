@@ -31,6 +31,7 @@ from app.api.routes.inventory import (
     InventoryAdd,
     InventoryPhotoUpload,
     InventoryPhotoUploadRequest,
+    StorageLocation,
     _get_item,
     add_inventory_item,
     upload_inventory_photos,
@@ -106,7 +107,8 @@ class ManifestItem(BaseModel):
     buy_shipping: float = 0.0
     buy_platform: str | None = Field(default=None, max_length=100)
     buy_url: str | None = None
-    storage_location: str | None = Field(default=None, max_length=200)
+    # Gleicher Typ wie in der API: erst trimmen, dann gegen die 200 pruefen.
+    storage_location: StorageLocation = None
     notes: str = ""
     photos: list[str] = []
     listings: list[ManifestListing] = []
