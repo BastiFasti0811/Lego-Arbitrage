@@ -182,7 +182,8 @@ def test_scraper_sends_a_fixed_browser_user_agent():
 @pytest.mark.parametrize(("zustand", "verpackung", "complete", "title", "expected"), [
     # Katalogtexte (Losliste, Heimrechner) wie auf den echten Losen.
     ("Unbenutzt", "In unbeschädigter und versiegelter Originalverpackung", "Ja", "", ("NEW_SEALED", False)),
-    ("Unbenutzt", "In beschädigter ungeöffneter Originalverpackung", "Ja", "", ("NEW_SEALED", True)),
+    # Entscheidung Sebastian: ungeoeffnet != versiegelt, Kartonschaden bleibt als Abschlag.
+    ("Unbenutzt", "In beschädigter ungeöffneter Originalverpackung", "Ja", "", ("NEW_OPEN_BOX", True)),
     ("Unbenutzt", "ungeöffnete Schachtel Dichtungen defekt", "Ja", "", ("NEW_OPEN_BOX", False)),
     ("Unbenutzt", "In unbeschädigter geöffneter Originalverpackung", "Ja", "", ("NEW_OPEN_BOX", False)),
     ("Unbenutzt", "in geschlossener Box", "Ja", "", ("UNKNOWN", False)),

@@ -230,7 +230,8 @@ async def test_request_then_job_then_results_clear_the_request(db, monkeypatch):
     again = await remote_scan.runner_job(db, now=t0 + timedelta(minutes=10))
     assert again["run"] is False and again["job_id"] is None
 
-    status = await remote_scan.scan_status(db)
+    # Fester Zeitpunkt: mit der echten Uhr waere der Test nach 11 Uhr am 25.09. rot geworden.
+    status = await remote_scan.scan_status(db, now=t0 + timedelta(minutes=10))
     assert status["token_configured"] and status["requested_at"] and status["runner_seen_at"]
     assert status["job"]["reason"] == "requested"
 
