@@ -22,6 +22,7 @@ from app.ai import AIProviderError, ItemDraft, get_provider, prepare_photo
 from app.api.routes.listings import ListingResponse, open_listing_responses
 from app.config import settings
 from app.domain.condition import condition_ad_label, condition_ad_title_suffix
+from app.engine.market_consensus import PriceBasis
 from app.engine.roi_calculator import calculate_ebay_fees
 from app.models import AnalysisHistoryEntry, DealFeedback, LegoSet, get_session
 from app.models.inventory import (
@@ -202,6 +203,7 @@ class InventoryResponse(BaseModel):
     photos: list[InventoryPhotoResponse] = []
     listings: list[ListingResponse] = []
     current_market_price: float | None
+    market_price_basis: str | None = None
     market_price_updated_at: datetime | None
     unrealized_profit: float | None
     unrealized_roi_percent: float | None
@@ -885,6 +887,7 @@ async def revalue_inventory_item(item_id: int, session: AsyncSession = Depends(g
         )
     item.current_market_price = round(median, 2)
     item.market_price_updated_at = datetime.now(UTC)
+    item.market_price_basis = PriceBasis.EBAY_SOLD
     _recalculate_unrealized_metrics(item)
     await session.commit()
     await session.refresh(item)
@@ -1007,6 +1010,7 @@ async def split_inventory_item(item_id: int, data: SplitRequest, session: AsyncS
         status=item.status,
         current_market_price=item.current_market_price,
         market_price_updated_at=item.market_price_updated_at,
+        market_price_basis=item.market_price_basis,
         sell_signal_active=False,
         sell_signal_reason=None,
         sell_price=None,
@@ -1130,6 +1134,7 @@ async def _hydrate_market_snapshot(item: InventoryItem, session: AsyncSession) -
 
     market_price: float | None = None
     updated_at: datetime | None = None
+    basis: str | None = None
 
     set_result = await session.execute(
         select(LegoSet.current_market_price, LegoSet.market_price_updated_at).where(
@@ -1139,6 +1144,8 @@ async def _hydrate_market_snapshot(item: InventoryItem, session: AsyncSession) -
     set_snapshot = set_result.one_or_none()
     if set_snapshot and set_snapshot[0] and set_snapshot[0] > 0:
         market_price, updated_at = set_snapshot
+        # LegoSet.current_market_price speichert nur belastbare Konsenswerte.
+        basis = PriceBasis.CONSENSUS
     else:
         history_result = await session.execute(
             select(AnalysisHistoryEntry.market_price, AnalysisHistoryEntry.analyzed_at)
@@ -1155,6 +1162,8 @@ async def _hydrate_market_snapshot(item: InventoryItem, session: AsyncSession) -
 
     item.current_market_price = round(market_price, 2)
     item.market_price_updated_at = updated_at
+    # Aus der Analyse-Historie: ungeprueft, Herkunft unbekannt -> keine Farbe.
+    item.market_price_basis = basis
     _recalculate_unrealized_metrics(item)
     return True
 
@@ -1389,6 +1398,7 @@ def _to_response(item: InventoryItem) -> InventoryResponse:
         photos=[_to_photo_response(photo) for photo in item.photos],
         listings=open_listing_responses(item),
         current_market_price=item.current_market_price,
+        market_price_basis=item.market_price_basis,
         market_price_updated_at=item.market_price_updated_at,
         unrealized_profit=item.unrealized_profit,
         unrealized_roi_percent=item.unrealized_roi_percent,

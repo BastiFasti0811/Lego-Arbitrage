@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.domain.classification import categorize_release_year
 from app.domain.identity import is_plausible_price
-from app.engine.market_consensus import calculate_consensus
+from app.engine.market_consensus import PriceBasis, calculate_consensus, resolve_market_price
 from app.models.base import async_session
 from app.models.inventory import InventoryItem, InventoryStatus
 from app.models.price import PriceSource
@@ -74,6 +74,11 @@ def _detect_price_peak(history: list[dict] | None) -> bool:
     peak = max(recent)
     peak_index = recent.index(peak)
     return peak_index < len(recent) - 1 and recent[-1] < peak * 0.97
+
+
+# Ohne Konsens, aber mit BrickMerge-Preis: dann bewertet der Lauf mit BrickMerge.
+# NO_PRICES/IMPLAUSIBLE_PRICE/ZERO_CONSENSUS haben keinen BrickMerge-Preis im Konsens.
+_BRICKMERGE_FALLBACK_REASONS = frozenset({ValuationSkipReason.SINGLE_SOURCE, ValuationSkipReason.DIVERGENCE})
 
 
 def _classify_consensus(consensus) -> tuple[str, ValuationSkipReason | None]:
@@ -240,6 +245,13 @@ async def _update_valuations_async(run_id: int | None = None) -> dict:
                     prices, probes = await _collect_prices(item, uvp_by_set.get(item.set_number))
                     consensus = calculate_consensus(prices)
                     outcome, reason = _resolve_skip_reason(consensus, probes)
+                    market_price, basis = consensus.consensus_price, PriceBasis.CONSENSUS
+                    fallback = resolve_market_price(consensus)
+                    if outcome == "skipped" and reason in _BRICKMERGE_FALLBACK_REASONS and fallback:
+                        # Ohne belastbaren Konsens gilt BrickMerge (Entscheidung
+                        # 25.09.2026), im Frontend gelb markiert.
+                        outcome = "valued"
+                        market_price, basis = fallback
 
                     if outcome == "skipped":
                         logger.info(
@@ -254,14 +266,20 @@ async def _update_valuations_async(run_id: int | None = None) -> dict:
                         )
                         continue
 
-                    total_invested = item.buy_price + (item.buy_shipping or 0)
-                    item.current_market_price = round(consensus.consensus_price, 2)
+                    item.current_market_price = round(market_price, 2)
+                    item.market_price_basis = basis
                     item.market_price_updated_at = now
-                    item.unrealized_profit = round(consensus.consensus_price - total_invested, 2)
-                    item.unrealized_roi_percent = (
-                        round(((consensus.consensus_price - total_invested) / total_invested) * 100, 1)
-                        if total_invested > 0 else 0
-                    )
+                    if item.buy_price is None:
+                        # Dachbodenfund ohne Kaufpreis: Marktwert ja, Gewinn unbekannt.
+                        item.unrealized_profit = None
+                        item.unrealized_roi_percent = None
+                    else:
+                        total_invested = item.buy_price + (item.buy_shipping or 0)
+                        item.unrealized_profit = round(market_price - total_invested, 2)
+                        item.unrealized_roi_percent = (
+                            round(((market_price - total_invested) / total_invested) * 100, 1)
+                            if total_invested > 0 else 0
+                        )
 
                     category = _categorize_set(release_year_by_set.get(item.set_number))
                     roi_target = ROI_TARGETS.get(category, 25.0)
@@ -296,6 +314,10 @@ async def _update_valuations_async(run_id: int | None = None) -> dict:
                     recorder.record_valued(
                         item_id=item.id, set_number=item.set_number,
                         consensus_price=item.current_market_price, probes=probes,
+                        basis_note=(
+                            f"Nur BrickMerge (Konsens: {reason.value})"
+                            if basis == PriceBasis.BRICKMERGE_ONLY else None
+                        ),
                     )
                 except SoftTimeLimitExceeded:
                     # Celerys weiches Zeitlimit ist ein Abbruchsignal fuer den

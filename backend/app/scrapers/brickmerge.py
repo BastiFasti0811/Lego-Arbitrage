@@ -27,6 +27,32 @@ BASE_URL = "https://www.brickmerge.de"
 _parse_de_price = parse_de_price
 
 
+_CURRENT_PRICE_RE = re.compile(r"akt\.\s*brickmerge\s+Preis:\s*ab\s*([\d.,]+)\s*€", re.IGNORECASE)
+# Bestpreis-Verlauf der Infozeile: "30 Tage Bestpreis: 61,12 € / 32% vor 4 Tagen".
+_BEST_PRICE_RES = (
+    ("30 Tage", re.compile(r"30\s+Tage\s+Bestpreis:\s*([\d.,]+)\s*€", re.IGNORECASE)),
+    ("180 Tage", re.compile(r"180\s+Tage\s+Bestpreis:\s*([\d.,]+)\s*€", re.IGNORECASE)),
+    ("bisher", re.compile(r"bisheriger\s+Bestpreis:\s*([\d.,]+)\s*€", re.IGNORECASE)),
+)
+
+
+def parse_best_prices(page_text: str) -> dict[str, float]:
+    """Bestpreise der letzten 30/180 Tage und seit Beginn aus der Infozeile."""
+    found = {}
+    for label, pattern in _BEST_PRICE_RES:
+        match = pattern.search(page_text)
+        value = parse_de_price(match.group(1) + " €") if match else None
+        if value is not None:
+            found[label] = value
+    return found
+
+
+def _price_notes(page_text: str) -> str:
+    best = parse_best_prices(page_text)
+    trend = ", ".join(f"Bestpreis {label}: {value:.2f} €" for label, value in best.items())
+    return "BrickMerge Bestpreis (ab-Preis der Detailseite)" + (f"; {trend}" if trend else "")
+
+
 def extract_uvp_from_title(html: str) -> float | None:
     """Read the UVP from the page title only.
 
@@ -146,9 +172,20 @@ class BrickMergeScraper(BaseScraper):
             # price picks up UVP, price history and related-product prices —
             # an EOL set without offers yielded a 69,99 accessory as its
             # "market price". No offers means no price.
+            #
+            # Zweite, gleichwertige Quelle derselben Zahl: die Infozeile
+            # "akt. brickmerge Preis: ab X €" im Kopf der Detailseite. Bei
+            # ausgelaufenen Sets fehlt der ab-Preis im Titel ("... UVP: 429,99 €"),
+            # obwohl noch Haendler anbieten (76417 am 25.09.2026: ab 539,99 € bei
+            # 7 Haendlern). Beide Stellen sind an das Label gebunden, nie an
+            # irgendeinen Preis auf der Seite.
+            page_text = soup.get_text(" ", strip=True)
             lowest = None
+            info_match = _CURRENT_PRICE_RE.search(page_text)
+            if info_match:
+                lowest = _parse_de_price(info_match.group(1) + " €")
             title_el = soup.select_one("title")
-            if title_el:
+            if lowest is None and title_el:
                 ab_match = re.search(r"ab\s+[\d.,]+\s*€", title_el.get_text())
                 if ab_match:
                     lowest = _parse_de_price(ab_match.group(0))
@@ -161,7 +198,7 @@ class BrickMergeScraper(BaseScraper):
                 source="BRICKMERGE",
                 price_eur=lowest,
                 source_url=f"{BASE_URL}/?find={set_number}",
-                notes="BrickMerge Bestpreis (ab-Preis der Detailseite)",
+                notes=_price_notes(page_text),
             )
         except (UndecodableResponseError, httpx.HTTPError):
             # _fetch_detail_page haengt nicht am gemeinsamen _fetch (siehe

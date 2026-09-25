@@ -67,6 +67,10 @@ class InventoryItem(Base):
     # Current valuation (auto-updated by Celery)
     current_market_price: Mapped[float | None] = mapped_column(Float)
     market_price_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Worauf current_market_price beruht: "CONSENSUS" (mindestens zwei Quellen,
+    # gruen) oder "BRICKMERGE_ONLY" (nur BrickMerge, gelb). NULL bei Werten aus
+    # Zeiten davor oder aus dem Deal-Checker-Snapshot.
+    market_price_basis: Mapped[str | None] = mapped_column(String(20))
     unrealized_profit: Mapped[float | None] = mapped_column(Float)
     unrealized_roi_percent: Mapped[float | None] = mapped_column(Float)
 

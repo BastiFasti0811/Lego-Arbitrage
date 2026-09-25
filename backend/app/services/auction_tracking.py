@@ -82,7 +82,7 @@ async def refresh_watch_item(item, lego_set) -> bool:
         "all_in_cost_current": evaluation.current_total_purchase_cost,
         "all_in_cost_target": bid.total_purchase_cost_at_max_bid,
         "buyer_fee_current": evaluation.current_buyer_fee, "buyer_fee_target": bid.buyer_fee_at_max_bid,
-        "market_price": evaluation.analysis.market_consensus.consensus_price,
+        "market_price": evaluation.market_price_used,
         "reference_price": bid.expected_sale_price, "reference_label": "MARKT_ZUSTAND",
         "set_category": evaluation.analysis.category, "eol_status": evaluation.eol_status,
         "warning_text": " ".join(evaluation.warnings) or None,

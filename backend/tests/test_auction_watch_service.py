@@ -68,6 +68,10 @@ def test_solve_max_bid_when_fee_also_applies_to_shipping():
     ("NEW_SEALED", None, ["EBAY_SOLD", "BRICKMERGE"], False),
     ("NEW_SEALED", 13, ["EBAY_ACTIVE"], False),
     ("NEW_SEALED", 13, [], False),
+    # Nur BrickMerge: bewertet, aber als BRICKMERGE_ONLY markiert (Entscheidung 25.09.2026).
+    ("NEW_SEALED", 13, ["BRICKMERGE"], True),
+    # Einzelquelle ohne BrickMerge bleibt gesperrt.
+    ("NEW_SEALED", 13, ["BRICKECONOMY"], False),
 ])
 async def test_bid_permission_requires_market_condition_and_shipping(
     monkeypatch, condition, shipping, sources, allowed,
@@ -98,3 +102,18 @@ async def test_condition_reduces_auction_ceiling_not_only_risk(monkeypatch):
     )
     assert used.bid_result.expected_sale_price == sealed.bid_result.expected_sale_price * 0.7
     assert used.bid_result.max_bid < sealed.bid_result.max_bid
+
+
+async def test_brickmerge_fallback_is_marked_and_used_for_the_ceiling(monkeypatch):
+    async def context(**kwargs):
+        # Zwei Quellen >30 % auseinander: kein Konsens, BrickMerge als Rueckfall.
+        prices = [ScrapedPrice(source="EBAY_SOLD", price_eur=300), ScrapedPrice(source="BRICKMERGE", price_eur=180)]
+        return prices, "LEGO", "Star Wars", 2019, None, "RETIRED"
+    monkeypatch.setattr(auction_watch, "gather_market_context", context)
+    result = await auction_watch.evaluate_auction(
+        set_number="75313", current_bid=10, purchase_shipping=13, condition="NEW_SEALED",
+    )
+    assert (result.price_basis, result.market_price_used) == ("BRICKMERGE_ONLY", 180)
+    assert result.bid_result.expected_sale_price == 180
+    assert result.warnings[0].startswith("Nur BrickMerge-Bestpreis")
+    assert result.can_bid_now

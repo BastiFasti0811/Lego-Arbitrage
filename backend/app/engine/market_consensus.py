@@ -27,6 +27,52 @@ def is_persistable_consensus(consensus: "MarketConsensus") -> bool:
     )
 
 
+class PriceBasis:
+    """Worauf ein Marktpreis beruht; das Frontend faerbt danach (gruen/gelb)."""
+
+    CONSENSUS = "CONSENSUS"
+    BRICKMERGE_ONLY = "BRICKMERGE_ONLY"
+    # Manuelle Neubewertung eines Nicht-Lego-Postens ueber belastbare eBay-Verkaeufe.
+    EBAY_SOLD = "EBAY_SOLD"
+
+
+def price_basis_from_sources(source_prices: dict[str, float] | None) -> str | None:
+    """Anzeige-Basis eines Konsenses allein aus seinen Quellpreisen.
+
+    Dieselbe Schwelle wie is_persistable_consensus (mindestens zwei Quellen,
+    Abweichung hoechstens 30 %), deshalb auch fuer gespeicherte Analysen
+    ableitbar. Nur BrickMerge -> gelb; alles andere Unsichere -> None (neutral,
+    die Warnungen des Konsenses sagen dann, warum).
+    """
+    prices = {source: price for source, price in (source_prices or {}).items() if price and price > 0}
+    if len(prices) >= 2:
+        values = list(prices.values())
+        mean = sum(values) / len(values)
+        return PriceBasis.CONSENSUS if (max(values) - min(values)) / mean <= 0.30 else None
+    if set(prices) == {"BRICKMERGE"}:
+        return PriceBasis.BRICKMERGE_ONLY
+    return None
+
+
+def resolve_market_price(consensus: "MarketConsensus") -> tuple[float, str] | None:
+    """Marktpreis fuer Bewertung und Gebotslimit: Konsens, sonst BrickMerge.
+
+    Entscheidung vom 25.09.2026: Bevor gar kein Preis da ist, gilt der
+    BrickMerge-Bestpreis -- sichtbar als BRICKMERGE_ONLY markiert. Das greift,
+    wenn der Konsens nicht belastbar ist (nur eine Quelle oder >30 %
+    Abweichung) und BrickMerge die Ausreisser-Pruefung ueberstanden hat. Bei
+    laufenden Sets ist das der guenstigste Haendler (vorsichtig), bei
+    ausgelaufenen der aktuelle Marktpreis der verbliebenen Haendler.
+    Der Part-Out-Value (POV) von BrickMerge ist ausdruecklich KEIN Marktpreis.
+    """
+    if is_persistable_consensus(consensus):
+        return consensus.consensus_price, PriceBasis.CONSENSUS
+    brickmerge = consensus.source_prices.get("BRICKMERGE")
+    if brickmerge and brickmerge > 0:
+        return brickmerge, PriceBasis.BRICKMERGE_ONLY
+    return None
+
+
 def _median(values: list[float]) -> float:
     """True median. Taking the upper of two values drifted every two-source
     consensus upwards — and with three price sources that is the common case.

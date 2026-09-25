@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAppStore } from "../stores/appStore";
 import VerdictBadge from "../components/VerdictBadge";
+import PriceBasis from "../components/PriceBasis";
 import {
   EURO,
   ICON_CLOSE,
@@ -995,6 +996,12 @@ export default function DealChecker() {
                 <div className="text-go-star text-2xl font-bold font-[family-name:var(--font-mono)]">
                   {formatMoney(auctionResult.recommended_max_bid, 0)}
                 </div>
+                {auctionResult.market_price != null && (
+                  <div className="text-text-muted text-xs mt-1">
+                    Marktpreis{" "}
+                    <PriceBasis basis={auctionResult.price_basis}>{formatMoney(auctionResult.market_price, 0)}</PriceBasis>
+                  </div>
+                )}
               </div>
               <div className="bg-bg-primary p-4">
                 <div className="text-text-muted text-xs uppercase">Break-even</div>
@@ -1231,7 +1238,9 @@ export default function DealChecker() {
               ))}
               <div className="flex justify-between text-sm pt-2 border-t border-border/50">
                 <span className="text-text-secondary font-medium">Markt-Konsens ({result.num_sources} Quellen)</span>
-                <span className="text-lego-yellow font-[family-name:var(--font-mono)] font-bold">{formatMoney(result.market_price)}</span>
+                <span className="text-lego-yellow font-[family-name:var(--font-mono)] font-bold">
+                  <PriceBasis basis={result.price_basis}>{formatMoney(result.market_price)}</PriceBasis>
+                </span>
               </div>
             </div>
           </div>

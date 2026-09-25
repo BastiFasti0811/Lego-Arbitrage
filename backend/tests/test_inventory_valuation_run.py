@@ -476,7 +476,10 @@ async def test_the_loop_writes_exactly_one_row_per_item_with_the_reason_the_inpu
     # no_prices statt implausible_price.
     scraper_one = _scripted_scraper_cls("ScraperOne", {
         "10280": ScrapedPrice(source="BRICKMERGE", price_eur=120.0),   # A: einer von zwei -> valued
-        "40800": ScrapedPrice(source="BRICKMERGE", price_eur=14.34),   # B: einzige Quelle -> single_source
+        # B: einzige Quelle ist NICHT BrickMerge -> weiter single_source
+        "40800": ScrapedPrice(source="BRICKECONOMY", price_eur=14.34),
+        # F: nur BrickMerge -> valued mit BRICKMERGE_ONLY (Entscheidung 25.09.2026)
+        "21367": ScrapedPrice(source="BRICKMERGE", price_eur=114.99),
         "70620": ScrapedPrice(source="BRICKMERGE", price_eur=5.0),     # E: gegen UVP verworfen -> implausible_price
         "75192": ScrapedPrice(source="BRICKMERGE", price_eur=200.0),   # D: valued, faellt danach -> exception
     })
@@ -495,6 +498,7 @@ async def test_the_loop_writes_exactly_one_row_per_item_with_the_reason_the_inpu
         SimpleNamespace(id=3, set_number="43230", buy_price=15.0, buy_shipping=0.0, buy_date=date(2025, 1, 1)),
         SimpleNamespace(id=4, set_number="75192", buy_price=150.0, buy_shipping=0.0, buy_date=None),
         SimpleNamespace(id=5, set_number="70620", buy_price=60.0, buy_shipping=0.0, buy_date=date(2025, 1, 1)),
+        SimpleNamespace(id=6, set_number="21367", buy_price=None, buy_shipping=0.0, buy_date=date(2025, 1, 1)),
     ]
     set_rows = [SimpleNamespace(set_number="70620", release_year=2022, uvp_eur=90.0)]
     run = SimpleNamespace(
@@ -506,7 +510,7 @@ async def test_the_loop_writes_exactly_one_row_per_item_with_the_reason_the_inpu
 
     result = await _update_valuations_async(run_id=99)
 
-    assert len(session.added) == len(items) == 5
+    assert len(session.added) == len(items) == 6
     assert all(isinstance(row, ValuationRunItem) for row in session.added)
     by_item = {row.item_id: row for row in session.added}
     assert by_item[1].outcome == "valued"
@@ -522,8 +526,14 @@ async def test_the_loop_writes_exactly_one_row_per_item_with_the_reason_the_inpu
     assert len(by_item[4].sources) == 2
     assert by_item[5].outcome == "skipped"
     assert by_item[5].reason == "implausible_price"
+    assert by_item[6].outcome == "valued"
+    assert by_item[6].detail.startswith("Nur BrickMerge (Konsens: single_source)")
+    assert (items[5].current_market_price, items[5].market_price_basis) == (114.99, "BRICKMERGE_ONLY")
+    # Ohne Kaufpreis kein erfundener Gewinn -- frueher TypeError bei buy_price None.
+    assert items[5].unrealized_profit is None
+    assert items[0].market_price_basis == "CONSENSUS"
 
-    assert result == {"run_id": 99, "total": 5, "valued": 1, "skipped": 3, "failed": 1}
+    assert result == {"run_id": 99, "total": 6, "valued": 2, "skipped": 3, "failed": 1}
     assert run.status == ValuationRunStatus.SUCCESS.value
     assert run.finished_at is not None
 

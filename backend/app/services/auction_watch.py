@@ -11,7 +11,7 @@ from app.domain.condition import condition_value_factor, normalize_condition
 from app.domain.metadata import merge_set_info, needs_metadata_retry
 from app.domain.platforms import detect_source_platform
 from app.engine.decision_engine import analyze_deal
-from app.engine.market_consensus import is_persistable_consensus
+from app.engine.market_consensus import PriceBasis, resolve_market_price
 from app.engine.roi_calculator import calculate_ebay_fees, estimate_shipping
 from app.scrapers import (
     METADATA_SCRAPERS,
@@ -74,6 +74,9 @@ class AuctionEvaluation:
     warnings: list[str]
     detected_platform: str
     eol_status: str
+    # Worauf das Maximalgebot rechnet (market_consensus.PriceBasis) und mit welchem Preis.
+    price_basis: str | None = None
+    market_price_used: float | None = None
 
 
 def build_fee_profile(
@@ -405,7 +408,10 @@ async def evaluate_auction(
         fee_applies_to_shipping=fee_applies_to_shipping,
     )
     consensus = analysis.market_consensus
-    resale_reference = consensus.consensus_price
+    # Konsens, sonst BrickMerge (Entscheidung 25.09.2026, gelb markiert).
+    resolved = resolve_market_price(consensus)
+    market_price_used, price_basis = resolved if resolved else (consensus.consensus_price, None)
+    resale_reference = market_price_used
     if still_in_retail and uvp and uvp > 0:
         resale_reference = min(resale_reference, uvp)
     bid_result = calculate_max_bid(
@@ -452,8 +458,10 @@ async def evaluate_auction(
         warnings.append("Datenlage duenn. Maximalgebot besser konservativ ansetzen.")
 
     review_reasons = []
-    if not is_persistable_consensus(consensus) or not consensus.is_reliable:
-        review_reasons.append("Kein belastbarer Marktvergleich aus mindestens zwei passenden Quellen.")
+    if price_basis is None or (price_basis == PriceBasis.CONSENSUS and not consensus.is_reliable):
+        review_reasons.append("Kein belastbarer Marktpreis: weder Konsens aus zwei Quellen noch BrickMerge.")
+    elif price_basis == PriceBasis.BRICKMERGE_ONLY:
+        warnings.insert(0, "Nur BrickMerge-Bestpreis: kein Konsens aus mehreren Quellen.")
     if purchase_shipping is None:
         review_reasons.append("Versandkosten fehlen; Rechnung ist nur eine Schaetzung.")
     if normalize_condition(condition) == "UNKNOWN":
@@ -479,4 +487,6 @@ async def evaluate_auction(
         warnings=warnings,
         detected_platform=detected_platform,
         eol_status=eol_status,
+        price_basis=price_basis,
+        market_price_used=market_price_used,
     )

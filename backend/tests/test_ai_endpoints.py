@@ -204,6 +204,7 @@ def _item(**overrides):
         quantity=1,
         notes=None,
         storage_location=None,
+        market_price_basis=None,
         photos=[],
         listings=[],
         current_market_price=None,
