@@ -96,9 +96,29 @@ def evaluate_remote_scan(payload: dict) -> dict:
 
 async def _evaluate_remote_scan_async(payload: dict) -> dict:
     """Vom Heimrechner gelesene Catawiki-Lose bewerten, speichern und melden."""
-    from app.services.remote_scan import PLATFORM, RemoteScanResults
+    from app.services.remote_scan import RemoteScanResults
 
     data = RemoteScanResults.model_validate(payload)
+    try:
+        return await _evaluate_remote_lots(data)
+    finally:
+        # Auch nach Fehler oder Zeitlimit: sonst blockiert die Sperre bis JOB_LEASE.
+        await _finish_remote_job(data.job_id)
+
+
+async def _finish_remote_job(job_id: str) -> None:
+    from app.models.base import async_session
+    from app.services.remote_scan import finish_job
+
+    try:
+        async with async_session() as session:
+            await finish_job(session, job_id)
+    except Exception as exc:  # noqa: BLE001 -- die Sperre verfaellt dann nach JOB_LEASE
+        logger.error("remote_scan.finish_failed", job_id=job_id, error=repr(exc)[:300])
+
+
+async def _evaluate_remote_lots(data) -> dict:
+    from app.services.remote_scan import PLATFORM
     summary = {"platforms": 1, "discovered": 0, "notified": 0, "skipped": [], "errors": list(data.errors)}
     evaluated = []
     for lot in data.lots:

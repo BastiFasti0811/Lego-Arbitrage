@@ -34,6 +34,7 @@ export default function HomeScanPanel() {
 
   const runnerStale = minutesSince(status.runner_seen_at) > RUNNER_STALE_MINUTES;
   const requested = Boolean(status.requested_at);
+  const running = Boolean(status.job);
 
   return (
     <div className="rounded-lg border border-border bg-bg-primary/40 p-4 mb-4" aria-live="polite">
@@ -47,10 +48,10 @@ export default function HomeScanPanel() {
         <button
           type="button"
           onClick={() => requestMutation.mutate()}
-          disabled={!status.token_configured || requested || requestMutation.isPending}
+          disabled={!status.token_configured || requested || running || requestMutation.isPending}
           className="bg-lego-yellow text-bg-primary text-sm font-semibold px-4 py-2 rounded-lg disabled:opacity-50"
         >
-          {requested ? "Scan angefordert" : "Catawiki jetzt scannen"}
+          {running ? "Scan läuft" : requested ? "Scan angefordert" : "Catawiki jetzt scannen"}
         </button>
       </div>
 
@@ -60,7 +61,16 @@ export default function HomeScanPanel() {
           {formatStamp(status.runner_seen_at) || "noch nie"}
           {runnerStale && " – läuft der PC und die Aufgabe „LEGO Arbitrage Catawiki-Scan“?"}
         </dd>
-        {requested && (
+        {running && (
+          <>
+            <dt className="text-text-muted">Scan läuft seit</dt>
+            <dd className="text-text-secondary">
+              {formatStamp(status.job.issued_at)}
+              {status.job.delivered_at ? " – Lose angekommen, Bewertung läuft" : " – Heimrechner liest Catawiki"}
+            </dd>
+          </>
+        )}
+        {requested && !running && (
           <>
             <dt className="text-text-muted">Angefordert</dt>
             <dd className="text-text-secondary">

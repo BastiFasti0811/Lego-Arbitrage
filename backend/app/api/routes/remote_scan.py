@@ -8,8 +8,9 @@ from app.models import get_session
 from app.runtime_settings import get_settings_map
 from app.services.remote_scan import (
     TOKEN_KEY,
+    JobRejectedError,
     RemoteScanResults,
-    clear_request,
+    accept_results,
     request_scan,
     runner_job,
     scan_status,
@@ -18,8 +19,6 @@ from app.services.remote_scan import (
 from app.tasks.celery_app import celery_app
 
 logger = structlog.get_logger()
-router = APIRouter()
-
 EVALUATE_TASK = "app.tasks.catawiki_scan.evaluate_remote_scan"
 
 
@@ -30,24 +29,27 @@ async def require_runner_token(authorization: str | None = Header(default=None))
         raise HTTPException(status_code=401, detail="Heimrechner-Token fehlt oder ist falsch")
 
 
-# --- Heimrechner (Token) -------------------------------------------------------
+router = APIRouter()
+# Alles unter /runner laeuft ohne Login-Cookie (app/main.py); die Token-Pflicht
+# haengt am Router selbst, damit keine kuenftige Route versehentlich offen ist.
+runner = APIRouter(prefix="/runner", dependencies=[Depends(require_runner_token)])
 
 
-@router.get("/runner/job", dependencies=[Depends(require_runner_token)])
+@runner.get("/job")
 async def get_runner_job(session: AsyncSession = Depends(get_session)):
     return await runner_job(session)
 
 
-@router.post("/runner/results", status_code=202, dependencies=[Depends(require_runner_token)])
+@runner.post("/results", status_code=202)
 async def post_runner_results(data: RemoteScanResults, session: AsyncSession = Depends(get_session)):
+    try:
+        await accept_results(session, data)
+    except JobRejectedError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     # Bewertung dauert je Los mehrere Marktabfragen: im Worker, nicht im Request.
     celery_app.send_task(EVALUATE_TASK, args=[data.model_dump()], queue="analysis")
-    await clear_request(session)
-    logger.info("remote_scan.results_accepted", lots=len(data.lots), errors=len(data.errors))
+    logger.info("remote_scan.results_accepted", job_id=data.job_id, lots=len(data.lots), errors=len(data.errors))
     return {"accepted": len(data.lots)}
-
-
-# --- App (Cookie) --------------------------------------------------------------
 
 
 @router.get("/status")
@@ -65,3 +67,6 @@ async def post_scan_request(session: AsyncSession = Depends(get_session)):
         )
     await request_scan(session)
     return await scan_status(session)
+
+
+router.include_router(runner)

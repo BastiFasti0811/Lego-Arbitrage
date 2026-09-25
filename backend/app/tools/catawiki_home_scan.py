@@ -7,8 +7,8 @@ Bewertung, Speicherung und Telegram macht Prod.
 Aufruf aus dem Repo-Wurzelverzeichnis:
 
     PYTHONPATH=backend backend/.venv/Scripts/python.exe -m app.tools.catawiki_home_scan
-    ... --force     # scannen, auch wenn nichts angefordert ist
-    ... --dry-run   # scannen und ausgeben, nichts an Prod schicken
+    ... --dry-run           # bei Auftrag scannen und ausgeben, nichts an Prod schicken
+    ... --force --dry-run   # auch ohne Auftrag scannen (nur zum Testen; Prod nimmt nichts an)
 
 Konfiguration (Umgebung oder Datei %USERPROFILE%\\.lego-arbitrage\\home-scan.env,
 Zeilen KEY=VALUE):
@@ -30,9 +30,8 @@ from pathlib import Path
 
 import httpx
 
-from app.services.catawiki import CatawikiParseError, CatawikiScraper, needs_lot_details
+from app.services.catawiki import PARSER_VERSION, CatawikiParseError, CatawikiScraper, needs_lot_details
 
-RUNNER_VERSION = "1"
 CONFIG_FILE = Path.home() / ".lego-arbitrage" / "home-scan.env"
 # Nach so vielen gesperrten Losabrufen hintereinander aufhoeren statt weiterzuhaemmern.
 MAX_CONSECUTIVE_BLOCKS = 3
@@ -92,13 +91,17 @@ async def run(force: bool, dry_run: bool) -> int:
         response = await api.get("/api/remote-scan/runner/job")
         response.raise_for_status()
         job = response.json()
-        if not job["run"] and not force:
+        if job.get("parser_version") != PARSER_VERSION:
+            print(f"Parser {PARSER_VERSION} auf dem PC, Prod erwartet {job.get('parser_version')}: "
+                  "Checkout aktualisieren (git pull auf main).")
+            return 1
+        if not job["run"] and not (force and dry_run):
+            if force:
+                print("Ohne Auftrag nimmt Prod nichts an: Button in der App nutzen oder --dry-run.")
+                return 1
             return 0
         if not job["scan_urls"]:
-            if not force:
-                return 0
-            # --force ohne Auftrag: die URLs stehen nur in Prods Einstellungen.
-            print("Keine Scan-URLs im Auftrag (Einstellungen > Catawiki > Scan URLs).")
+            print("Keine Scan-URLs (Einstellungen > Catawiki > Scan URLs).")
             return 1
         print(f"Scan ({job['reason'] or 'erzwungen'}): {len(job['scan_urls'])} URL(s)")
         lots, errors = await scan(job)
@@ -109,7 +112,7 @@ async def run(force: bool, dry_run: bool) -> int:
                 print(f"  {lot['lot_id']} {lot['title'][:50]} | {lot['current_bid']} | {lot['condition']}")
             return 0
         response = await api.post("/api/remote-scan/runner/results", json={
-            "lots": lots, "errors": errors, "runner_version": RUNNER_VERSION,
+            "job_id": job["job_id"], "parser_version": PARSER_VERSION, "lots": lots, "errors": errors,
         })
         response.raise_for_status()
         print(f"An Prod uebergeben: {response.json()['accepted']} Lose")
@@ -128,7 +131,7 @@ def _log_to_file_without_console() -> None:
 def main() -> None:
     _log_to_file_without_console()
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--force", action="store_true", help="scannen, auch ohne Anforderung")
+    parser.add_argument("--force", action="store_true", help="mit --dry-run: auch ohne Auftrag scannen")
     parser.add_argument("--dry-run", action="store_true", help="nichts an Prod schicken")
     args = parser.parse_args()
     try:

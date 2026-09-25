@@ -1,6 +1,6 @@
 """Catawiki-Scan ueber den Heimrechner: Token, Nutzdaten, Zeitplan, Auswertung."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -10,7 +10,10 @@ from pydantic import ValidationError
 from app.api.routes import auctions
 from app.api.routes import remote_scan as remote_scan_routes
 from app.services import remote_scan
+from app.services.catawiki import PARSER_VERSION
 from app.tasks import catawiki_scan
+
+JOB = "b" * 32
 
 TOKEN = "x" * 32
 LOT = {
@@ -84,10 +87,16 @@ def test_remote_lot_rejects_foreign_or_implausible_data(changes):
         remote_scan.RemoteLot(**{**LOT, **changes})
 
 
+def _payload(**changes):
+    return {"job_id": JOB, "parser_version": PARSER_VERSION, "lots": [], "errors": [], **changes}
+
+
 def test_results_payload_is_bounded():
     with pytest.raises(ValidationError):
-        remote_scan.RemoteScanResults(lots=[LOT] * 501)
-    assert len(remote_scan.RemoteScanResults(errors=["e" * 1000]).errors[0]) == 300
+        remote_scan.RemoteScanResults(**_payload(lots=[LOT] * 501))
+    with pytest.raises(ValidationError):
+        remote_scan.RemoteScanResults(**_payload(job_id="nicht-hex"))
+    assert len(remote_scan.RemoteScanResults(**_payload(errors=["e" * 1000])).errors[0]) == 300
 
 
 # --- Zeitplan ------------------------------------------------------------------
@@ -125,8 +134,13 @@ async def test_evaluate_remote_scan_saves_and_notifies(monkeypatch):
     send = AsyncMock(return_value=True)
     monkeypatch.setattr(catawiki_scan, "send_auction_discovery_summary", send)
     monkeypatch.setattr(catawiki_scan, "mark_notified", AsyncMock())
+    finish = AsyncMock()
+    monkeypatch.setattr(catawiki_scan, "_finish_remote_job", finish)
 
-    summary = await catawiki_scan._evaluate_remote_scan_async({"lots": [LOT], "errors": ["Heimrechner: 1 Los 403"]})
+    summary = await catawiki_scan._evaluate_remote_scan_async(
+        _payload(lots=[LOT], errors=["Heimrechner: 1 Los 403"]),
+    )
+    finish.assert_awaited_once_with(JOB)
 
     lot_arg = evaluate.call_args.kwargs["lot"]
     assert lot_arg.details_verified and lot_arg.url == "https://www.catawiki.com/de/l/106997010"
@@ -144,9 +158,10 @@ async def test_one_failing_lot_does_not_drop_the_others(monkeypatch):
     monkeypatch.setattr(catawiki_scan, "save_scan", save)
     monkeypatch.setattr(catawiki_scan, "get_settings_map", AsyncMock(return_value={}))
     monkeypatch.setattr(catawiki_scan, "unnotified_results", AsyncMock(return_value=[]))
+    monkeypatch.setattr(catawiki_scan, "_finish_remote_job", AsyncMock())
 
     second = {**LOT, "lot_id": "107053796", "url": "https://www.catawiki.com/de/l/107053796"}
-    summary = await catawiki_scan._evaluate_remote_scan_async({"lots": [LOT, second]})
+    summary = await catawiki_scan._evaluate_remote_scan_async(_payload(lots=[LOT, second]))
 
     assert len(save.call_args.args[1]) == 1
     assert any("106997010" in error for error in summary["errors"])
@@ -182,6 +197,15 @@ def db():
         yield _AsyncSession(session)
 
 
+async def test_lease_is_released_even_when_evaluation_crashes(monkeypatch):
+    monkeypatch.setattr(catawiki_scan, "_evaluate_lot", AsyncMock(side_effect=KeyboardInterrupt))
+    finish = AsyncMock()
+    monkeypatch.setattr(catawiki_scan, "_finish_remote_job", finish)
+    with pytest.raises(KeyboardInterrupt):
+        await catawiki_scan._evaluate_remote_scan_async(_payload(lots=[LOT]))
+    finish.assert_awaited_once_with(JOB)
+
+
 async def test_request_then_job_then_results_clear_the_request(db, monkeypatch):
     from app.models import AppSetting
 
@@ -195,16 +219,57 @@ async def test_request_then_job_then_results_clear_the_request(db, monkeypatch):
     job = await remote_scan.runner_job(db)
     assert job["run"] is False and job["reason"] is None
 
-    await remote_scan.request_scan(db)
-    job = await remote_scan.runner_job(db)
+    t0 = datetime(2026, 9, 25, 10, 0, tzinfo=UTC)
+    await remote_scan.request_scan(db, now=t0)
+    job = await remote_scan.runner_job(db, now=t0)
     assert (job["run"], job["reason"], job["max_results_per_url"]) == (True, "requested", 30)
     assert job["scan_urls"] == ["https://www.catawiki.com/de/a/1256209"]
+    assert job["job_id"] and job["parser_version"] == PARSER_VERSION
+
+    # Review #33, Blocker: solange der Auftrag laeuft, kein zweiter (Folge-Poll nach 10 Min.).
+    again = await remote_scan.runner_job(db, now=t0 + timedelta(minutes=10))
+    assert again["run"] is False and again["job_id"] is None
 
     status = await remote_scan.scan_status(db)
     assert status["token_configured"] and status["requested_at"] and status["runner_seen_at"]
+    assert status["job"]["reason"] == "requested"
 
-    await remote_scan.clear_request(db)
-    assert (await remote_scan.runner_job(db))["run"] is False
+    # Neue Anforderung waehrend des Scans: bleibt nach der Lieferung stehen.
+    await remote_scan.request_scan(db, now=t0 + timedelta(minutes=5))
+    data = remote_scan.RemoteScanResults(**_payload(job_id=job["job_id"]))
+    await remote_scan.accept_results(db, data, now=t0 + timedelta(minutes=12))
+    assert (await remote_scan.scan_status(db))["requested_at"] is not None
+
+    # Doppelte Lieferung wird abgelehnt.
+    with pytest.raises(remote_scan.JobRejectedError):
+        await remote_scan.accept_results(db, data, now=t0 + timedelta(minutes=13))
+
+    # Erst nach der Bewertung (finish_job) gibt es den naechsten Auftrag.
+    assert (await remote_scan.runner_job(db, now=t0 + timedelta(minutes=20)))["run"] is False
+    await remote_scan.finish_job(db, job["job_id"])
+    nxt = await remote_scan.runner_job(db, now=t0 + timedelta(minutes=21))
+    assert nxt["run"] is True and nxt["job_id"] != job["job_id"]
+
+
+async def test_results_without_matching_job_or_version_are_rejected(db, monkeypatch):
+    monkeypatch.setattr(remote_scan, "get_settings_map", AsyncMock(return_value={
+        "catawiki_scan_urls": "https://www.catawiki.com/de/a/1\n", "catawiki_scan_frequency": "off",
+    }))
+    t0 = datetime(2026, 9, 25, 10, 0, tzinfo=UTC)
+    with pytest.raises(remote_scan.JobRejectedError):
+        # Ohne ausgegebenen Auftrag nimmt Prod nichts an (Missbrauch mit gueltigem Token).
+        await remote_scan.accept_results(db, remote_scan.RemoteScanResults(**_payload()), now=t0)
+    await remote_scan.request_scan(db, now=t0)
+    job = await remote_scan.runner_job(db, now=t0)
+    with pytest.raises(remote_scan.JobRejectedError, match="Parser"):
+        await remote_scan.accept_results(
+            db, remote_scan.RemoteScanResults(**_payload(job_id=job["job_id"], parser_version="alt")), now=t0,
+        )
+    # Abgelaufene Sperre (Heimrechner nie zurueckgekommen): Ergebnis zu spaet, neuer Auftrag moeglich.
+    later = t0 + remote_scan.JOB_LEASE + timedelta(minutes=1)
+    with pytest.raises(remote_scan.JobRejectedError):
+        await remote_scan.accept_results(db, remote_scan.RemoteScanResults(**_payload(job_id=job["job_id"])), now=later)
+    assert (await remote_scan.runner_job(db, now=later))["run"] is True
 
 
 async def test_request_without_token_is_refused(db):

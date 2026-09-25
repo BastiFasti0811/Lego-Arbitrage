@@ -46,7 +46,10 @@ $configFile = Join-Path $configDir "home-scan.env"
 if (-not (Test-Path $configFile)) {
     if (-not $ApiUrl) { throw "-ApiUrl fehlt (Adresse der App wie im Browser, mit /lego)." }
     New-Item -ItemType Directory -Force -Path $configDir | Out-Null
-    $token = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 40 | ForEach-Object { [char]$_ })
+    # 32 Byte aus dem Krypto-Zufallsgenerator, URL-sicheres Base64 (43 Zeichen).
+    $bytes = New-Object byte[] 32
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    $token = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
     @(
         "# Catawiki-Heimrechner-Scan. Token identisch in der App eintragen:",
         "# Einstellungen > Catawiki > Heimrechner-Token",

@@ -3,7 +3,7 @@
 import httpx
 import pytest
 
-from app.services.catawiki import CatawikiLotCandidate
+from app.services.catawiki import PARSER_VERSION, CatawikiLotCandidate
 from app.services.remote_scan import RemoteScanResults
 from app.tools import catawiki_home_scan
 
@@ -53,7 +53,9 @@ async def test_scan_builds_payload_that_prod_accepts(monkeypatch):
 
     assert errors == []
     assert [lot["details_verified"] for lot in lots] == [True, False, True]  # gebraucht: ohne Details
-    payload = RemoteScanResults.model_validate({"lots": lots, "errors": errors})
+    payload = RemoteScanResults.model_validate({
+        "job_id": "a" * 32, "parser_version": PARSER_VERSION, "lots": lots, "errors": errors,
+    })
     assert payload.lots[0].category_url == AUCTION and payload.lots[0].current_bid == 94.0
 
 

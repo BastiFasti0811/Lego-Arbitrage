@@ -117,7 +117,8 @@ DEFAULT_SETTINGS = [
         "label": "Heimrechner-Token",
         "description": (
             "Zufallswert (mind. 24 Zeichen), den auch das Scan-Skript auf dem Heimrechner kennt. "
-            "Oeffnet nur die Catawiki-Scan-Schnittstelle, nicht die App."
+            "Oeffnet nur die Catawiki-Scan-Schnittstelle, nicht die App; der Heimrechner "
+            "bekommt damit auch den Catawiki-Cookie-Header von oben."
         ),
         "is_secret": True,
     },

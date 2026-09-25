@@ -13,12 +13,23 @@ Ablauf:
 3. Ein Celery-Task bewertet sie wie der fruehere Server-Scan.
 
 Der Heimrechner meldet sich mit dem Token aus der Einstellung
-`remote_scan_token`, nicht mit dem App-Passwort. Das Token oeffnet nur diese
-beiden Endpunkte.
+`remote_scan_token`, nicht mit dem App-Passwort. Das Token oeffnet nur die
+Endpunkte unter /api/remote-scan/runner/. Achtung: der Auftrag enthaelt den
+optionalen Catawiki-Cookie-Header aus den Einstellungen; wer das Token hat,
+bekommt also auch diese Catawiki-Sitzung.
+
+Auftrags-Sperre: Prod gibt immer nur einen Auftrag mit eigener ID aus und nimmt
+Ergebnisse genau einmal fuer genau diesen Auftrag an. Bis der Bewertungs-Task
+fertig ist (finish_job) oder JOB_LEASE abgelaufen ist, gibt es keinen neuen
+Auftrag. Weil der Task auf 30 Minuten begrenzt ist und die Sperre 60 Minuten
+haelt, laufen nie zwei Bewertungen parallel, und dieselben Lose gehen nicht
+doppelt per Telegram raus.
 """
 
 import hmac
-from datetime import UTC, datetime, time
+import json
+import uuid
+from datetime import UTC, datetime, time, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -28,7 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AppSetting, AuctionScanState
 from app.runtime_settings import get_settings_map
-from app.services.catawiki import CatawikiLotCandidate, CatawikiParseError, canonical_lot_url
+from app.services.catawiki import PARSER_VERSION, CatawikiLotCandidate, CatawikiParseError, canonical_lot_url
 
 BERLIN = ZoneInfo("Europe/Berlin")
 PLATFORM = "CATAWIKI"
@@ -37,6 +48,9 @@ TOKEN_KEY = "remote_scan_token"
 INTERNAL_CATEGORY = "internal"
 REQUESTED_KEY = "catawiki_scan_requested_at"
 RUNNER_SEEN_KEY = "catawiki_runner_seen_at"
+JOB_KEY = "catawiki_scan_job"
+# Laenger als Scan am PC plus Bewertungs-Task (time_limit 1800 s).
+JOB_LEASE = timedelta(minutes=60)
 # Wie der fruehere Beat-Termin des Server-Scans.
 SCHEDULED_TIME = time(8, 40)
 MIN_TOKEN_LENGTH = 24
@@ -92,9 +106,10 @@ class RemoteLot(BaseModel):
 
 
 class RemoteScanResults(BaseModel):
+    job_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    parser_version: str = Field(max_length=50)
     lots: list[RemoteLot] = Field(default_factory=list, max_length=500)
     errors: list[str] = Field(default_factory=list, max_length=20)
-    runner_version: str | None = Field(default=None, max_length=50)
 
     @model_validator(mode="after")
     def _short_errors(self):
@@ -102,23 +117,53 @@ class RemoteScanResults(BaseModel):
         return self
 
 
-async def _get_internal(session: AsyncSession, key: str) -> datetime | None:
-    row = (await session.execute(select(AppSetting).where(AppSetting.key == key))).scalar_one_or_none()
-    if not row or not row.value:
-        return None
-    try:
-        return datetime.fromisoformat(row.value)
-    except ValueError:
-        return None
+async def _row(session: AsyncSession, key: str, *, lock: bool = False) -> AppSetting | None:
+    statement = select(AppSetting).where(AppSetting.key == key)
+    if lock:
+        statement = statement.with_for_update()
+    return (await session.execute(statement)).scalar_one_or_none()
 
 
-async def _set_internal(session: AsyncSession, key: str, value: datetime | None) -> None:
-    row = (await session.execute(select(AppSetting).where(AppSetting.key == key))).scalar_one_or_none()
-    text = value.isoformat() if value else None
+async def _set_raw(session: AsyncSession, key: str, text: str | None) -> None:
+    row = await _row(session, key)
     if row is None:
         session.add(AppSetting(key=key, value=text, is_secret=False, category=INTERNAL_CATEGORY, label=key))
     else:
         row.value = text
+
+
+def _parse_time(text: str | None) -> datetime | None:
+    try:
+        return datetime.fromisoformat(text) if text else None
+    except ValueError:
+        return None
+
+
+async def _get_internal(session: AsyncSession, key: str) -> datetime | None:
+    row = await _row(session, key)
+    return _parse_time(row.value if row else None)
+
+
+async def _set_internal(session: AsyncSession, key: str, value: datetime | None) -> None:
+    await _set_raw(session, key, value.isoformat() if value else None)
+
+
+async def _get_job(session: AsyncSession, *, lock: bool = False) -> dict | None:
+    row = await _row(session, JOB_KEY, lock=lock)
+    try:
+        job = json.loads(row.value) if row and row.value else None
+    except ValueError:
+        return None
+    return job if isinstance(job, dict) and job.get("job_id") else None
+
+
+async def _set_job(session: AsyncSession, job: dict | None) -> None:
+    await _set_raw(session, JOB_KEY, json.dumps(job) if job else None)
+
+
+def _job_active(job: dict | None, now: datetime) -> bool:
+    issued_at = _parse_time((job or {}).get("issued_at"))
+    return bool(issued_at and now - issued_at < JOB_LEASE)
 
 
 def _scan_urls(value: str | None) -> list[str]:
@@ -147,13 +192,26 @@ async def runner_job(session: AsyncSession, now: datetime | None = None) -> dict
         select(AuctionScanState).where(AuctionScanState.platform == PLATFORM)
     )).scalar_one_or_none()
     urls = _scan_urls(config.get("catawiki_scan_urls"))
+    job = await _get_job(session, lock=True)
 
     reason = None
-    if urls and requested_at:
+    if _job_active(job, now):
+        # Ein Auftrag laeuft noch (am PC oder in der Bewertung): keinen zweiten ausgeben.
+        reason = None
+    elif urls and requested_at:
         reason = "requested"
     elif urls and scheduled_scan_due(config.get("catawiki_scan_frequency"), state.scanned_at if state else None, now):
         reason = "scheduled"
 
+    job_id = None
+    if reason:
+        job_id = uuid.uuid4().hex
+        await _set_job(session, {
+            "job_id": job_id, "reason": reason, "issued_at": now.isoformat(),
+            # Nur diese Anforderung erledigt der Auftrag; eine spaetere bleibt stehen.
+            "request_at": requested_at.isoformat() if requested_at else None,
+            "delivered_at": None,
+        })
     await _set_internal(session, RUNNER_SEEN_KEY, now)
     await session.commit()
     try:
@@ -163,6 +221,8 @@ async def runner_job(session: AsyncSession, now: datetime | None = None) -> dict
     return {
         "run": reason is not None,
         "reason": reason,
+        "job_id": job_id,
+        "parser_version": PARSER_VERSION,
         # Immer mitliefern: `run` entscheidet, `--force` am Heimrechner braucht die URLs trotzdem.
         "scan_urls": urls,
         "max_results_per_url": max_results,
@@ -176,9 +236,41 @@ async def request_scan(session: AsyncSession, now: datetime | None = None) -> No
     await session.commit()
 
 
-async def clear_request(session: AsyncSession) -> None:
-    await _set_internal(session, REQUESTED_KEY, None)
+class JobRejectedError(Exception):
+    """Ergebnisse passen zu keinem offenen Auftrag (oder zu einer anderen Parser-Version)."""
+
+    def __init__(self, status_code: int, detail: str):
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+
+
+async def accept_results(session: AsyncSession, data: RemoteScanResults, now: datetime | None = None) -> dict:
+    """Ergebnisse genau einmal fuer den ausgegebenen Auftrag annehmen."""
+    now = now or datetime.now(UTC)
+    if data.parser_version != PARSER_VERSION:
+        raise JobRejectedError(409, f"Heimrechner-Parser {data.parser_version}, Prod erwartet {PARSER_VERSION}: "
+                               "Checkout auf dem PC aktualisieren")
+    job = await _get_job(session, lock=True)
+    if not job or job["job_id"] != data.job_id or not _job_active(job, now):
+        raise JobRejectedError(409, "Kein offener Auftrag mit dieser ID")
+    if job.get("delivered_at"):
+        raise JobRejectedError(409, "Ergebnisse zu diesem Auftrag sind schon angekommen")
+    job["delivered_at"] = now.isoformat()
+    await _set_job(session, job)
+    requested_at = await _get_internal(session, REQUESTED_KEY)
+    if requested_at and job.get("request_at") and requested_at <= _parse_time(job["request_at"]):
+        await _set_internal(session, REQUESTED_KEY, None)
     await session.commit()
+    return job
+
+
+async def finish_job(session: AsyncSession, job_id: str) -> None:
+    """Sperre nach der Bewertung freigeben -- nur die eigene."""
+    job = await _get_job(session, lock=True)
+    if job and job["job_id"] == job_id:
+        await _set_job(session, None)
+        await session.commit()
 
 
 async def scan_status(session: AsyncSession) -> dict:
@@ -188,7 +280,12 @@ async def scan_status(session: AsyncSession) -> dict:
     )).scalar_one_or_none()
     requested_at = await _get_internal(session, REQUESTED_KEY)
     runner_seen_at = await _get_internal(session, RUNNER_SEEN_KEY)
+    job = await _get_job(session)
+    active = job if _job_active(job, datetime.now(UTC)) else None
     return {
+        "job": {
+            "reason": active["reason"], "issued_at": active["issued_at"], "delivered_at": active.get("delivered_at"),
+        } if active else None,
         "token_configured": bool(token and token.value and len(token.value) >= MIN_TOKEN_LENGTH),
         "requested_at": requested_at.isoformat() if requested_at else None,
         "runner_seen_at": runner_seen_at.isoformat() if runner_seen_at else None,
