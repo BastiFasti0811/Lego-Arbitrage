@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
+import HomeScanPanel from "../components/HomeScanPanel";
 
 const EURO = "\u20ac";
 
@@ -127,6 +128,7 @@ export default function AuctionWatch() {
       </div>
 
       <div className="bg-bg-card border border-border rounded-xl p-6 mb-6">
+        <HomeScanPanel />
         <div className="flex flex-wrap items-center gap-3 mb-4">
           <label htmlFor="scan-frequency" className="text-text-secondary text-sm">Catawiki automatisch</label>
           <select id="scan-frequency" value={settingsMap.catawiki_scan_frequency || "off"}
@@ -137,7 +139,7 @@ export default function AuctionWatch() {
             <option value="weekly">Sonntags um 08:40</option>
             <option value="off">Aus</option>
           </select>
-          <span className="text-text-muted text-xs">Deutsche Zeit. Verwendet die URLs aus Einstellungen.</span>
+          <span className="text-text-muted text-xs">Deutsche Zeit, über den Heimrechner. Verwendet die URLs aus Einstellungen.</span>
         </div>
         {scheduleMutation.isError && <p role="alert" className="text-no-go">{scheduleMutation.error.message}</p>}
         {scanError && <p role="alert" className="text-no-go">Gespeicherter Scan konnte nicht geladen werden.</p>}
