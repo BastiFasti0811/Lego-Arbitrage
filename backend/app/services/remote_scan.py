@@ -283,7 +283,7 @@ async def finish_job(session: AsyncSession, job_id: str) -> None:
         await session.commit()
 
 
-async def scan_status(session: AsyncSession) -> dict:
+async def scan_status(session: AsyncSession, now: datetime | None = None) -> dict:
     token = (await session.execute(select(AppSetting).where(AppSetting.key == TOKEN_KEY))).scalar_one_or_none()
     state = (await session.execute(
         select(AuctionScanState).where(AuctionScanState.platform == PLATFORM)
@@ -291,7 +291,7 @@ async def scan_status(session: AsyncSession) -> dict:
     requested_at = await _get_internal(session, REQUESTED_KEY)
     runner_seen_at = await _get_internal(session, RUNNER_SEEN_KEY)
     job = await _get_job(session)
-    active = job if _job_active(job, datetime.now(UTC)) else None
+    active = job if _job_active(job, now or datetime.now(UTC)) else None
     return {
         "job": {
             "reason": active["reason"], "issued_at": active["issued_at"], "delivered_at": active.get("delivered_at"),
