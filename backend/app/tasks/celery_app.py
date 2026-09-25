@@ -5,11 +5,27 @@ import asyncio
 import structlog
 from celery import Celery
 from celery.schedules import crontab
-from celery.signals import task_failure, task_success
+from celery.signals import after_setup_logger, after_setup_task_logger, task_failure, task_success
 
 from app.config import settings
+from app.logging_setup import quiet_http_client_loggers
 
 logger = structlog.get_logger()
+
+# Worker und Beat laden dieses Modul beim Start. `--loglevel=info` hebt den
+# Root-Logger auf INFO, und httpx wuerde damit jede Telegram-URL samt
+# Bot-Token loggen (siehe app/logging_setup.py).
+quiet_http_client_loggers()
+
+
+@after_setup_logger.connect
+@after_setup_task_logger.connect
+def _quiet_http_clients_after_celery_logging(**kwargs) -> None:
+    # Celery richtet das Logging erst nach dem Import ein. Die Level an den
+    # benannten Loggern fasst es nicht an; das hier ist die Absicherung, falls
+    # sich das in einer Celery-Version aendert.
+    quiet_http_client_loggers()
+
 
 celery_app = Celery(
     "lego_arbitrage",

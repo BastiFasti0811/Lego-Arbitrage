@@ -104,6 +104,15 @@ Recommended GitHub environment setup:
   everything else keeps working
 - Inventory-Fotos liegen unter `MEDIA_ROOT`, in Produktion per Compose auf
   `${DATA_ROOT}/media` gemountet
+- `backend/.env` in Produktion zusaetzlich: `SESSION_COOKIE_PATH=/lego`. Die App
+  laeuft dort unter `/lego` auf demselben Host und hinter demselben Caddy wie
+  andere Apps; ohne den Pfad gilt das Session-Cookie fuer den ganzen Host.
+  Der Browser prueft den Pfad gegen `/lego/api/...`, dass Caddy das Praefix vor
+  dem Backend abschneidet, aendert daran nichts. Lokal bleibt der Default `/`.
+- Dashboard-Sessions liegen in Redis (Key `lego:session:*`, Laufzeit 30 Tage),
+  der Login-Zaehler ebenfalls (`lego:login_attempts:<ip>`, 5 Fehlversuche pro
+  15 Minuten, danach HTTP 429). Ist Redis weg, ist niemand angemeldet (401)
+  und der Login antwortet mit 503.
 
 ## Deploy
 

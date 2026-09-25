@@ -18,12 +18,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from xml.etree import ElementTree
 
-import httpx
 import structlog
 from sqlalchemy import select
 
 from app.models.base import async_session
 from app.models.settings import AppSetting
+from app.security.http_guard import guarded_async_client
 from app.security.url_policy import validate_marketplace_url
 
 logger = structlog.get_logger()
@@ -146,7 +146,8 @@ async def _store(rate: float, as_of: datetime) -> None:
 
 async def _fetch_ecb() -> float | None:
     url = validate_marketplace_url(ECB_DAILY_URL, "ECB")
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+    # Jeder Redirect-Hop wird vor dem Abruf gegen die ECB-Allowlist geprueft.
+    async with guarded_async_client(lambda hop: validate_marketplace_url(hop, "ECB"), timeout=15.0) as client:
         response = await client.get(url)
         response.raise_for_status()
         return parse_ecb_rate(response.text)
