@@ -36,7 +36,7 @@ SHIPPING_DESTINATION = "de"
 # Bei JEDER Aenderung an Parser oder Zustandslogik hochzaehlen. Prod nimmt
 # Heimrechner-Ergebnisse nur mit derselben Version an: ein veralteter Checkout
 # auf dem PC darf keine Lose nach altem Regelwerk als versiegelt melden.
-PARSER_VERSION = "2026-09-25.3"
+PARSER_VERSION = "2026-09-25.4"
 
 
 @dataclass
@@ -119,9 +119,9 @@ ZUSTAND_ID_BY_TEXT = {
 # Verpackung bei Zustand "Unbenutzt": (Zustand, Kartonschaden).
 VERPACKUNG_CONDITION = {
     80575: ("NEW_SEALED", False),    # "In unbeschädigter und versiegelter Originalverpackung"
-    # Belegt an Los 107053796 (21368 Peanuts, 25.09.2026). "Ungeoeffnet" ist nicht
-    # woertlich "versiegelt": bewusst NEW_SEALED mit Kartonschaden-Abschlag.
-    80577: ("NEW_SEALED", True),     # "In beschädigter ungeöffneter Originalverpackung"
+    # Belegt an Los 107053796 (21368 Peanuts, 25.09.2026). Entscheidung Sebastian:
+    # "ungeoeffnet" ist nicht versiegelt -> kein NEW_SEALED, mit Kartonschaden-Abschlag.
+    80577: ("NEW_OPEN_BOX", True),   # "In beschädigter ungeöffneter Originalverpackung"
     92699: ("NEW_OPEN_BOX", False),  # "ungeöffnete Schachtel Dichtungen defekt"
     80579: ("NEW_OPEN_BOX", False),  # "In unbeschädigter geöffneter Originalverpackung"
     92711: ("NEW_OPEN_BOX", False),  # "mit Handbuch in geöffneter Box"
