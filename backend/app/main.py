@@ -24,7 +24,12 @@ from app.api.routes import (
 from app.api.routes import settings as settings_routes
 from app.api.routes.auth import COOKIE_NAME, verify_cookie
 from app.config import settings
+from app.logging_setup import quiet_http_client_loggers
 from app.models import Base, engine
+
+# Beim Start des API-Prozesses: httpx loggt sonst jede URL auf INFO, darunter
+# api.telegram.org/bot<TOKEN>/... (siehe app/logging_setup.py).
+quiet_http_client_loggers()
 
 logger = structlog.get_logger()
 
@@ -58,7 +63,10 @@ app.add_middleware(
 )
 
 # ── Auth Middleware ────────────────────────────────────────
-PUBLIC_PATHS = {"/api/auth/login", "/health", "/"}
+# Logout ist offen: Es kann nur die Session beenden, deren ID der Aufrufer
+# ohnehin schon hat, und muss das Browser-Cookie auch dann loeschen, wenn
+# Redis gerade nicht antwortet (die Middleware wuerde dann 401 liefern).
+PUBLIC_PATHS = {"/api/auth/login", "/api/auth/logout", "/health", "/"}
 DOCS_PATHS = {"/docs", "/openapi.json"}
 RUNNER_PATH_PREFIX = "/api/remote-scan/runner/"
 
@@ -71,7 +79,7 @@ async def auth_middleware(request: Request, call_next):
 
     cookie = request.cookies.get(COOKIE_NAME)
     if path in DOCS_PATHS:
-        if settings.debug or verify_cookie(cookie):
+        if settings.debug or await verify_cookie(cookie):
             return await call_next(request)
         return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
 
@@ -82,8 +90,9 @@ async def auth_middleware(request: Request, call_next):
         # Der Heimrechner hat kein Cookie; die Route prueft sein Token selbst.
         return await call_next(request)
 
-    # Check cookie on all other /api/* routes
-    if not verify_cookie(cookie):
+    # Check cookie on all other /api/* routes. verify_cookie fragt Redis und
+    # liefert bei einem Ausfall False: dann 401, nie ein ungepruefter Durchlass.
+    if not await verify_cookie(cookie):
         return JSONResponse(
             status_code=401,
             content={"detail": "Not authenticated"},

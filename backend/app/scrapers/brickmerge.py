@@ -16,6 +16,8 @@ from app.scrapers.base import (
     UndecodableResponseError,
     parse_de_price,
 )
+from app.security.http_guard import guarded_async_client
+from app.security.url_policy import UnsafeUrlError, validate_url_for_scraper
 
 logger = structlog.get_logger()
 
@@ -91,7 +93,11 @@ class BrickMergeScraper(BaseScraper):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept-Encoding": "identity",
         }
-        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=15.0) as client:
+        # Eigener Client, aber dieselbe Hop-Pruefung wie der gemeinsame: Der
+        # ?find=-Redirect wird erst abgerufen, wenn sein Ziel erlaubt ist.
+        async with guarded_async_client(
+            lambda url: validate_url_for_scraper(url, self.name), headers=headers, timeout=15.0
+        ) as client:
             r = await client.get(f"{BASE_URL}/?find={set_number}")
             r.raise_for_status()
             return r.text
@@ -200,13 +206,15 @@ class BrickMergeScraper(BaseScraper):
                 source_url=f"{BASE_URL}/?find={set_number}",
                 notes=_price_notes(page_text),
             )
-        except (UndecodableResponseError, httpx.HTTPError):
+        except (UndecodableResponseError, httpx.HTTPError, UnsafeUrlError):
             # _fetch_detail_page haengt nicht am gemeinsamen _fetch (siehe
             # dort) und kennt darum kein UndecodableResponseError selbst -
             # der Typ bleibt trotzdem hier stehen, falls das je zusammengeht.
             # httpx.HTTPError ist der eigentliche Treffer: ein Timeout oder
             # abgebrochener Verbindungsaufbau beim eigenen Client dieser
             # Methode war bisher ununterscheidbar von "keine Angebote".
+            # UnsafeUrlError ebenso: ein geblockter Redirect ist ein
+            # Abruffehler, kein Set ohne Angebote.
             raise
         except Exception as e:
             logger.error("brickmerge.price_failed", set_number=set_number, error=str(e))

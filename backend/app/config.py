@@ -120,6 +120,11 @@ class Settings(BaseSettings):
     session_secret: str | None = None
     session_cookie_secure: bool = True
     session_cookie_samesite: str = "lax"
+    # Prod laeuft unter /lego auf demselben Host wie andere Apps: dort
+    # SESSION_COOKIE_PATH=/lego, sonst geht das Cookie an jede App des Hosts.
+    # Der Browser vergleicht mit dem Pfad, den er aufruft (/lego/api/...);
+    # dass Caddy das Praefix vor dem Backend abschneidet, spielt keine Rolle.
+    session_cookie_path: str = Field(default="/", pattern=r"^/[^;\s]*$")
 
     # ── Media / Uploads ─────────────────────────────────
     media_root: Path = Path("data")

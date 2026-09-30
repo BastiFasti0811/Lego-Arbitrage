@@ -95,7 +95,21 @@ def _ensure_resolved_ips_are_public(host: str) -> None:
             raise UnsafeUrlError("URL loest auf eine lokale oder private Adresse auf")
 
 
+# Shared Address Space (RFC 6598). `ip.is_private` erfasst den Block nicht,
+# erreichbar sind darueber trotzdem nur Adressen hinter dem Provider-NAT bzw.
+# in Overlay-Netzen (Tailscale nutzt genau diesen Bereich).
+_CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
+
+
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if isinstance(ip, ipaddress.IPv6Address):
+        # ::ffff:127.0.0.1 ist 127.0.0.1. Nicht jede Python-Version wertet die
+        # IPv6-Form als Loopback/privat, und CGNAT kennt sie nie: also die
+        # eingebettete IPv4 selbst pruefen.
+        if ip.ipv4_mapped is not None:
+            return _is_blocked_ip(ip.ipv4_mapped)
+    elif ip in _CGNAT_NETWORK:
+        return True
     return any(
         (
             ip.is_loopback,

@@ -14,7 +14,8 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 
 from app.config import settings
 from app.domain.offer_url import canonical_offer_url
-from app.security.url_policy import validate_url_for_scraper
+from app.security.http_guard import guarded_async_client
+from app.security.url_policy import UnsafeUrlError, validate_url_for_scraper
 
 logger = structlog.get_logger()
 
@@ -204,11 +205,13 @@ class BaseScraper(ABC):
         if self._client is None or self._client.is_closed:
             headers = self._base_headers()
             proxy = settings.proxy_url if settings.proxy_url else None
-            self._client = httpx.AsyncClient(
+            # Redirects ja, aber jeder Hop wird vor dem Abruf gegen die
+            # Allowlist dieses Scrapers geprueft (app/security/http_guard.py).
+            self._client = guarded_async_client(
+                lambda url: validate_url_for_scraper(url, self.name),
                 headers=headers,
                 timeout=settings.scraper_timeout,
                 proxy=proxy,
-                follow_redirects=True,
             )
         return self._client
 
@@ -226,9 +229,11 @@ class BaseScraper(ABC):
             # wenig: ein fehlender Decoder im Image loest sich nicht durch
             # einen zweiten Versuch, sondern verdreifacht nur die Last auf
             # der Quelle und verlangsamt jeden Testlauf, der das provoziert.
+            # Eine geblockte URL (auch ein geblockter Redirect-Hop) wird beim
+            # zweiten Versuch nicht erlaubter.
             lambda e: not (
                 (isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (403, 429))
-                or isinstance(e, UndecodableResponseError)
+                or isinstance(e, (UndecodableResponseError, UnsafeUrlError))
             )
         ),
         reraise=True,
@@ -244,6 +249,8 @@ class BaseScraper(ABC):
 
         logger.info("scraper.fetch", scraper=self.name, url=safe_url[:100])
         response = await client.get(safe_url)
+        # Der Client prueft jeden Hop schon vor dem Abruf. Diese Pruefung
+        # bleibt fuer Clients, die Tests oder Unterklassen selbst setzen.
         validate_url_for_scraper(str(response.url), self.name)
         response.raise_for_status()
 
