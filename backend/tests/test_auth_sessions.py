@@ -229,6 +229,35 @@ def test_counter_is_per_client_ip(client):
     assert _login(client, ip="198.51.100.20").status_code == 200
 
 
+def test_rotating_ipv6_addresses_within_one_64_do_not_dodge_the_counter(client):
+    # Ein IPv6-Anschluss bekommt ein ganzes /64. Pro Versuch eine neue Adresse
+    # daraus zu nehmen kostet nichts; gezaehlt wird darum das Praefix.
+    for i in range(login_limit.MAX_ATTEMPTS):
+        assert _login(client, password="falsch", ip=f"2001:db8:1:2::{i + 1:x}").status_code == 401
+
+    assert _login(client, password="falsch", ip="2001:db8:1:2:ffff:ffff:ffff:ffff").status_code == 429
+
+
+def test_another_ipv6_64_has_its_own_counter(client):
+    for _ in range(login_limit.MAX_ATTEMPTS + 1):
+        _login(client, password="falsch", ip="2001:db8:1:2::1")
+
+    assert _login(client, ip="2001:db8:1:3::1").status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("ip", "bucket"),
+    [
+        ("203.0.113.7", "203.0.113.7"),
+        ("2001:db8:1:2:aaaa:bbbb:cccc:dddd", "2001:db8:1:2::/64"),
+        ("::ffff:203.0.113.7", "203.0.113.7"),
+        ("unknown", "unknown"),
+    ],
+)
+def test_limit_bucket(ip, bucket):
+    assert login_limit.limit_bucket(ip) == bucket
+
+
 def test_spoofed_left_forwarded_for_entries_do_not_dodge_the_counter(client):
     # Caddy haengt die echte Adresse rechts an bzw. setzt nur sie. Was links
     # steht, schreibt der Client selbst und koennte jeden Request wechseln.

@@ -65,8 +65,31 @@ def client_ip(request: Request) -> str:
     return "unknown"
 
 
+IPV6_BUCKET_PREFIXLEN = 64
+
+
+def limit_bucket(ip: str) -> str:
+    """Wofuer gezaehlt wird: IPv4 pro Adresse, IPv6 pro /64.
+
+    Ein IPv6-Anschluss bekommt vom Provider mindestens ein /64, also 2^64
+    Adressen. Pro Adresse gezaehlt, nimmt ein Angreifer fuer jeden Versuch
+    eine neue und der Zaehler erreicht nie MAX_ATTEMPTS. Das /64 ist die
+    kleinste Einheit, die ein einzelner Anschluss nicht beliebig wechselt.
+    IPv4-mapped IPv6 (::ffff:a.b.c.d) zaehlt als die eingebettete IPv4.
+    """
+    try:
+        address = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:
+            return str(address.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{address}/{IPV6_BUCKET_PREFIXLEN}", strict=False))
+    return str(address)
+
+
 def _key(ip: str) -> str:
-    return ATTEMPT_KEY_PREFIX + ip
+    return ATTEMPT_KEY_PREFIX + limit_bucket(ip)
 
 
 async def register_attempt(ip: str) -> AttemptDecision:
