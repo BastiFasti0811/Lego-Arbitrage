@@ -36,7 +36,7 @@ Autonomes Arbitrage-System für **neue/OVP Lego-Sets** (Nutzerangabe 2026-08-16;
 
 | Baustein | Behauptung (Quelle + Datum) | Realität (Beleg + Datum) | Status | Konsequenz |
 |---|---|---|---|---|
-| Prod-Deploy-Pipeline (CI verify + SSH-Deploy) | [deploy.md](docs/deploy.md) 2026-06-29 | [deploy-production.yml](.github/workflows/deploy-production.yml): pytest, ruff, alembic check, Compose-/Caddy-Validierung, Deploy nach `/srv/lego-arbitrage`; Container liefen 11.08.; Auto-Migration (`alembic upgrade head` zwischen Build und Container-Tausch) seit PR #13+#14 (19.08.) — der erste automatische Lauf brach kontrolliert ab (fehlendes `prepend_sys_path`, Fix in #14), der Fail-Safe hielt Prod auf altem Stand | WIRKSAM* | Deploy-Weg für den Fix ist vorhanden und scharf |
+| Prod-Deploy-Pipeline (CI verify + lokaler Deploy) | [deploy.md](docs/deploy.md) 2026-10-20 | [ci.yml](.github/workflows/ci.yml): pytest, ruff, alembic check, Compose-/Caddy-Validierung; kein CI-Deploy mehr (der SSH-Job zielte auf die tote Hetzner-IP). Deploy lokal auf victus: `cd /srv/lego-arbitrage && bash scripts/deploy-prod.sh` (bricht ab, wenn der Checkout nicht auf `main` steht); Auto-Migration (`alembic upgrade head` zwischen Build und Container-Tausch) seit PR #13+#14 (19.08.) | WIRKSAM* | Deploy nach dem Merge ist Handarbeit (Autopilot oder Sebastian) |
 | Deal-Checker (Live-Analyse 6 Quellen, Konvolut, EAN/Barcode, Max-Gebot, History) | Project_knowledge 2026-03-26 | [deal_analysis.py:102-113](backend/app/services/deal_analysis.py), [analysis.py](backend/app/api/routes/analysis.py) (1059 LOC); unabhängig vom Beat-Bug | WIRKSAM* | Kern-Nutzwert existiert — auf Abruf, nicht autonom |
 | Inventar inkl. Fotos, Bewertungs-Snapshots, Sell-Links | Project_knowledge listet Fotos/EAN als „offen" (2026-03-26) | implementiert: [inventory.py](backend/app/api/routes/inventory.py) (714 LOC), [inventory_photo.py](backend/app/models/inventory_photo.py) | WIRKSAM* | Doku ist 3 Monate hinter dem Code |
 | Telegram-Kanal (5 Alert-Typen, Test-Endpoint) | deploy.md 2026-06-29 | [telegram_bot.py](backend/app/notifications/telegram_bot.py) (269 LOC) | WIRKSAM* | Kanal ok — Deal-Alerts feuern mangels Daten trotzdem nie |
@@ -92,7 +92,7 @@ Der Gegenblick-Scan fand 15 Behauptung-vs-Realität-Lücken; die wesentlichen si
 
 **Entschieden (mit Beleg):**
 - Privates GitHub-Repo `BastiFasti0811/Lego-Arbitrage` ist canonical (Commit 4f7e731, 2026-03-25).
-- Hosting: Mitnutzung des SmartPrepMeal-Servers `spm-prod-01` (Hetzner, 178.104.97.121), shared Host-Caddy, Pfad-Präfix `/lego`, App-Dir `/srv/lego-arbitrage` (2026-03-25).
+- Hosting: seit Anfang Oktober 2026 auf victus (Heimrechner, NixOS), shared Caddy-Container `smartprepmeal-caddy-1`, Pfad-Präfix `/lego`, App-Dir `/srv/lego-arbitrage`. Davor (ab 2026-03-25) auf dem Hetzner-Server `spm-prod-01` (178.104.97.121), der nicht mehr antwortet.
 - Frontend-Stack abweichend vom Design-Doc: fetch + react-query statt Axios, kein Framer Motion (faktisch 2026-03-23).
 - Auth + Settings-Page trotz YAGNI-Beschluss gebaut (2026-03-24).
 - Auction-Watch-Erstversuch verworfen und als Archiv-Branch eingefroren; Neuansatz via Codex → PR #4 (2026-04-21 → 2026-05-04).

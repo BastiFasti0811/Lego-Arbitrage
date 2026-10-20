@@ -1,4 +1,9 @@
-name: Deploy Production
+name: CI
+
+# Verify only. Production runs on victus (Sebastian's home machine) under
+# /srv/lego-arbitrage, which GitHub-hosted runners cannot reach; the deploy is
+# run locally after the merge, see docs/deploy.md#deploy. The former SSH deploy
+# job targeted the retired Hetzner host 178.104.97.121 and was removed.
 
 on:
   push:
@@ -9,10 +14,10 @@ on:
       - main
   workflow_dispatch:
 
-# PR runs get their own group (new pushes cancel stale verifies) and never
-# queue behind or block the serialized production deploys.
+# PR runs get their own group, so a new push cancels the stale verify; runs on
+# main are never cancelled, every merge commit gets its own result.
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('verify-pr-{0}', github.event.pull_request.number) || 'production-deploy' }}
+  group: ${{ github.event_name == 'pull_request' && format('verify-pr-{0}', github.event.pull_request.number) || format('verify-{0}', github.sha) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -100,31 +105,3 @@ jobs:
             caddy:2-alpine \
             caddy validate --config /etc/caddy/Caddyfile
 
-  deploy:
-    runs-on: ubuntu-latest
-    needs: verify
-    if: github.event_name != 'pull_request'
-    environment:
-      name: production
-      url: ${{ vars.PROD_URL || 'http://178.104.97.121' }}
-
-    steps:
-      - name: Write production SSH key
-        env:
-          PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
-        run: |
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/prod_key
-          chmod 600 ~/.ssh/prod_key
-
-      - name: Pin production host key
-        run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.PROD_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-
-      - name: Deploy on Hetzner server
-        run: |
-          ssh -i ~/.ssh/prod_key -o IdentitiesOnly=yes "${{ vars.PROD_USER || 'deploy' }}@${{ vars.PROD_HOST || '178.104.97.121' }}" \
-            "cd '${{ vars.PROD_APP_DIR || '/srv/lego-arbitrage' }}' && git pull --ff-only && bash scripts/deploy-prod.sh"

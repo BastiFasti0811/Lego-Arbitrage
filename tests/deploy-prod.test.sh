@@ -41,9 +41,14 @@ make_sandbox() {
   CALL_LOG="${SANDBOX}/calls.log"
   : > "${CALL_LOG}"
 
+  # The git stub reports the branch from GIT_BRANCH (default main; set it to
+  # an empty string to simulate a detached HEAD).
   cat > "${SANDBOX}/bin/git" <<'STUB'
 #!/usr/bin/env bash
 printf 'git %s\n' "$*" >> "${CALL_LOG}"
+if [[ "$*" == "branch --show-current" ]]; then
+  printf '%s\n' "${GIT_BRANCH-main}"
+fi
 exit 0
 STUB
 
@@ -75,8 +80,9 @@ STUB
   chmod +x "${SANDBOX}/bin/git" "${SANDBOX}/bin/docker" "${SANDBOX}/bin/flock"
 }
 
-run_deploy() { # usage: run_deploy [migration_fail] [build_fail] [flock_busy]
+run_deploy() { # usage: run_deploy [migration_fail] [build_fail] [flock_busy] [git_branch]
   local migration_fail="${1:-0}" build_fail="${2:-0}" flock_busy="${3:-0}"
+  local git_branch="${4-main}"
   DEPLOY_RC=0
   (
     cd "${SANDBOX}/repo"
@@ -84,6 +90,7 @@ run_deploy() { # usage: run_deploy [migration_fail] [build_fail] [flock_busy]
     export CALL_LOG
     export MIGRATION_FAIL="${migration_fail}" BUILD_FAIL="${build_fail}"
     export FLOCK_BUSY="${flock_busy}"
+    export GIT_BRANCH="${git_branch}"
     export LOCK_FILE="${SANDBOX}/deploy.lock"
     bash scripts/deploy-prod.sh
   ) > "${SANDBOX}/stdout.log" 2> "${SANDBOX}/stderr.log" || DEPLOY_RC=$?
@@ -187,6 +194,23 @@ fi
 if ! grep -qi "another deploy" "${SANDBOX}/stderr.log"; then
   fail "expected an 'another deploy' message on stderr"
 fi
+
+# --- Test 5: checkout not on main aborts before pull/build ------------------
+
+for branch in "feature/x" ""; do
+  CURRENT_TEST="failure: checkout on '${branch:-detached HEAD}' aborts before pull"
+  make_sandbox "t5-${branch//\//-}"
+  run_deploy 0 0 0 "${branch}"
+
+  if [[ "${DEPLOY_RC}" -eq 0 ]]; then
+    fail "expected non-zero exit when the checkout is not on main"
+  fi
+  assert_not_called "${PULL_CALL}"
+  assert_not_called "docker "
+  if ! grep -qi "expected 'main'" "${SANDBOX}/stderr.log"; then
+    fail "expected a branch mismatch message on stderr"
+  fi
+done
 
 # --- Result -----------------------------------------------------------------
 

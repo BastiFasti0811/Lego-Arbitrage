@@ -2,33 +2,41 @@
 
 ## Goal
 
-Run production from GitHub on the Hetzner host `spm-prod-01` via the `deploy`
-user and keep the server as a runtime target instead of an editing machine.
-The current source-of-truth repo intentionally remains the private GitHub repo
-`BastiFasti0811/Lego-Arbitrage`.
+Run production from GitHub on **victus** (Sebastian's Linux machine at home,
+NixOS) under `/srv/lego-arbitrage` and keep that checkout a runtime target
+instead of an editing machine. The source-of-truth repo intentionally remains
+the private GitHub repo `BastiFasti0811/Lego-Arbitrage`.
+
+Until early October 2026 production ran on the Hetzner host `spm-prod-01`
+(`178.104.97.121`). That host no longer answers; nothing in this repo should
+point at it any more.
 
 ## Recommended Topology
 
 - GitHub remains the source of truth for code, history and rollback.
-- The Hetzner server runs the containers and persistent data only.
+- The checkout `/srv/lego-arbitrage` on victus runs the containers and holds
+  the persistent data only; code is never edited there.
 - Production uses [docker-compose.prod.yml](../docker-compose.prod.yml).
-- On `spm-prod-01`, the host already has a shared Caddy instance at
-  `/opt/SmartPrepMeal/Caddyfile`.
-- The LEGO routes from [infra/Caddyfile](../infra/Caddyfile) are meant to be
-  merged into that host-level Caddy config instead of starting a second
-  port-80/443 proxy container.
+- victus already runs a shared Caddy container (`smartprepmeal-caddy-1`,
+  config `/opt/SmartPrepMeal/Caddyfile`) on ports 80/443.
+- The LEGO routes from [infra/Caddyfile](../infra/Caddyfile) are merged into
+  that host-level Caddy config instead of starting a second port-80/443 proxy.
+- App URL: `http://localhost/lego` on victus, `http://<victus LAN IP>/lego`
+  from the home network (on 20.10.2026 `192.168.50.89`, DHCP, not fixed).
 - Local development can continue to use the existing `docker-compose.yml`
   with the local `nginx` proxy.
 
 ## First-Time Server Setup
 
-1. SSH in as `deploy@178.104.97.121`.
-2. Clone the repository into a stable app directory, for example
-   `/srv/lego-arbitrage`.
-3. Copy [.env.prod.example](../.env.prod.example) to `.env.prod`.
-4. Copy [backend/.env.example](../backend/.env.example) to `backend/.env`.
-5. Replace every placeholder secret before the first start.
-6. Create the persistent data directories:
+1. Clone the repository into a stable app directory, for example
+   `/srv/lego-arbitrage`, as the user that runs the deploys (on victus:
+   `sebastian`).
+2. Copy [.env.prod.example](../.env.prod.example) to `.env.prod`.
+3. Copy [backend/.env.example](../backend/.env.example) to `backend/.env`.
+4. Replace every placeholder secret before the first start.
+5. Create the persistent data directories below `DATA_ROOT`. On victus
+   `DATA_ROOT` is still `/mnt/HC_Volume_105179687/lego-arbitrage`: the name
+   comes from the Hetzner volume, the directory now lives on victus' local disk.
 
 ```bash
 mkdir -p /mnt/HC_Volume_105179687/lego-arbitrage/postgres
@@ -36,63 +44,37 @@ mkdir -p /mnt/HC_Volume_105179687/lego-arbitrage/redis
 mkdir -p /mnt/HC_Volume_105179687/lego-arbitrage/media
 ```
 
-## GitHub Deploy Key On The Server
+## GitHub Access From The Prod Checkout
 
-Use a repository deploy key on the server instead of a personal GitHub login.
-
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/lego-arbitrage-deploy -C "deploy@spm-prod-01"
-cat ~/.ssh/lego-arbitrage-deploy.pub
-```
-
-- Add the printed public key in GitHub as a read-only deploy key for the repo.
-- Add this SSH config on the server:
-
-```sshconfig
-Host github.com
-    HostName github.com
-    User git
-    IdentityFile ~/.ssh/lego-arbitrage-deploy
-    IdentitiesOnly yes
-```
-
-- Point the server checkout to the SSH remote:
+The checkout pulls over SSH. On victus it uses the existing `github-personal`
+alias from `~/.ssh/config` (key of the private account `BastiFasti0811`);
+plain `git@github.com:` fails there with `Permission denied (publickey)`.
 
 ```bash
-git remote set-url origin git@github.com:BastiFasti0811/Lego-Arbitrage.git
-ssh -T git@github.com
+git -C /srv/lego-arbitrage remote set-url origin git@github-personal:BastiFasti0811/Lego-Arbitrage.git
+git -C /srv/lego-arbitrage fetch origin
 ```
 
-- If the canonical repo ever moves later, only the remote URL and deploy key
-  target need to change. No such move is planned right now.
+A read-only repository deploy key is the cleaner option for a dedicated
+server; add it under its own `Host` alias and point `origin` at that alias.
 
-## GitHub Actions Setup
+## Continuous Integration
 
-The repo now includes [deploy-production.yml](../.github/workflows/deploy-production.yml).
+[ci.yml](../.github/workflows/ci.yml) runs the `verify` job (deploy-script
+test, frontend lint and build, pytest, ruff, `alembic upgrade head` and
+`alembic check` against an empty PostgreSQL, Compose and Caddy validation) on
+pull requests against `main`, on pushes to `main` and on manual dispatch. PR
+runs use their own concurrency group, so a new push cancels the stale run.
 
-Required GitHub repository secrets:
+CI does **not** deploy. GitHub-hosted runners cannot reach victus, and the
+former SSH deploy job (secrets `PROD_SSH_KEY`, `PROD_KNOWN_HOSTS`, variables
+`PROD_HOST`, `PROD_USER`, `PROD_APP_DIR`, `PROD_URL`, environment
+`production`) targeted the retired Hetzner host. Those secrets and variables
+are unused now and can be deleted in the repository settings.
 
-- `PROD_SSH_KEY`: private SSH key that GitHub Actions uses to reach the Hetzner server
-- `PROD_KNOWN_HOSTS`: pinned host key output from
-  `ssh-keyscan -H 178.104.97.121`
-
-Optional GitHub repository variables:
-
-- `PROD_HOST`: defaults to `178.104.97.121`
-- `PROD_USER`: defaults to `deploy`
-- `PROD_APP_DIR`: defaults to `/srv/lego-arbitrage`
-- `PROD_URL`: optional environment URL shown in GitHub
-
-The `verify` job also runs on pull requests against `main`, so broken changes
-surface before the merge; the `deploy` job runs only on pushes to `main` and
-manual dispatches (on PRs it shows as skipped). PR runs use their own
-concurrency group and never queue behind a production deploy.
-
-Recommended GitHub environment setup:
-
-- Create an environment named `production`
-- Add required reviewers before live deploys if you want a manual approval gate
-- Scope the deploy secrets to that environment instead of the whole repo when possible
+If the deploy should run without a human again, the options are a
+self-hosted GitHub runner on victus that runs `bash scripts/deploy-prod.sh`,
+or SSH from the runner to victus over a private network such as Tailscale.
 
 ## Required Config Split
 
@@ -116,14 +98,20 @@ Recommended GitHub environment setup:
 
 ## Deploy
 
-Pushes to `main` trigger [deploy-production.yml](../.github/workflows/deploy-production.yml),
-which runs the verify job and then executes the versioned deploy script on the
-server. The same script is the supported way to deploy manually, from the repo
-root on the server:
+After a merge to `main` with a green `verify` run, deploy on victus:
 
 ```bash
-bash scripts/deploy-prod.sh
+cd /srv/lego-arbitrage
+git branch --show-current          # must print: main
+bash scripts/deploy-prod.sh        # pulls main, builds, migrates, swaps, health-checks
+git fetch origin && test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" && echo "prod = origin/main"
+curl -fsS http://localhost/lego/health
 ```
+
+The script is the only supported way to deploy. It aborts before any git or
+docker call when the checkout is not on `main` (override with
+`DEPLOY_BRANCH`), because `git pull --ff-only` on another branch would deploy
+that branch. On success it prints the deployed commit.
 
 The script first takes a non-blocking lock on
 `/tmp/lego-arbitrage-deploy.lock` (path overridable via `LOCK_FILE`), so a
@@ -195,9 +183,9 @@ Tuning lives in `backend/.env`: `HEARTBEAT_ENABLED` (default `true`) and
 
 ## Backup
 
-The PostgreSQL data lives under `${DATA_ROOT}/postgres` on the Hetzner block
-volume, which is **not** part of Hetzner's automatic backups. Use the bundled
-scripts to take and verify logical dumps.
+The PostgreSQL data lives under `${DATA_ROOT}/postgres` on victus' local disk;
+nothing backs it up automatically. Use the bundled scripts to take and verify
+logical dumps, and set `BACKUP_REMOTE` for a copy that survives a disk loss.
 
 ```bash
 # One-off backup (writes a verified, gzipped dump to ${BACKUP_DIR:-${DATA_ROOT}/backups})
@@ -210,13 +198,16 @@ ls -lh /mnt/HC_Volume_105179687/lego-arbitrage/backups
 CONFIRM=yes bash scripts/restore-db.sh /mnt/HC_Volume_105179687/lego-arbitrage/backups/<file>.sql.gz
 ```
 
-Schedule it nightly via cron on the server (as the deploy user):
+Schedule it nightly via cron on the server (as the deploy user). On victus
+(NixOS) a user crontab or a systemd timer from the system configuration does
+the same job; as of 20.10.2026 none is set up and the newest dump is from
+30.06.2026.
 
 ```bash
 crontab -e
 # Daily 03:30 — adjust the repo path to your checkout. The explicit PATH is
 # required because cron's default PATH does not include docker/rclone.
-30 3 * * * cd /opt/lego-arbitrage && PATH=/usr/local/bin:/usr/bin:/bin bash scripts/backup-db.sh >> /var/log/lego-backup.log 2>&1
+30 3 * * * cd /srv/lego-arbitrage && PATH=/usr/local/bin:/usr/bin:/bin bash scripts/backup-db.sh >> /var/log/lego-backup.log 2>&1
 ```
 
 Backup tunables live in `.env.prod`: `BACKUP_DIR`, `BACKUP_KEEP` (retained
@@ -235,10 +226,29 @@ git checkout <known-good-commit-or-tag>
 docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
 ```
 
+The checkout is now on a detached HEAD, so `scripts/deploy-prod.sh` refuses
+to run until it is back on `main`. Once the fix is merged:
+`git checkout main && bash scripts/deploy-prod.sh`.
+
 Rolling back the code does not downgrade the schema. As long as migrations
 follow the backward-compatibility rule above, the previous release runs fine
 against the newer schema; a schema downgrade (`alembic downgrade`) is a
 deliberate manual step.
+
+## Catawiki Home Scanner
+
+Prod does not scan Catawiki itself (`HOME_RUNNER_PLATFORMS`); a machine with a
+home internet connection fetches jobs from `/api/remote-scan/runner/job` and
+posts results back (see `backend/app/tools/catawiki_home_scan.py`). Its
+`LEGO_API_URL` must be the app URL including `/lego`:
+
+- on victus itself: `http://localhost/lego`
+- from another machine in the home network: `http://<victus LAN IP>/lego`
+  (Windows: `scripts/install-catawiki-home-scan.ps1 -ApiUrl http://<victus LAN IP>/lego`)
+
+The old address `http://178.104.97.121/lego` is dead. As of 20.10.2026 the
+prod database holds no `remote_scan_token` and no `catawiki_scan_urls`, so no
+scanner is connected yet.
 
 ## GitHub Account Note
 

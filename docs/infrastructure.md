@@ -2,18 +2,18 @@
 
 ## Current Production Server
 
-- Provider: Hetzner Cloud
-- Hostname: `spm-prod-01`
-- Region: `NBG1`
-- IPv4: `178.104.97.121`
-- OS: `Ubuntu 24.04 LTS`
-- SSH: `root@178.104.97.121`, `deploy@178.104.97.121`
-- Auth: SSH key only
-- Open ports: `22/tcp`, `80/tcp`, `443/tcp`
-- Security: `fail2ban` active, password login disabled
+- Host: `victus` (Sebastian's Linux machine at home), NixOS 26.05
+- App directory: `/srv/lego-arbitrage` (owner `sebastian`)
+- Network: home LAN only, no public address; on 20.10.2026 `192.168.50.89`
+  (DHCP, not fixed)
 - Container stack: Docker Engine + Docker Compose plugin
-- Reverse proxy in production: Caddy
-- Persistent volume: `/mnt/HC_Volume_105179687`
+- Reverse proxy: shared Caddy container `smartprepmeal-caddy-1`
+  (`/opt/SmartPrepMeal/Caddyfile`), ports 80/443
+- Persistent data: `DATA_ROOT=/mnt/HC_Volume_105179687/lego-arbitrage` on the
+  local disk (the path name is a leftover from the Hetzner volume)
+
+Until early October 2026 production ran on the Hetzner Cloud host
+`spm-prod-01` (`178.104.97.121`, NBG1). That host no longer answers.
 
 ## Repo Layout For Infra
 
@@ -21,13 +21,13 @@
 - Production stack: [docker-compose.prod.yml](../docker-compose.prod.yml)
 - Shared-Caddy route snippet: [infra/Caddyfile](../infra/Caddyfile)
 - Production runbook: [docs/deploy.md](./deploy.md)
-- GitHub deployment workflow: [deploy-production.yml](../.github/workflows/deploy-production.yml)
+- CI workflow (verify only, no deploy): [ci.yml](../.github/workflows/ci.yml)
 
 ## Operational Checks
 
 - Containers: `docker compose --env-file .env.prod -f docker-compose.prod.yml ps`
 - Logs: `docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f --tail=200`
-- Local health check: `curl -sS http://127.0.0.1/health`
+- Local health check: `curl -sS http://localhost/lego/health`
 
 ## Deployment Pattern
 
@@ -40,23 +40,22 @@ built image, then swaps the containers; a failed migration aborts before any
 app container is restarted. Details in [deploy.md](deploy.md#deploy). Do not
 deploy with a plain `up -d --build` — that skips the migration step.
 
-## DNS
+## Access
 
-- Without domain: `http://178.104.97.121`
-- With domain: point the A record to `178.104.97.121`
-- HTTPS terminates via Caddy
+- On victus: `http://localhost/lego`
+- Home network: `http://<victus LAN IP>/lego`
+- No public DNS name and no HTTPS for the app yet
 
 ## Git And Server Recommendation
 
 Yes, it makes sense to keep the source in GitHub and run production on a separate server.
 
 - GitHub should stay the source of truth for code history, review, rollback and backups.
-- The Hetzner host should stay the runtime target, not the place where code is manually edited long term.
+- The prod checkout on victus should stay the runtime target, not the place where code is edited.
 - The current canonical repo intentionally stays on the private GitHub account
   `BastiFasti0811`.
 - A move into a company-owned GitHub account or org is optional and should only
   happen if the team explicitly decides to change ownership later.
-- Use the `deploy` user for rollouts; keep `root` for emergency/admin work only.
 - A deploy key or machine credential is cleaner on the server than reusing a developer login.
 
 ## Multi-Account Git Note
@@ -72,7 +71,5 @@ To avoid Git Credential Manager picking the wrong identity, prefer remotes that 
 ## Current Alignment Status
 
 - The repository keeps the local `nginx`-based stack for development only.
-- Production now runs the LEGO app stack through `docker-compose.prod.yml` and
-  plugs into the already existing host-level Caddy on `spm-prod-01`.
-- This keeps local work lightweight while matching the real Hetzner/Caddy
-  rollout path.
+- Production runs the LEGO app stack through `docker-compose.prod.yml` and
+  plugs into the already existing host-level Caddy on victus.
