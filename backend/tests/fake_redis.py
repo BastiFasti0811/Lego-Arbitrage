@@ -34,6 +34,10 @@ class FakeRedis:
                 self._expires_at.pop(key, None)
 
     # ── Redis-Befehle ───────────────────────────────────
+    async def ping(self) -> bool:
+        self._check()
+        return True
+
     async def get(self, key: str) -> str | None:
         self._check()
         self._purge()

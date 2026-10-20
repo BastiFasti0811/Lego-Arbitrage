@@ -1,5 +1,11 @@
 # LEGO Arbitrage - Projekt-Wissensdatenbank
 
+> **Veraltet (Arbeitsstand Maerz 2026), nicht mehr gepflegt.** Hosting und Deployment unten sind
+> ueberholt: Prod laeuft seit Oktober 2026 auf victus unter `/srv/lego-arbitrage`, deployt wird
+> lokal mit `bash scripts/deploy-prod.sh`, CI deployt nicht. Massgeblich sind
+> [docs/deploy.md](docs/deploy.md) und [docs/infrastructure.md](docs/infrastructure.md);
+> Features (Inventar, Fotos, KI-Texte, Catawiki) sind seitdem dazugekommen.
+
 ## Projekt-Status
 - Stand: Arbeitsstand Maerz 2026
 - Implementiert: Backend API, Scraper, ROI-/Risk-Engine, Telegram, Celery, Dashboard

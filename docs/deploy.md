@@ -33,6 +33,10 @@ point at it any more.
    `sebastian`).
 2. Copy [.env.prod.example](../.env.prod.example) to `.env.prod`.
 3. Copy [backend/.env.example](../backend/.env.example) to `backend/.env`.
+   Keep `AUTO_CREATE_TABLES_ON_STARTUP=false` (Alembic owns the schema). As
+   long as prod is served over plain HTTP (victus as of 20.10.2026), set
+   `SESSION_COOKIE_SECURE=false`, otherwise the browser drops the session
+   cookie and login fails.
 4. Replace every placeholder secret before the first start.
 5. Create the persistent data directories below `DATA_ROOT`. On victus
    `DATA_ROOT` is still `/mnt/HC_Volume_105179687/lego-arbitrage`: the name
@@ -127,7 +131,14 @@ it. The script then performs these steps in order:
    migrations from the freshly built image in a one-off container
 4. `docker compose ... up -d --remove-orphans` — swap the containers to the
    new images
-5. Poll the API health endpoint for up to 60 seconds
+5. Poll the API health endpoint for up to 60 seconds until it answers 200
+   (PostgreSQL and Redis reachable) **and** reports the deployed commit as
+   `version`; otherwise the script exits 1 and prints the API log
+
+Before the build the script exports `GIT_SHA=$(git rev-parse HEAD)`;
+[docker-compose.prod.yml](../docker-compose.prod.yml) passes it as build arg
+to the api/worker/beat images, so `/health` reports the commit of the image
+that actually runs.
 
 A failed migration aborts the deploy before any app container is restarted:
 the previous code keeps running against the previous schema (PostgreSQL DDL is
@@ -164,7 +175,25 @@ bash tests/deploy-prod.test.sh
 ```bash
 docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f --tail=200
 curl -sS http://127.0.0.1/lego/health
+# after a deploy: must print the commit that is checked out
+curl -fsS http://127.0.0.1/lego/health | jq -r .version; git rev-parse HEAD
 ```
+
+`/health` needs no login. It checks PostgreSQL (`SELECT 1`) and Redis
+(`PING`) in parallel, each with a 3-second limit (the first request against a
+hanging database took about 5 s in the test, while the pooled connection is
+torn down):
+
+- `200 {"status": "healthy", "version": "<git sha>", "checks": {"database": "ok", "redis": "ok"}, ...}`
+- `503 {"status": "unhealthy", ..., "checks": {"database": "error", "redis": "ok"}}`
+  when one of them fails; the reason is only logged (`health.check_failed`).
+
+`version` is the Git commit baked into the image (`GIT_SHA`); an image built
+without it (local dev, a manual `docker compose build`) reports `app_version`
+(`0.2.0`) instead. The Compose healthcheck of `lego-api-prod` uses the same
+endpoint, so the container turns `unhealthy` while the database or Redis is
+down. Worker and beat are not part of `/health`; the pipeline health below
+covers them.
 
 ### Pipeline Health
 
@@ -223,7 +252,8 @@ off-site copy — the local dump alone does not survive volume loss).
 ```bash
 git fetch --all --tags
 git checkout <known-good-commit-or-tag>
-docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+GIT_SHA="$(git rev-parse HEAD)" docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+curl -fsS http://127.0.0.1/lego/health   # version must equal the checked-out commit
 ```
 
 The checkout is now on a detached HEAD, so `scripts/deploy-prod.sh` refuses

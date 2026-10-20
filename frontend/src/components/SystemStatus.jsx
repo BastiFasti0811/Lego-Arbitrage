@@ -87,12 +87,19 @@ export default function SystemStatus() {
   }, [open]);
 
   const apiDown = healthError || (health && health.status !== "healthy");
+  // /health antwortet mit 503 und checks {database, redis}, wenn die API laeuft,
+  // aber eine Abhaengigkeit fehlt; das ist etwas anderes als "nicht erreichbar".
+  const failedDeps = Object.entries(health?.checks || {})
+    .filter(([, result]) => result !== "ok")
+    .map(([name]) => (name === "database" ? "DB" : name === "redis" ? "Redis" : name));
 
   let dotClass = "bg-check";
-  let label = health?.version || "...";
+  // version ist nach einem Deploy der Git-SHA (40 Zeichen); kurz anzeigen.
+  const version = health?.version;
+  let label = version ? (/^[0-9a-f]{40}$/.test(version) ? version.slice(0, 7) : version) : "...";
   if (apiDown) {
     dotClass = "bg-no-go";
-    label = "API nicht erreichbar";
+    label = !healthError && failedDeps.length > 0 ? `${failedDeps.join(" + ")} gestört` : "API nicht erreichbar";
   } else if (pipelineError) {
     // Vor den gecachten Daten pruefen: TanStack behaelt beim fehlgeschlagenen
     // Refetch die letzten Daten, ein toter Status-Endpoint pulsierte sonst gruen.
