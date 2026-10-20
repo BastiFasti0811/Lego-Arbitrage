@@ -86,6 +86,13 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      # Liveness file written by the worker itself (backend/app/liveness.py).
+      test: ["CMD", "python", "-m", "app.liveness", "worker"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     restart: unless-stopped
     volumes:
       - ${DATA_ROOT}/media:/data
@@ -110,6 +117,13 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      # Liveness file written by the beat itself (backend/app/liveness.py).
+      test: ["CMD", "python", "-m", "app.liveness", "beat"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     restart: unless-stopped
     volumes:
       - ${DATA_ROOT}/media:/data

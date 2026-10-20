@@ -64,8 +64,8 @@ server; add it under its own `Host` alias and point `origin` at that alias.
 
 ## Continuous Integration
 
-[ci.yml](../.github/workflows/ci.yml) runs the `verify` job (deploy-script
-test, frontend lint and build, pytest, ruff, `alembic upgrade head` and
+[ci.yml](../.github/workflows/ci.yml) runs the `verify` job (deploy- and uptime-script
+tests, frontend lint and build, pytest, ruff, `alembic upgrade head` and
 `alembic check` against an empty PostgreSQL, Compose and Caddy validation) on
 pull requests against `main`, on pushes to `main` and on manual dispatch. PR
 runs use their own concurrency group, so a new push cancels the stale run.
@@ -192,8 +192,89 @@ torn down):
 without it (local dev, a manual `docker compose build`) reports `app_version`
 (`0.2.0`) instead. The Compose healthcheck of `lego-api-prod` uses the same
 endpoint, so the container turns `unhealthy` while the database or Redis is
-down. Worker and beat are not part of `/health`; the pipeline health below
-covers them.
+down. Worker and beat are not part of `/health`; they have their own Compose
+healthchecks (next section), and the pipeline health below covers what their
+tasks achieve.
+
+### Worker and Beat Healthchecks
+
+`lego-worker-prod` and `lego-beat-prod` run `python -m app.liveness worker`
+or `... beat` as Compose healthcheck (every 30 s, 3 retries, 60 s start
+period). Both processes touch a file under `/tmp` while they are alive
+([backend/app/liveness.py](../backend/app/liveness.py),
+[backend/app/tasks/liveness_hooks.py](../backend/app/tasks/liveness_hooks.py)):
+
+- **worker:** a consumer bootstep touches `/tmp/celery-worker.alive` every
+  30 s while the worker is connected to Redis. The solo pool blocks that timer
+  while a task runs, so `task_prerun` writes `/tmp/celery-worker.busy` and
+  `task_postrun` removes it. Unhealthy when the alive file is older than 120 s
+  and no task is running, or a single task runs longer than 1 h.
+- **beat:** the scheduler (`LivenessScheduler`, the default persistent
+  scheduler plus a touch) touches `/tmp/celery-beat.alive` on every tick; beat
+  wakes up at least every 60 s (`beat_max_loop_interval`). Unhealthy after
+  180 s without a tick.
+
+Limits can be raised per container with `CELERY_LIVENESS_MAX_AGE_WORKER`,
+`CELERY_LIVENESS_MAX_AGE_BEAT` and `CELERY_LIVENESS_MAX_TASK_SECONDS`
+(seconds, in `backend/.env`). Docker only reports `unhealthy`, it does not
+restart the container; the uptime check below turns that into an alarm.
+
+```bash
+docker inspect -f '{{.State.Health.Status}}' lego-worker-prod lego-beat-prod
+docker exec lego-worker-prod python -m app.liveness worker   # prints the reason
+```
+
+### Uptime Check With Telegram Alarm
+
+The pipeline watchdog runs inside the stack and cannot report the stack
+itself being down. [scripts/uptime-check.sh](../scripts/uptime-check.sh) runs
+outside of it, as a systemd user timer of `sebastian` on victus, every 2
+minutes. One run fails when
+
+- `http://localhost/lego/health` does not answer 200 with `"status": "healthy"`
+  (covers Caddy, API, PostgreSQL, Redis), or
+- one of the services `api worker beat frontend postgres redis` of compose
+  project `lego-arbitrage` has no container, is not `running`, or is
+  `unhealthy`.
+
+After **2 failed runs in a row** it sends a Telegram message (🔴 with the
+causes), repeats it when the causes change or after 6 h, and sends 🟢 once
+everything is healthy again. A stopped container is reported within about
+4 minutes, a hung worker within about 8 (healthcheck plus two runs). A failed
+Telegram send is retried on the next run.
+
+Telegram is called directly with curl, not through the app: the bot token
+lives in the `app_settings` table, which is unreachable exactly when the
+alarm matters. The check therefore keeps its own copy in
+`~/.config/lego-uptime/lego-arbitrage.env` (mode 0600, outside the repo; the
+token is handed to curl on stdin, never on the command line).
+
+Install once, from the prod checkout so that deploys update the script:
+
+```bash
+cd /srv/lego-arbitrage
+bash scripts/install-uptime-check.sh --import-telegram   # copies token + chat id from app_settings
+systemctl --user list-timers 'lego-uptime-*'
+journalctl --user -u lego-uptime-lego-arbitrage.service -n 20
+```
+
+Re-run with `--import-telegram` after changing the bot token in the
+dashboard settings. Remove with `--uninstall`. Other knobs (`FAIL_THRESHOLD`,
+`REALERT_SECONDS`, `HEALTH_URL`, `SERVICES`) can go into the same config file;
+see the header of the script. State (failure counter) lives in
+`~/.local/state/lego-uptime/<project>.state`.
+
+Limit: the check runs on victus itself. If victus is off or has no power, no
+alarm is sent. A dead man's switch from outside (e.g. the timer pinging
+healthchecks.io, which alarms when the pings stop) would close that gap.
+
+Testing the alarm without touching prod: start a second stack under project
+`lego-feedback` (never stop `*-prod` containers for a test), install a timer
+for it with `--project lego-feedback --health-url <its health URL>`, stop one
+of its containers and wait for the message; afterwards
+`--project lego-feedback --uninstall`. The alarm logic itself is covered by
+[tests/uptime-check.test.sh](../tests/uptime-check.test.sh) (stubbed docker
+and curl), which runs in the verify job.
 
 ### Pipeline Health
 
@@ -290,3 +371,8 @@ For local development, use remotes that clearly target the intended GitHub
 account so Git Credential Manager does not silently reuse the wrong identity.
 For the server, prefer a deploy key or a dedicated machine credential instead of
 interactive developer credentials.
+
+### Grenzen des Uptime-Checks
+
+- Ein Deploy startet Container neu und kann den Check 2–4 Minuten rot färben; bei zwei Fehlläufen in Folge (Standard) kommt dann ein Fehlalarm samt Entwarnung. Wer das vermeiden will, setzt `FAIL_THRESHOLD` vor dem Deploy kurz höher.
+- Der Check läuft auf demselben Host (victus). Fällt der Host aus, schlägt kein Alarm an. Abhilfe wäre ein externer Dead-Man-Switch (z. B. healthchecks.io-Ping).
