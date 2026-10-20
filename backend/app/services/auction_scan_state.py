@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
+from app.models.auction_deal import AuctionDeal
 from app.models.auction_scan import AuctionScanState
 from app.models.base import async_session
 
@@ -39,3 +40,39 @@ async def mark_notified(platform: str, urls: list[str]) -> None:
             # Bounded history; canonical lot URLs survive title and tracking changes.
             state.notified_urls = list(dict.fromkeys((state.notified_urls or []) + urls))[-2000:]
             await session.commit()
+
+
+async def record_bid_ready(platform: str, results: list[dict], now: datetime | None = None) -> int:
+    """Lose mit Gebotsfreigabe fuer den Deal-Zaehler festhalten, je Los einmal.
+    Rueckgabe: Zahl der neu eingetragenen Lose.
+
+    Unabhaengig von der Telegram-Zustellung: gezaehlt wird, was geprueft und
+    kaufbar war. Ein spaeterer Scan desselben Loses aendert die Zeile nicht,
+    die Woche des ersten Funds bleibt.
+    """
+    rows = [
+        {
+            "platform": platform,
+            "source_url": item["source_url"],
+            "set_number": item.get("set_number"),
+            "lot_title": (item.get("lot_title") or "")[:500] or None,
+            "current_bid": item.get("current_bid"),
+            "max_bid": item.get("recommended_max_bid"),
+            "expected_profit": item.get("expected_profit_current"),
+            "found_at": now or datetime.now(UTC),
+        }
+        for item in results
+        if item.get("can_bid_now") and item.get("source_url")
+    ]
+    if not rows:
+        return 0
+    stmt = (
+        insert(AuctionDeal)
+        .values(rows)
+        .on_conflict_do_nothing(index_elements=["platform", "source_url"])
+        .returning(AuctionDeal.id)
+    )
+    async with async_session() as session:
+        inserted = len((await session.execute(stmt)).all())
+        await session.commit()
+    return inserted

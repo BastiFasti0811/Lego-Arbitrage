@@ -41,6 +41,7 @@ from app.models.valuation_run import (
 )
 from app.scrapers import EbaySoldScraper
 from app.scrapers.base import UndecodableResponseError
+from app.services.goal_progress import lego_listing_counts
 from app.tasks.celery_app import celery_app
 
 logger = structlog.get_logger()
@@ -994,21 +995,6 @@ async def delete_inventory_item(item_id: int, session: AsyncSession = Depends(ge
     if photo_dir.exists():
         rmtree(photo_dir, ignore_errors=True)
     return {"status": "deleted", "id": item_id}
-
-
-def was_ever_listed(item: InventoryItem) -> bool:
-    """Ein Listing mit Einstell-Datum gilt als inseriert, auch wenn es inzwischen
-    beendet oder verkauft ist. Reine Entwuerfe zaehlen nicht."""
-    return any(listing.listed_at is not None for listing in item.listings)
-
-
-def lego_listing_counts(items) -> dict[str, int]:
-    lego = [i for i in items if i.item_type == InventoryItemType.LEGO.value]
-    return {
-        "lego_items": len(lego),
-        "lego_listed": sum(1 for i in lego if was_ever_listed(i)),
-        "lego_sold": sum(1 for i in lego if i.status == InventoryStatus.SOLD.value),
-    }
 
 
 @router.get("/summary", response_model=PortfolioSummary)

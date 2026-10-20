@@ -232,6 +232,7 @@ async def update_settings(updates: list[SettingUpdate], session: AsyncSession = 
 NOTIFICATION_TASKS = (
     "app.tasks.weekly_report.send_weekly_report_task",
     "app.tasks.analyze_new.send_daily_summary_task",
+    "app.tasks.goal_digest.send_goal_digest_task",
 )
 
 

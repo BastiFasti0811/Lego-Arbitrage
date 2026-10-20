@@ -13,6 +13,13 @@ from app.services import auction_tracking
 from app.services.catawiki import CatawikiLotCandidate
 from app.tasks import catawiki_scan
 
+
+@pytest.fixture(autouse=True)
+def _no_deal_counter_db(monkeypatch):
+    # Der Deal-Zaehler (record_bid_ready) schreibt in die DB; hier geht es um
+    # Scan und Meldung. Eigene Tests: test_goal_progress.py.
+    monkeypatch.setattr(catawiki_scan, "record_bid_ready", AsyncMock(return_value=0))
+
 URL = "https://www.catawiki.com/de/l/102824557"
 # Catawiki-Scan ist ohne Einstellung aus; die Task-Tests schalten ihn ein.
 SCAN_ON = {"catawiki_scan_urls": URL, "catawiki_scan_frequency": "daily"}

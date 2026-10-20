@@ -40,6 +40,7 @@ celery_app = Celery(
         "app.tasks.health_check",
         "app.tasks.weekly_report",
         "app.tasks.listing_pack",
+        "app.tasks.goal_digest",
     ],
 )
 
@@ -105,6 +106,12 @@ celery_app.conf.beat_schedule = {
     "weekly-report": {
         "task": "app.tasks.weekly_report.send_weekly_report_task",
         "schedule": crontab(minute=0, hour=18, day_of_week=0),
+        "options": {"queue": "notifications"},
+    },
+    # Wochen-Digest: Zielzahlen der Vorwoche (Monday 07:50, vor dem Montags-Paket)
+    "goal-digest": {
+        "task": "app.tasks.goal_digest.send_goal_digest_task",
+        "schedule": crontab(minute=50, hour=7, day_of_week=1),
         "options": {"queue": "notifications"},
     },
     # Montags-Paket: 5 fertige Inserate der Woche (Monday 08:00, ADR 0002: nur vorbereitet)

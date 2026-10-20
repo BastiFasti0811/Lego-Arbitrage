@@ -1,5 +1,6 @@
 """Application configuration using Pydantic Settings."""
 
+from datetime import date
 from pathlib import Path
 
 from pydantic import Field
@@ -112,6 +113,13 @@ class Settings(BaseSettings):
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     telegram_alert_on_go_only: bool = True
+
+    # ── Ziele (Memory projekt-ziel, Stand 20.10.2026) ───
+    # Zaehler in App, Wochen-Digest und Laufprotokoll rechnen dagegen.
+    goal_listed: int = 30  # Lego-Posten inseriert
+    goal_sold: int = 15  # Lego-Posten verkauft
+    goal_deals_per_week: int = 3  # gepruefte, kaufbare Deals
+    goal_deadline: date = date(2026, 12, 1)
 
     # ── Email Notifications ──────────────────────────────
     smtp_host: str | None = None

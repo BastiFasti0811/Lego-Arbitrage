@@ -6,13 +6,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.api.routes.inventory import lego_listing_counts, was_ever_listed
 from app.notifications import telegram_bot
 from app.notifications.telegram_bot import (
     format_listing_pack_entry,
     format_listing_pack_header,
     send_listing_pack,
 )
+from app.services.goal_progress import lego_listing_counts, was_ever_listed
 from app.services.heartbeat import MONITORED_TASKS
 from app.tasks import listing_pack
 from app.tasks.celery_app import celery_app
