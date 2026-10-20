@@ -8,7 +8,9 @@ from celery.schedules import crontab
 from celery.signals import after_setup_logger, after_setup_task_logger, task_failure, task_success
 
 from app.config import settings
+from app.liveness import BEAT_MAX_LOOP_INTERVAL
 from app.logging_setup import quiet_http_client_loggers
+from app.tasks import liveness_hooks
 
 logger = structlog.get_logger()
 
@@ -56,7 +58,12 @@ celery_app.conf.update(
     task_soft_time_limit=540,  # Soft limit at 9 minutes
     worker_max_tasks_per_child=50,  # Restart worker after 50 tasks (memory)
     worker_prefetch_multiplier=1,  # One task at a time per worker
+    # Liveness for the Compose healthchecks (app/liveness.py): beat touches its
+    # alive file on every tick, so it must wake up at least once a minute.
+    beat_scheduler="app.tasks.liveness_hooks:LivenessScheduler",
+    beat_max_loop_interval=BEAT_MAX_LOOP_INTERVAL,
 )
+liveness_hooks.install(celery_app)
 
 # ── Scheduled Tasks (Celery Beat) ────────────────────────
 celery_app.conf.beat_schedule = {

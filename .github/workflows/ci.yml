@@ -48,6 +48,9 @@ jobs:
       - name: Test deploy script
         run: bash tests/deploy-prod.test.sh
 
+      - name: Test uptime check script
+        run: bash tests/uptime-check.test.sh
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:

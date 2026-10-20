@@ -71,3 +71,4 @@ output/
 .agentsroom/handoff-transcript-*.txt
 .agentsroom/handoff-summary-*.md
 .agentsroom/fork-context-*.txt
+.agentsroom/transfer-context-*.txt
