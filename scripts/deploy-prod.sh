@@ -33,6 +33,17 @@ if [[ ! -f "backend/.env" ]]; then
   exit 1
 fi
 
+# Production deploys the main branch only. The checkout on victus is a plain
+# working copy: if it ever sits on a feature branch or a detached HEAD,
+# `git pull --ff-only` would deploy that branch (or fail half-way). Rollback to
+# an older commit follows docs/deploy.md#rollback, not this script.
+DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
+CURRENT_BRANCH="$(git branch --show-current)"
+if [[ "${CURRENT_BRANCH}" != "${DEPLOY_BRANCH}" ]]; then
+  echo "Checkout is on '${CURRENT_BRANCH:-detached HEAD}', expected '${DEPLOY_BRANCH}'. Aborting deploy." >&2
+  exit 1
+fi
+
 git pull --ff-only
 
 # Build first, then migrate from the freshly built image (it contains the new
@@ -54,6 +65,7 @@ docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
 for attempt in {1..30}; do
   if docker exec lego-api-prod curl -fsS http://127.0.0.1:8000/health > /dev/null; then
     echo "API healthcheck passed."
+    echo "Deployed commit: $(git log -1 --format='%h %s')"
     echo "Production deploy finished successfully."
     exit 0
   fi
