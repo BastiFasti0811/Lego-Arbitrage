@@ -10,7 +10,6 @@ from app.api.routes.inventory import (
     SellRequest,
     _recalculate_unrealized_metrics,
     _to_response,
-    get_sell_links,
     mark_as_sold,
     portfolio_summary,
 )
@@ -181,18 +180,11 @@ async def test_mark_as_sold_without_buy_price_sets_no_profit():
     assert session.added == []
 
 
-class _GetItemSession:
-    """Fake session for get_sell_links: session.get() returns the item directly."""
-
-    def __init__(self, item):
-        self._item = item
-
-    async def get(self, _model, _item_id):
-        return self._item
-
-
 @pytest.mark.asyncio
-async def test_get_sell_links_generic_without_prices():
+async def test_prepare_generic_without_any_price_asks_for_a_price():
+    """Frueher kam hier ein Text mit "Preis: 0€" heraus. Jetzt fragt der Entwurf nach dem Preis."""
+    from app.services.listing_prepare import ListingPrepareError, prepare_listing_draft
+
     item = _item(
         set_number=None,
         set_name="Bohrmaschine",
@@ -200,10 +192,19 @@ async def test_get_sell_links_generic_without_prices():
         current_market_price=None,
         condition="USED_COMPLETE",
     )
-    session = _GetItemSession(item)
+    item.ai_price_min = None
+    item.ai_price_max = None
 
-    response = await get_sell_links(item_id=1, session=session)
+    with pytest.raises(ListingPrepareError, match="Kein Preis"):
+        await prepare_listing_draft(item, "KLEINANZEIGEN")
 
-    assert response.suggested_price == 0.0
-    assert "None" not in response.ebay_title
-    assert "Bohrmaschine" in response.kleinanzeigen_text
+
+def test_template_for_generic_item_names_no_set_number():
+    from app.services.listing_prepare import template_listing_text
+
+    item = _item(set_number=None, set_name="Bohrmaschine", buy_price=None, condition="USED_COMPLETE")
+    text = template_listing_text(item, price=30.0, price_type="VB")
+
+    assert "None" not in text.title
+    assert "None" not in text.body
+    assert "Bohrmaschine" in text.body

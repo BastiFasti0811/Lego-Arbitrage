@@ -1,9 +1,16 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { copyListingText, downloadPhotos, PLATFORM_LABELS, platformCreateUrl } from "../pages/listingPrep";
+import { useToast } from "./toastContext";
 
 const PLATFORMS = ["KLEINANZEIGEN", "EBAY"];
-const PLATFORM_LABELS = { KLEINANZEIGEN: "Kleinanzeigen", EBAY: "eBay" };
+const SMALL_BUTTON = "text-xs px-2 py-1 rounded bg-bg-hover text-text-primary border border-border hover:border-lego-yellow";
+const INPUT = "w-full bg-bg-primary border border-border rounded px-2 py-1 text-sm text-text-primary";
+
+function today() {
+  return new Date().toISOString().split("T")[0];
+}
 const STATUS_LABELS = { ACTIVE: "aktiv", PAUSED: "pausiert", ENDED: "beendet", SOLD: "verkauft", DRAFT: "Entwurf" };
 
 function formatDate(value) {
@@ -12,7 +19,7 @@ function formatDate(value) {
 
 function ActivateForm({ itemId, platform, onDone }) {
   const [price, setPrice] = useState("");
-  const [listedAt, setListedAt] = useState(new Date().toISOString().split("T")[0]);
+  const [listedAt, setListedAt] = useState(today());
   const [url, setUrl] = useState("");
   const [minPrice, setMinPrice] = useState("");
   const [error, setError] = useState(null);
@@ -72,67 +79,178 @@ function ActivateForm({ itemId, platform, onDone }) {
   );
 }
 
-function ListingTextBlock({ itemId, listing, onDone }) {
-  const [copied, setCopied] = useState(false);
-  const [error, setError] = useState(null);
+function DraftPanel({ item, listing, onDone }) {
+  const toast = useToast();
+  const [url, setUrl] = useState("");
+  const [price, setPrice] = useState(listing.current_price != null ? String(listing.current_price) : "");
+  const [listedAt, setListedAt] = useState(today());
+  const [minPrice, setMinPrice] = useState("");
+  const photoCount = item.photos?.length || 0;
+  const platformLabel = PLATFORM_LABELS[listing.platform];
 
+  const savePrice = useMutation({
+    mutationFn: (value) => api.updateListing(item.id, listing.id, { current_price: value }),
+    onSuccess: onDone,
+    onError: (err) => toast.error(`Preis nicht gespeichert: ${err.message}`),
+  });
   const refreshText = useMutation({
-    mutationFn: () => api.refreshListingText(itemId, listing.id),
+    mutationFn: () => api.refreshListingText(item.id, listing.id),
     onSuccess: () => {
-      setError(null);
+      toast.success("Text neu geschrieben");
       onDone();
     },
-    onError: (err) => setError(err.message),
+    onError: (err) => toast.error(`Text nicht neu geschrieben: ${err.message}`),
+  });
+  const activate = useMutation({
+    mutationFn: () =>
+      api.activateListing(item.id, listing.id, {
+        url: url.trim(),
+        current_price: price === "" ? null : Number(price),
+        listed_at: listedAt,
+        min_price: minPrice === "" ? null : Number(minPrice),
+      }),
+    onSuccess: () => {
+      toast.success(`${platformLabel}: Anzeige ist aktiv`);
+      onDone();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+  const discard = useMutation({
+    mutationFn: () => api.deleteListing(item.id, listing.id),
+    onSuccess: () => {
+      toast.info("Entwurf verworfen");
+      onDone();
+    },
+    onError: (err) => toast.error(err.message),
   });
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(`${listing.title}\n\n${listing.body}`);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      setError("Text konnte nicht kopiert werden");
-    }
+    if (await copyListingText(listing)) toast.success("Titel und Text kopiert");
+    else toast.error("Kopieren hat der Browser verweigert — Text markieren und mit Strg+C kopieren");
   };
 
+  const handlePhotos = () => {
+    const count = downloadPhotos(item);
+    if (count === 0) toast.warning("Keine Fotos hinterlegt — vor dem Einstellen unter „Bearbeiten“ ergänzen");
+    else toast.info(`${count} Foto${count > 1 ? "s" : ""} werden geladen`);
+  };
+
+  const commitPrice = () => {
+    const value = Number(price);
+    if (price === "" || !(value > 0) || value === listing.current_price) return;
+    savePrice.mutate(value);
+  };
+
+  const suggestedMin = price ? Math.round(Number(price) * 0.7 * 100) / 100 : null;
+  const busy = activate.isPending || refreshText.isPending || discard.isPending;
+
   return (
-    <div className="mb-3 rounded-lg border border-lego-yellow/30 bg-lego-yellow/5 p-3 space-y-2">
-      <p className="text-sm font-bold text-text-primary">{listing.title}</p>
-      <p className="text-xs text-text-secondary whitespace-pre-wrap">{listing.body}</p>
-      <div className="flex items-center gap-2">
-        <button type="button" onClick={handleCopy}
-          className="text-xs px-2 py-1 rounded bg-bg-hover text-text-primary border border-border">
-          {copied ? "Kopiert!" : "Text kopieren"}
-        </button>
-        <button type="button" onClick={() => refreshText.mutate()} disabled={refreshText.isPending}
-          className="text-xs px-2 py-1 rounded bg-bg-hover text-text-primary border border-border disabled:opacity-50">
-          {refreshText.isPending ? "..." : "Text neu generieren"}
-        </button>
+    <div className="space-y-3">
+      <div className="rounded-lg border border-lego-yellow/30 bg-lego-yellow/5 p-3 space-y-2">
+        <p className="text-xs text-text-secondary">Entwurf · noch nicht eingestellt</p>
+        <p className="text-sm font-bold text-text-primary select-all">{listing.title || "— kein Titel —"}</p>
+        <p className="text-xs text-text-secondary whitespace-pre-wrap select-all">{listing.body}</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" onClick={handleCopy} className={SMALL_BUTTON}>Text kopieren</button>
+          <button type="button" onClick={handlePhotos} className={SMALL_BUTTON}>
+            Fotos laden ({photoCount})
+          </button>
+          <a href={platformCreateUrl(item, listing.platform)} target="_blank" rel="noreferrer" className={SMALL_BUTTON}>
+            {platformLabel} öffnen {"↗"}
+          </a>
+          <button type="button" onClick={() => refreshText.mutate()} disabled={busy} className={`${SMALL_BUTTON} disabled:opacity-50`}>
+            {refreshText.isPending ? "Claude schreibt …" : "Text neu"}
+          </button>
+        </div>
       </div>
-      {error && <p className="text-xs text-no-go">{error}</p>}
+      <form
+        className="space-y-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          activate.mutate();
+        }}
+      >
+        <div className="grid grid-cols-[1fr_7rem] gap-2">
+          <label className="text-xs text-text-secondary">
+            Anzeigen-URL nach dem Einstellen*
+            <input type="url" required value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://www.kleinanzeigen.de/s-anzeige/…"
+              className={INPUT} />
+          </label>
+          <label className="text-xs text-text-secondary">
+            Preis (€)*
+            <input type="number" step="0.01" min="0.01" required value={price} onChange={(e) => setPrice(e.target.value)} onBlur={commitPrice}
+              className={INPUT} />
+          </label>
+        </div>
+        <details className="text-xs text-text-secondary">
+          <summary className="cursor-pointer select-none">Datum und Schmerzgrenze</summary>
+          <div className="grid grid-cols-2 gap-2 mt-2">
+            <label>
+              Eingestellt am
+              <input type="date" value={listedAt} onChange={(e) => setListedAt(e.target.value)} className={INPUT} />
+            </label>
+            <label>
+              Schmerzgrenze (€)
+              <input type="number" step="0.01" min="0.01" value={minPrice} onChange={(e) => setMinPrice(e.target.value)}
+                placeholder={suggestedMin ? `Vorschlag: ${suggestedMin}` : ""} className={INPUT} />
+            </label>
+          </div>
+        </details>
+        <div className="flex items-center gap-2">
+          <button type="submit" disabled={busy}
+            className="text-xs px-3 py-1.5 rounded-lg font-bold bg-lego-yellow text-black hover:bg-lego-yellow/90 disabled:opacity-50">
+            {activate.isPending ? "…" : "Aktiv schalten"}
+          </button>
+          <button type="button" disabled={busy}
+            onClick={() => { if (confirm("Entwurf verwerfen?")) discard.mutate(); }}
+            className="text-xs px-2 py-1 rounded text-no-go hover:underline disabled:opacity-50">
+            Entwurf verwerfen
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
 
-function DraftTextButton({ itemId, platform, onDone }) {
-  const [error, setError] = useState(null);
-
-  const draftText = useMutation({
-    mutationFn: () => api.draftListingText(itemId, platform, null),
-    onSuccess: () => {
-      setError(null);
+function PreparePanel({ item, platform, onDone }) {
+  const toast = useToast();
+  const [price, setPrice] = useState("");
+  const prepare = useMutation({
+    mutationFn: () => api.prepareListing(item.id, platform, price === "" ? null : Number(price)),
+    onSuccess: async (result) => {
+      if (result.warning) toast.warning(result.warning);
+      const copied = await copyListingText(result.listing);
+      toast.success(copied ? "Entwurf angelegt, Text kopiert" : "Entwurf angelegt");
       onDone();
     },
-    onError: (err) => setError(err.message),
+    onError: (err) => toast.error(err.message),
   });
 
   return (
-    <div className="mb-2">
-      <button type="button" onClick={() => draftText.mutate()} disabled={draftText.isPending}
-        className="text-xs px-3 py-1.5 rounded-lg font-bold bg-lego-blue/10 text-lego-blue hover:bg-lego-blue/20 disabled:opacity-50">
-        {draftText.isPending ? "Claude schreibt …" : "Text mit KI erstellen"}
-      </button>
-      {error && <p className="text-xs text-no-go mt-1">{error}</p>}
+    <div className="space-y-2">
+      <form
+        className="flex flex-wrap items-end gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          prepare.mutate();
+        }}
+      >
+        <label className="text-xs text-text-secondary">
+          Preis (€), leer = Vorschlag
+          <input type="number" step="0.01" min="0.01" value={price} onChange={(e) => setPrice(e.target.value)}
+            className={`${INPUT} w-32`} />
+        </label>
+        <button type="submit" disabled={prepare.isPending}
+          className="text-xs px-3 py-1.5 rounded-lg font-bold bg-lego-yellow text-black hover:bg-lego-yellow/90 disabled:opacity-50">
+          {prepare.isPending ? "Claude schreibt …" : "Inserat vorbereiten"}
+        </button>
+      </form>
+      <details className="text-xs text-text-secondary">
+        <summary className="cursor-pointer select-none">Schon eingestellt? Direkt erfassen</summary>
+        <div className="mt-2">
+          <ActivateForm itemId={item.id} platform={platform} onDone={onDone} />
+        </div>
+      </details>
     </div>
   );
 }
@@ -227,11 +345,10 @@ export default function ListingManager({ item, onClose, onChanged }) {
           );
           // Ein DRAFT ist noch keine echte Anzeige: OpenListing (Preis aendern/
           // Pausieren) passt nur auf ACTIVE/PAUSED. Solange der Artikel nicht
-          // verkauft ist, bekommt der DRAFT stattdessen den Textblock + das
-          // bestehende ActivateForm, das ihn beim Absenden aktiviert. Bleibt ein
-          // DRAFT auf einem SOLD-Artikel liegen (über eine andere Plattform
-          // verkauft), zeigt weiter OpenListing, damit "Beendet/geloescht" ihn
-          // wie jede andere offene Anzeige abräumen kann.
+          // verkauft ist, bekommt der DRAFT das DraftPanel (Text, Fotos, URL
+          // einfuegen -> aktiv). Bleibt ein DRAFT auf einem SOLD-Artikel liegen
+          // (über eine andere Plattform verkauft), zeigt weiter OpenListing,
+          // damit "Beendet/geloescht" ihn wie jede andere offene Anzeige abräumt.
           const isDraft = open?.status === "DRAFT";
           return (
             <div key={platform} className="border-t border-border/50 py-3">
@@ -239,14 +356,11 @@ export default function ListingManager({ item, onClose, onChanged }) {
               {open && (!isDraft || item.status === "SOLD") ? (
                 <OpenListing itemId={item.id} listing={open} onDone={refresh} />
               ) : item.status !== "SOLD" ? (
-                <>
-                  {isDraft ? (
-                    <ListingTextBlock itemId={item.id} listing={open} onDone={refresh} />
-                  ) : (
-                    <DraftTextButton itemId={item.id} platform={platform} onDone={refresh} />
-                  )}
-                  <ActivateForm itemId={item.id} platform={platform} onDone={refresh} />
-                </>
+                isDraft ? (
+                  <DraftPanel item={item} listing={open} onDone={refresh} />
+                ) : (
+                  <PreparePanel item={item} platform={platform} onDone={refresh} />
+                )
               ) : (
                 <p className="text-xs text-text-secondary">Artikel ist verkauft.</p>
               )}

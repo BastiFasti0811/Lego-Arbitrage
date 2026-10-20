@@ -6,7 +6,6 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from shutil import copy2, rmtree
 from typing import Annotated
-from urllib.parse import urlencode
 from uuid import uuid4
 
 import httpx
@@ -21,7 +20,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai import AIProviderError, ItemDraft, get_provider, prepare_photo
 from app.api.routes.listings import ListingResponse, open_listing_responses
 from app.config import settings
-from app.domain.condition import condition_ad_label, condition_ad_title_suffix
 from app.engine.market_consensus import PriceBasis
 from app.engine.roi_calculator import calculate_ebay_fees
 from app.models import AnalysisHistoryEntry, DealFeedback, LegoSet, get_session
@@ -231,14 +229,11 @@ class PortfolioSummary(BaseModel):
     unrealized_roi_percent: float
     total_realized_profit: float
     sell_signals_active: int
-
-
-class SellLinksResponse(BaseModel):
-    ebay_url: str
-    ebay_title: str
-    kleinanzeigen_text: str
-    suggested_price: float
-    suggested_title: str
+    # Zielzaehler Verkauf (projekt-ziel: 30 von 49 Lego-Posten inseriert, 15 verkauft).
+    # Posten, nicht Stueck; "inseriert" heisst: mindestens eine Anzeige war je aktiv.
+    lego_items: int = 0
+    lego_listed: int = 0
+    lego_sold: int = 0
 
 
 class ValuationRunResponse(BaseModel):
@@ -674,58 +669,6 @@ async def make_inventory_photo_primary(
     return [_to_photo_response(photo) for photo in photos]
 
 
-@router.get("/{item_id}/sell-links", response_model=SellLinksResponse)
-async def get_sell_links(item_id: int, session: AsyncSession = Depends(get_session)):
-    """Generate pre-filled sell links for eBay and Kleinanzeigen."""
-    item = await session.get(InventoryItem, item_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
-
-    if item.current_market_price is not None:
-        suggested_price = item.current_market_price
-    elif item.buy_price is not None:
-        suggested_price = item.buy_price * 1.5
-    else:
-        suggested_price = 0.0
-
-    title_suffix = condition_ad_title_suffix(item.condition)
-    if item.set_number:
-        title = f"LEGO {item.set_number} {item.set_name}"
-        ebay_keyword = f"LEGO {item.set_number}"
-    else:
-        title = item.set_name
-        ebay_keyword = item.set_name
-    if title_suffix:
-        title = f"{title} {title_suffix}"
-    if len(title) > 80:
-        title = title[:77] + "..."
-
-    ebay_params = {
-        "keyword": ebay_keyword,
-        "LH_BIN": "1",
-    }
-    ebay_url = f"https://www.ebay.de/sell/create?{urlencode(ebay_params)}"
-
-    set_line = f"LEGO Set {item.set_number} - {item.set_name}\n" if item.set_number else f"{item.set_name}\n"
-    ad_label = condition_ad_label(item.condition)
-    condition_line = f"Zustand: {ad_label}\n" if ad_label else ""
-    kleinanzeigen_text = (
-        f"{title}\n\n"
-        f"{set_line}"
-        f"{condition_line}"
-        f"Preis: {suggested_price:.0f}\u20ac\n\n"
-        f"Versand m\u00f6glich."
-    )
-
-    return SellLinksResponse(
-        ebay_url=ebay_url,
-        ebay_title=title,
-        kleinanzeigen_text=kleinanzeigen_text,
-        suggested_price=round(suggested_price, 2),
-        suggested_title=title,
-    )
-
-
 @router.patch("/{item_id}", response_model=InventoryResponse)
 async def update_inventory_item(
     item_id: int,
@@ -1053,6 +996,21 @@ async def delete_inventory_item(item_id: int, session: AsyncSession = Depends(ge
     return {"status": "deleted", "id": item_id}
 
 
+def was_ever_listed(item: InventoryItem) -> bool:
+    """Ein Listing mit Einstell-Datum gilt als inseriert, auch wenn es inzwischen
+    beendet oder verkauft ist. Reine Entwuerfe zaehlen nicht."""
+    return any(listing.listed_at is not None for listing in item.listings)
+
+
+def lego_listing_counts(items) -> dict[str, int]:
+    lego = [i for i in items if i.item_type == InventoryItemType.LEGO.value]
+    return {
+        "lego_items": len(lego),
+        "lego_listed": sum(1 for i in lego if was_ever_listed(i)),
+        "lego_sold": sum(1 for i in lego if i.status == InventoryStatus.SOLD.value),
+    }
+
+
 @router.get("/summary", response_model=PortfolioSummary)
 async def portfolio_summary(session: AsyncSession = Depends(get_session)):
     result = await session.execute(select(InventoryItem))
@@ -1084,6 +1042,7 @@ async def portfolio_summary(session: AsyncSession = Depends(get_session)):
         unrealized_roi_percent=round((unrealized / total_invested) * 100, 1) if total_invested > 0 else 0,
         total_realized_profit=round(sum(i.realized_profit or 0 for i in sold), 2),
         sell_signals_active=sum(1 for i in holding if i.sell_signal_active),
+        **lego_listing_counts(items),
     )
 
 

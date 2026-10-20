@@ -39,6 +39,7 @@ celery_app = Celery(
         "app.tasks.update_inventory",
         "app.tasks.health_check",
         "app.tasks.weekly_report",
+        "app.tasks.listing_pack",
     ],
 )
 
@@ -104,6 +105,12 @@ celery_app.conf.beat_schedule = {
     "weekly-report": {
         "task": "app.tasks.weekly_report.send_weekly_report_task",
         "schedule": crontab(minute=0, hour=18, day_of_week=0),
+        "options": {"queue": "notifications"},
+    },
+    # Montags-Paket: 5 fertige Inserate der Woche (Monday 08:00, ADR 0002: nur vorbereitet)
+    "listing-pack": {
+        "task": "app.tasks.listing_pack.send_listing_pack_task",
+        "schedule": crontab(minute=0, hour=8, day_of_week=1),
         "options": {"queue": "notifications"},
     },
     # Update inventory valuations every 6 hours (offset from scraping)

@@ -42,6 +42,7 @@ MONITORED_TASKS: dict[str, int] = {
     "app.tasks.update_inventory.update_inventory_valuations": 8,  # every 6h
     "app.tasks.scrape_daily.scrape_kleinanzeigen_watched": 5,     # every 2h
     "app.tasks.weekly_report.send_weekly_report_task": 194,       # weekly Sunday 18:00
+    "app.tasks.listing_pack.send_listing_pack_task": 194,         # weekly Monday 08:00
 }
 
 # Die Tasks, die Angebote in die DB schreiben. Der Live Feed meldet ihren

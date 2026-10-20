@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { api } from "./api/client";
 import AppLayout from "./layouts/AppLayout";
+import { ToastProvider } from "./components/Toast";
 
 const LiveFeed = lazy(() => import("./pages/LiveFeed"));
 const AuctionWatch = lazy(() => import("./pages/AuctionWatch"));
@@ -52,6 +53,7 @@ export default function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
+      <ToastProvider>
       <BrowserRouter basename={basename}>
         <Suspense
           fallback={
@@ -81,6 +83,7 @@ export default function App() {
           </Routes>
         </Suspense>
       </BrowserRouter>
+      </ToastProvider>
     </QueryClientProvider>
   );
 }

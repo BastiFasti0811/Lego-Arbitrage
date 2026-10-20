@@ -16,6 +16,12 @@ _Avoid_: Kategorie (allein), Typ
 Die eigene Anzeige eines Artikels auf genau einer Plattform, mit eigenem Preis, eigener Laufzeit und eigenem Status. Entsteht als Entwurf (DRAFT) mit dem generierten Text und wird beim Einstellen ACTIVE; „nicht eingestellt" heißt: keine Zeile oder nur DRAFT. Beendete Zeilen bleiben als Historie stehen.
 _Avoid_: Inserat, Anzeige (im Code), Angebot
 
+**Inserat vorbereiten** (`POST /inventory/{id}/listings/prepare`):
+Der einzige Textweg zum Listing: legt den Entwurf mit KI-Text und Preisvorschlag an oder nimmt den vorhandenen. Fällt die KI aus, steht ein Vorlagentext mit Warnung drin. Nach dem Einstellen von Hand genügt die Anzeigen-URL (`…/activate`), dann ist das Listing ACTIVE mit Datum. Als „inseriert" zählt ein Artikel, sobald eines seiner Listings je ein Einstell-Datum hatte.
+
+**Montags-Paket** (`app.tasks.listing_pack`):
+Montags 08:00 bereitet das System fünf nicht inserierte Lego-Artikel als Kleinanzeigen-Entwurf vor (Fotos zuerst, dann höchster Preisvorschlag) und schickt Fotos, Titel und Text per Telegram. Eingestellt wird weiter von Hand (ADR 0002).
+
 **Offer** (`offers`-Tabelle):
 Ein fremdes Verkaufsangebot, das die Arbitrage-Pipeline beobachtet. Nie das eigene — das ist ein Listing.
 _Avoid_: Listing (für Fremdes), Deal
