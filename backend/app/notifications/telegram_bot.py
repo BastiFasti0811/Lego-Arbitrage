@@ -4,10 +4,11 @@ Sends alerts when profitable deals are found.
 Supports inline buttons for quick actions.
 """
 
+import html
 import re
 
 import structlog
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.constants import ParseMode
 
 from app.engine.decision_engine import AnalysisResult, Recommendation
@@ -326,3 +327,86 @@ async def send_weekly_report(stats: dict) -> bool:
     except Exception as e:
         logger.error("telegram.weekly_report_failed", error=str(e))
         return False
+
+
+# ── Montags-Paket: fertige Inserate der Woche ────────────────────────
+# HTML statt Markdown: Anzeigentexte enthalten *, _ und Klammern, die Markdown
+# zerlegen wuerde. <code>/<pre> lassen sich in Telegram per Tipp kopieren.
+_TELEGRAM_TEXT_LIMIT = 4096
+_MEDIA_GROUP_LIMIT = 10
+
+
+def format_listing_pack_header(count: int, unlisted_total: int) -> str:
+    if count == 0:
+        return (
+            "🧱 <b>Inserate der Woche</b>\n\n"
+            f"Kein Posten bereit. Nicht inseriert: {unlisted_total} (ohne Preisvorschlag oder schon vorbereitet)."
+        )
+    return (
+        f"🧱 <b>{count} Inserate der Woche</b> (nicht inseriert: {unlisted_total})\n\n"
+        "Je Posten: Fotos, Titel und Text zum Kopieren. Nach dem Einstellen in der App "
+        "unter <i>Listings</i> die Anzeigen-URL einfügen und „Aktiv schalten“."
+    )
+
+
+def format_listing_pack_entry(index: int, count: int, entry) -> str:
+    """Ein Posten als HTML-Nachricht, sicher unter Telegrams 4096-Zeichen-Grenze."""
+    price_suffix = " VB" if entry.price_type == "VB" else ""
+    facts = [f"{entry.price:.0f} €{price_suffix}"]
+    if entry.storage_location:
+        facts.append(f"📦 {html.escape(entry.storage_location)}")
+    facts.append(f"{len(entry.photo_paths)} Fotos" if entry.photo_paths else "⚠️ keine Fotos")
+    if entry.text_source == "VORLAGE":
+        facts.append("Vorlagentext (KI war nicht erreichbar)")
+    head = (
+        f"<b>{index}/{count} · {html.escape(entry.label)}</b>\n"
+        f"{' · '.join(facts)}\n\n"
+        f"<code>{html.escape(entry.title)}</code>\n\n"
+    )
+    budget = _TELEGRAM_TEXT_LIMIT - len(head) - len("<pre></pre>") - 20
+    body = html.escape(entry.body)
+    if len(body) > budget:
+        body = body[: budget - 1].rsplit(" ", 1)[0] + " …"
+    return f"{head}<pre>{body}</pre>"
+
+
+async def send_listing_pack(entries: list, unlisted_total: int) -> bool:
+    """Kopf, dann je Posten Fotos (falls lesbar) und Text. True nur, wenn Kopf
+    und alle Texte ankamen — fehlende Fotos allein sind kein Zustellfehler."""
+    runtime_settings = await get_settings_map(["telegram_bot_token", "telegram_chat_id"])
+    bot_token = runtime_settings.get("telegram_bot_token")
+    chat_id = runtime_settings.get("telegram_chat_id")
+    if not bot_token or not chat_id:
+        return False
+
+    bot = Bot(token=bot_token)
+    try:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=format_listing_pack_header(len(entries), unlisted_total),
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as e:
+        logger.error("telegram.listing_pack_failed", stage="header", error=str(e))
+        return False
+
+    all_sent = True
+    for index, entry in enumerate(entries, start=1):
+        photos = entry.photo_paths[:_MEDIA_GROUP_LIMIT]
+        if photos:
+            try:
+                media = [InputMediaPhoto(path.read_bytes()) for path in photos]
+                await bot.send_media_group(chat_id=chat_id, media=media)
+            except Exception as e:
+                logger.warning("telegram.listing_pack_photos_failed", item_id=entry.item_id, error=str(e))
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=format_listing_pack_entry(index, len(entries), entry),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as e:
+            all_sent = False
+            logger.error("telegram.listing_pack_failed", stage="entry", item_id=entry.item_id, error=str(e))
+    logger.info("telegram.listing_pack_sent", items=len(entries), complete=all_sent)
+    return all_sent

@@ -16,6 +16,15 @@ function BadgeContent({ listing }) {
 export default function ListingBadges({ item }) {
   const open = (item.listings || []).filter((x) => x.status === "ACTIVE" || x.status === "PAUSED");
   if (open.length === 0) {
+    const drafts = (item.listings || []).filter((x) => x.status === "DRAFT");
+    if (drafts.length > 0) {
+      const platforms = drafts.map((x) => PLATFORM_LABELS[x.platform] || x.platform).join(", ");
+      return (
+        <span className="text-xs px-2 py-0.5 rounded-full border border-lego-yellow/50 text-lego-yellow">
+          Entwurf: {platforms}
+        </span>
+      );
+    }
     return <span className="text-xs text-text-secondary">nicht eingestellt</span>;
   }
   return (

@@ -1,10 +1,10 @@
 """Die Anzeige darf nur behaupten, was in der Zeile steht.
 
-`get_sell_links` schrieb "Zustand: Neu & Originalverpackt (OVP)" fest verdrahtet
-in den Kleinanzeigen-Text und haengte "NEU OVP" an jeden eBay-Titel, ohne
-`item.condition` je zu lesen. Ein Klick kopiert diesen Text und oeffnet das
-Anzeigenformular — ein gebrauchtes Set wurde damit als neu und originalverpackt
-inseriert.
+Der fruehere `/sell-links`-Text schrieb "Zustand: Neu & Originalverpackt (OVP)"
+fest verdrahtet und haengte "NEU OVP" an jeden Titel, ohne `item.condition` je
+zu lesen — ein gebrauchtes Set wurde damit als neu und originalverpackt
+inseriert. Die Vorlage lebt heute als Rueckfall von "Inserat vorbereiten"
+(`template_listing_text`), wenn die KI ausfaellt; dieselben Regeln gelten.
 """
 
 from datetime import UTC, date, datetime
@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.api.routes.inventory import get_sell_links
+from app.services.listing_prepare import template_listing_text
 
 
 def _item(**overrides):
@@ -54,19 +54,11 @@ def _item(**overrides):
     return SimpleNamespace(**base)
 
 
-class _GetItemSession:
-    """Fake session fuer get_sell_links: session.get() liefert das Item direkt."""
-
-    def __init__(self, item):
-        self._item = item
-
-    async def get(self, _model, _item_id):
-        return self._item
-
-
 async def _links(**overrides):
+    """Titel und Text der Vorlage in den Formen, die die alten Asserts lesen."""
     item = _item(**overrides)
-    return await get_sell_links(item_id=1, session=_GetItemSession(item))
+    text = template_listing_text(item, price=120.0, price_type="VB")
+    return SimpleNamespace(kleinanzeigen_text=f"{text.title}\n\n{text.body}", ebay_title=text.title)
 
 
 @pytest.mark.asyncio
@@ -141,3 +133,19 @@ async def test_generic_item_without_set_number_still_carries_the_condition():
 
     assert response.ebay_title == "Bohrmaschine gebraucht"
     assert "Zustand: Gebraucht, komplett" in response.kleinanzeigen_text
+
+
+def test_template_carries_price_with_vb_and_quantity():
+    item = _item(quantity=3)
+    text = template_listing_text(item, price=119.6, price_type="VB")
+
+    assert "Preis: 120€ VB" in text.body
+    assert "3 Stück vorhanden" in text.body
+    assert text.platform_category == ""
+
+
+def test_template_fixed_price_has_no_vb():
+    text = template_listing_text(_item(), price=50.0, price_type="FIXED")
+
+    assert "Preis: 50€\n" in text.body
+    assert "VB" not in text.body

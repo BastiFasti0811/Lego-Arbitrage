@@ -209,14 +209,15 @@ export const api = {
   deleteInventoryPhoto: (itemId, photoId) => request(`/inventory/${itemId}/photos/${photoId}`, { method: "DELETE" }),
   makePrimaryInventoryPhoto: (itemId, photoId) => request(`/inventory/${itemId}/photos/${photoId}/make-primary`, { method: "POST" }),
   inventoryPhotoUrl: (itemId, photoId) => `${BASE}/inventory/${itemId}/photos/${photoId}`,
-  getSellLinks: (id) => request(`/inventory/${id}/sell-links`),
   portfolioSummary: () => request("/inventory/summary"),
   inventoryHistory: () => request("/inventory/history"),
   listListings: (itemId) => request(`/inventory/${itemId}/listings`),
   createListing: (itemId, data) => request(`/inventory/${itemId}/listings`, { method: "POST", body: JSON.stringify(data) }),
   // KI-Anzeigentexte (Spec: KI-Anbindung): Entwurf schreiben/neu schreiben lassen.
-  draftListingText: (itemId, platform, price) =>
-    request(`/inventory/${itemId}/listings/draft`, { method: "POST", body: JSON.stringify({ platform, price: price ?? null }) }),
+  prepareListing: (itemId, platform, price) =>
+    request(`/inventory/${itemId}/listings/prepare`, { method: "POST", body: JSON.stringify({ platform, price: price ?? null }) }),
+  activateListing: (itemId, listingId, data) =>
+    request(`/inventory/${itemId}/listings/${listingId}/activate`, { method: "POST", body: JSON.stringify(data) }),
   refreshListingText: (itemId, listingId) =>
     request(`/inventory/${itemId}/listings/${listingId}/refresh-text`, { method: "POST" }),
   updateListing: (itemId, listingId, data) =>

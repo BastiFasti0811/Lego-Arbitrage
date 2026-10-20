@@ -8,6 +8,16 @@ import PhotoFirstModal from "../components/PhotoFirstModal";
 import PriceBasis from "../components/PriceBasis";
 import ValuationStatus from "../components/ValuationStatus";
 import { referenceLinks } from "./inventoryLinks";
+import { useToast } from "../components/toastContext";
+import {
+  copyListingText,
+  LISTING_FILTERS,
+  matchesListingFilter,
+  matchesSearch,
+  openListing,
+  PLATFORM_LABELS,
+  RUNNING_STATUSES,
+} from "./listingPrep";
 
 const EURO = "\u20ac";
 const PHOTO_ICON = "\u{1F4F8}";
@@ -67,10 +77,10 @@ function revokeLocalPhotoEntries(entries) {
   entries.forEach((entry) => URL.revokeObjectURL(entry.previewUrl));
 }
 
-function SellDropdown({ item, onMarkSold }) {
+function SellDropdown({ item, onPrepared, onMarkSold }) {
+  const toast = useToast();
   const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [toast, setToast] = useState(false);
+  const [pendingPlatform, setPendingPlatform] = useState(null);
   const ref = useRef(null);
 
   useEffect(() => {
@@ -81,56 +91,68 @@ function SellDropdown({ item, onMarkSold }) {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  const fetchAndAct = async (action) => {
-    setLoading(true);
+  // Ein Klick: Entwurf mit Text und Preisvorschlag anlegen (oder den
+  // vorhandenen nehmen), Text in die Zwischenablage, Listing-Fenster auf.
+  // Eingestellt wird von Hand (ADR 0002); dort reicht dann die URL.
+  const prepare = async (platform) => {
+    setOpen(false);
+    setPendingPlatform(platform);
     try {
-      const links = await api.getSellLinks(item.id);
-      if (action === "ebay") {
-        window.open(links.ebay_url, "_blank");
-      } else if (action === "kleinanzeigen") {
-        await navigator.clipboard.writeText(links.kleinanzeigen_text);
-        setToast(true);
-        setTimeout(() => setToast(false), 2000);
-        window.open("https://www.kleinanzeigen.de/p-anzeige-aufgeben.html", "_blank");
-      }
+      const result = await api.prepareListing(item.id, platform, null);
+      if (result.warning) toast.warning(result.warning);
+      const copied = await copyListingText(result.listing);
+      const label = PLATFORM_LABELS[platform];
+      toast.success(
+        copied
+          ? `${label}: Entwurf bereit, Text kopiert (${Math.round(result.listing.current_price)}${EURO})`
+          : `${label}: Entwurf bereit (${Math.round(result.listing.current_price)}${EURO}) — Text im Fenster kopieren`,
+      );
+      onPrepared();
     } catch (err) {
-      console.error("Sell links error:", err);
+      toast.error(`Inserat nicht vorbereitet: ${err.message}`);
     } finally {
-      setLoading(false);
-      setOpen(false);
+      setPendingPlatform(null);
     }
   };
+
+  const options = SELL_PLATFORM_QUICK_PICKS.map((p) => {
+    const running = (item.listings || []).find((x) => x.platform === p.value && RUNNING_STATUSES.includes(x.status));
+    const draft = openListing(item, p.value)?.status === "DRAFT";
+    return { ...p, running: !!running, draft };
+  });
 
   return (
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(!open)}
-        className={`text-xs px-3 py-1.5 rounded-lg font-bold transition-colors bg-lego-yellow text-black hover:bg-lego-yellow/90 ${
+        disabled={pendingPlatform !== null}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className={`text-xs px-3 py-1.5 rounded-lg font-bold transition-colors bg-lego-yellow text-black hover:bg-lego-yellow/90 disabled:opacity-60 ${
           item.sell_signal_active ? "animate-pulse shadow-[0_0_8px_rgba(255,206,0,0.6)]" : ""
         }`}
       >
-        {loading ? "..." : "Verkaufen \u25BE"}
+        {pendingPlatform ? "Bereite vor …" : "Verkaufen \u25BE"}
       </button>
-      {toast && (
-        <div className="absolute left-0 -top-8 bg-go-star text-black text-xs font-bold px-2 py-1 rounded shadow-lg whitespace-nowrap z-50">
-          Text kopiert
-        </div>
-      )}
       {open && (
-        <div className="absolute left-0 top-full mt-1 bg-bg-primary border border-border rounded-lg shadow-xl z-50 min-w-[200px]">
+        <div role="menu" className="absolute left-0 top-full mt-1 bg-bg-primary border border-border rounded-lg shadow-xl z-50 min-w-[240px]">
+          {options.map((option) => (
+            <button
+              key={option.value}
+              role="menuitem"
+              disabled={option.running}
+              onClick={() => prepare(option.value)}
+              className="w-full text-left text-sm text-text-primary px-3 py-2 hover:bg-bg-hover first:rounded-t-lg transition-colors disabled:text-text-muted disabled:hover:bg-transparent"
+            >
+              {option.running
+                ? `${option.label}: läuft schon`
+                : option.draft
+                  ? `${option.label}: Entwurf öffnen`
+                  : `Inserat vorbereiten: ${option.label}`}
+            </button>
+          ))}
           <button
-            onClick={() => fetchAndAct("ebay")}
-            className="w-full text-left text-sm text-text-primary px-3 py-2 hover:bg-bg-hover rounded-t-lg transition-colors"
-          >
-            Auf eBay einstellen
-          </button>
-          <button
-            onClick={() => fetchAndAct("kleinanzeigen")}
-            className="w-full text-left text-sm text-text-primary px-3 py-2 hover:bg-bg-hover transition-colors"
-          >
-            Auf Kleinanzeigen einstellen
-          </button>
-          <button
+            role="menuitem"
             onClick={() => {
               setOpen(false);
               onMarkSold();
@@ -292,6 +314,8 @@ export default function Inventar() {
   const [listingItem, setListingItem] = useState(null);
   const [typeFilter, setTypeFilter] = useState("");
   const [groupFilter, setGroupFilter] = useState("");
+  const [listingFilter, setListingFilter] = useState("");
+  const [search, setSearch] = useState("");
   const [addPhotoEntries, setAddPhotoEntries] = useState([]);
   const [editPhotoEntries, setEditPhotoEntries] = useState([]);
   const [editRemovedPhotoIds, setEditRemovedPhotoIds] = useState([]);
@@ -577,6 +601,11 @@ export default function Inventar() {
     normalizeLocation(duplicateTarget.storage_location) !== "" &&
     normalizeLocation(duplicateTarget.storage_location) !== enteredLocationKey;
 
+  const visibleItems = (items || []).filter(
+    (item) => matchesListingFilter(item, listingFilter) && matchesSearch(item, search),
+  );
+  const filtersActive = listingFilter !== "" || search.trim() !== "";
+
   const profitColor = (value) => (value > 0 ? "text-go-star" : value < 0 ? "text-no-go" : "text-text-primary");
 
   return (
@@ -594,8 +623,13 @@ export default function Inventar() {
       </div>
 
       {summary && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
           <StatCard label="Sets" value={summary.holding_items} sub={`${summary.sold_items} verkauft`} />
+          <StatCard
+            label="Lego inseriert"
+            value={`${summary.lego_listed}/${summary.lego_items}`}
+            sub={`${summary.lego_sold} verkauft`}
+          />
           <StatCard label="Investiert" value={formatMoney(summary.total_invested)} />
           <StatCard label="Aktueller Wert" value={formatMoney(summary.current_value)} color="text-lego-yellow" />
           <StatCard label="Unrealisiert" value={`${summary.unrealized_profit >= 0 ? "+" : ""}${formatMoney(summary.unrealized_profit)}`} sub={`${summary.unrealized_roi_percent.toFixed(1)}%`} color={profitColor(summary.unrealized_profit)} />
@@ -639,6 +673,35 @@ export default function Inventar() {
             ))}
           </select>
         </div>
+        <div>
+          <label htmlFor="inventory-listing-filter" className="block text-text-muted text-xs mb-1">Inserat</label>
+          <select
+            id="inventory-listing-filter"
+            value={listingFilter}
+            onChange={(e) => setListingFilter(e.target.value)}
+            className="bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm"
+          >
+            {LISTING_FILTERS.map((f) => (
+              <option key={f.value} value={f.value}>{f.label}</option>
+            ))}
+          </select>
+        </div>
+        <div className="flex-1 min-w-[12rem]">
+          <label htmlFor="inventory-search" className="block text-text-muted text-xs mb-1">Suche</label>
+          <input
+            id="inventory-search"
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Setnummer, Name, Lagerort …"
+            className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm"
+          />
+        </div>
+        {items?.length > 0 && (
+          <p className="text-text-muted text-xs self-end pb-2" aria-live="polite">
+            {visibleItems.length} von {items.length}
+          </p>
+        )}
       </div>
 
       {isLoading ? (
@@ -656,9 +719,22 @@ export default function Inventar() {
           <h2 className="text-text-primary text-lg font-semibold mb-2">Noch keine Sets im Inventar</h2>
           <p className="text-text-muted text-sm">Kaufe Sets über den Deal-Check oder füge sie manuell hinzu.</p>
         </div>
+      ) : visibleItems.length === 0 ? (
+        <div className="text-center py-12">
+          <p className="text-text-primary text-sm font-medium mb-2">Kein Posten passt zu Filter und Suche.</p>
+          {filtersActive && (
+            <button
+              type="button"
+              onClick={() => { setListingFilter(""); setSearch(""); }}
+              className="text-lego-yellow text-sm hover:underline"
+            >
+              Filter zurücksetzen
+            </button>
+          )}
+        </div>
       ) : (
         <div className="space-y-3">
-          {items.map((item) => (
+          {visibleItems.map((item) => (
             <div key={item.id} className={`bg-bg-card border rounded-xl p-4 ${item.sell_signal_active ? "border-sell-signal/50" : "border-border"}`}>
               <div className="flex items-start justify-between gap-4">
                 <div className="flex-1 min-w-0">
@@ -721,7 +797,14 @@ export default function Inventar() {
               </div>
               <div className="flex gap-2 mt-3 pt-3 border-t border-border/50">
                 <button onClick={() => openEdit(item)} className="bg-lego-blue/10 text-lego-blue text-xs px-3 py-1.5 rounded-lg hover:bg-lego-blue/20 transition-colors">Bearbeiten</button>
-                <SellDropdown item={item} onMarkSold={() => { setSellModal(item); setSellPrice(""); setSellPlatform(""); }} />
+                <SellDropdown
+                  item={item}
+                  onPrepared={() => {
+                    queryClient.invalidateQueries({ queryKey: ["inventory"] });
+                    setListingItem(item);
+                  }}
+                  onMarkSold={() => { setSellModal(item); setSellPrice(""); setSellPlatform(""); }}
+                />
                 <button onClick={() => setListingItem(item)} className="bg-lego-yellow/10 text-lego-yellow text-xs px-3 py-1.5 rounded-lg hover:bg-lego-yellow/20 transition-colors">Listings</button>
                 {item.item_type === "GENERIC" && item.search_query && (
                   <button
@@ -1075,7 +1158,10 @@ export default function Inventar() {
         <ListingManager
           item={listingItem}
           onClose={() => setListingItem(null)}
-          onChanged={() => queryClient.invalidateQueries({ queryKey: ["inventory"] })}
+          onChanged={() => {
+            queryClient.invalidateQueries({ queryKey: ["inventory"] });
+            queryClient.invalidateQueries({ queryKey: ["portfolio"] });
+          }}
         />
       )}
 
