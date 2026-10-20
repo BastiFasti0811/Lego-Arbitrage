@@ -1,5 +1,11 @@
 # STATUS — Lego-Arbitrage (Stand-Rekonstruktion 2026-08-16)
 
+> **Veraltet, Stand 2026-10-20.** Dieses Dokument wird nicht mehr gepflegt; Server-, Pfad- und
+> Deploy-Angaben darin (Hetzner `spm-prod-01`, automatischer CI-Deploy, `/health` ohne Prüfung,
+> `.env.example`-Falle) gelten nicht mehr. Prod läuft auf victus unter `/srv/lego-arbitrage`,
+> Deploy und Health-Check stehen in [docs/deploy.md](docs/deploy.md). Statusaussagen vor der
+> Weitergabe gegen Git-Historie und den Server prüfen.
+
 > Aktualisierung 2026-09-05: Dieser Bericht ist ein historischer Audit, keine aktuelle Fehlerliste.
 > Der aktuelle Stand mit Server-Abgleich und offenen Catawiki-Punkten steht in
 > [docs/status-2026-09-05.md](docs/status-2026-09-05.md).

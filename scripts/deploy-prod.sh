@@ -46,6 +46,17 @@ fi
 
 git pull --ff-only
 
+# The commit being deployed. It is baked into the backend images as a build
+# arg (docker-compose.prod.yml -> GIT_SHA) and reported by /health as
+# "version"; the health poll below only succeeds once the API reports it, so
+# a deploy that silently kept the old containers fails loudly.
+GIT_SHA="$(git rev-parse HEAD)"
+if [[ -z "${GIT_SHA}" ]]; then
+  echo "Could not determine the deployed commit (git rev-parse HEAD). Aborting deploy." >&2
+  exit 1
+fi
+export GIT_SHA
+
 # Build first, then migrate from the freshly built image (it contains the new
 # revision files), then swap containers. A failed migration aborts the deploy
 # while the previous containers keep serving; migrations must therefore stay
@@ -62,17 +73,30 @@ docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --remove-orph
   postgres redis api worker beat frontend
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
 
-for attempt in {1..30}; do
-  if docker exec lego-api-prod curl -fsS http://127.0.0.1:8000/health > /dev/null; then
-    echo "API healthcheck passed."
-    echo "Deployed commit: $(git log -1 --format='%h %s')"
-    echo "Production deploy finished successfully."
-    exit 0
+# /health answers 200 only when PostgreSQL and Redis are reachable (503
+# otherwise, which `curl -f` turns into a failure) and must report GIT_SHA.
+HEALTH_ATTEMPTS="${HEALTH_ATTEMPTS:-30}"
+HEALTH_INTERVAL="${HEALTH_INTERVAL:-2}"
+health_body=""
+for (( attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt++ )); do
+  if health_body="$(docker exec lego-api-prod curl -fsS http://127.0.0.1:8000/health)"; then
+    if [[ "${health_body}" == *"\"version\":\"${GIT_SHA}\""* ]]; then
+      echo "API healthcheck passed (version ${GIT_SHA})."
+      echo "Deployed commit: $(git log -1 --format='%h %s')"
+      echo "Production deploy finished successfully."
+      exit 0
+    fi
+  else
+    health_body=""
   fi
 
-  sleep 2
+  sleep "${HEALTH_INTERVAL}"
 done
 
-echo "API healthcheck did not pass within 60 seconds." >&2
+if [[ -n "${health_body}" ]]; then
+  echo "API is healthy but does not report the deployed commit ${GIT_SHA}: ${health_body}" >&2
+else
+  echo "API healthcheck did not pass within $(( HEALTH_ATTEMPTS * HEALTH_INTERVAL )) seconds." >&2
+fi
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" logs --tail=100 api >&2
 exit 1

@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     # ── App ──────────────────────────────────────────────
     app_name: str = "LEGO Arbitrage System"
     app_version: str = "0.2.0"
+    # Git-Commit des laufenden Images. scripts/deploy-prod.sh setzt GIT_SHA
+    # beim Build (Build-Arg -> ENV im Image); /health meldet ihn als Version,
+    # damit nach einem Deploy pruefbar ist, ob der neue Stand wirklich laeuft.
+    # Leer (lokal, Tests): /health faellt auf app_version zurueck.
+    git_sha: str = ""
     debug: bool = False
     log_level: str = "INFO"
     auto_create_tables_on_startup: bool = False
@@ -142,6 +147,11 @@ class Settings(BaseSettings):
     heartbeat_realert_hours: int = 6  # Min hours between repeat alerts per task
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "case_sensitive": False}
+
+    @property
+    def build_version(self) -> str:
+        """Version fuer /health und /: der Git-SHA des Images, sonst app_version."""
+        return self.git_sha.strip() or self.app_version
 
 
 # Singleton

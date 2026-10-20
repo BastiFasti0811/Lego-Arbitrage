@@ -8,7 +8,7 @@
 #
 # Usage (from anywhere):   scripts/backup-db.sh
 # Cron (daily 03:30):
-#   30 3 * * * cd /opt/lego-arbitrage && PATH=/usr/local/bin:/usr/bin:/bin bash scripts/backup-db.sh >> /var/log/lego-backup.log 2>&1
+#   30 3 * * * cd /srv/lego-arbitrage && PATH=/usr/local/bin:/usr/bin:/bin bash scripts/backup-db.sh >> /var/log/lego-backup.log 2>&1
 #
 # Honoured variables (read from .env.prod without shell-evaluating it, or from
 # the real environment which takes precedence):

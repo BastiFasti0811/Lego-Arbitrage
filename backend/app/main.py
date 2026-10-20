@@ -24,6 +24,7 @@ from app.api.routes import (
 from app.api.routes import settings as settings_routes
 from app.api.routes.auth import COOKIE_NAME, verify_cookie
 from app.config import settings
+from app.health import CHECK_OK, run_health_checks
 from app.logging_setup import quiet_http_client_loggers
 from app.models import Base, engine
 
@@ -37,7 +38,7 @@ logger = structlog.get_logger()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
-    logger.info("app.starting", version=settings.app_version)
+    logger.info("app.starting", version=settings.build_version, app_version=settings.app_version)
     if settings.auto_create_tables_on_startup:
         logger.warning("db.auto_create_tables_enabled")
         async with engine.begin() as conn:
@@ -117,19 +118,30 @@ app.include_router(remote_scan.router, prefix="/api/remote-scan", tags=["Remote 
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint for monitoring."""
-    return {
-        "status": "healthy",
-        "version": settings.app_version,
-        "service": "lego-arbitrage-api",
-    }
+    """Health check: 200 nur, wenn PostgreSQL und Redis antworten, sonst 503.
+
+    `version` ist der Git-SHA des laufenden Images (siehe Settings.git_sha);
+    der Deploy prueft daran, dass der neue Stand laeuft.
+    """
+    checks = await run_health_checks()
+    healthy = all(result == CHECK_OK for result in checks.values())
+    return JSONResponse(
+        status_code=200 if healthy else 503,
+        content={
+            "status": "healthy" if healthy else "unhealthy",
+            "version": settings.build_version,
+            "service": "lego-arbitrage-api",
+            "checks": checks,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/")
 async def root():
     return {
         "name": settings.app_name,
-        "version": settings.app_version,
+        "version": settings.build_version,
         "docs": "/docs",
         "health": "/health",
     }

@@ -26,6 +26,8 @@ BUILD_CALL="docker compose --env-file .env.prod -f docker-compose.prod.yml build
 MIGRATE_CALL="docker compose --env-file .env.prod -f docker-compose.prod.yml run --rm -T api alembic upgrade head"
 UP_CALL="docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --remove-orphans postgres redis api worker beat frontend"
 HEALTH_CALL="docker exec lego-api-prod curl -fsS http://127.0.0.1:8000/health"
+# Commit the git stub reports for `git rev-parse HEAD`.
+STUB_SHA="0123456789abcdef0123456789abcdef01234567"
 
 fail() {
   echo "FAIL [${CURRENT_TEST}]: $1" >&2
@@ -40,6 +42,11 @@ make_sandbox() {
   : > "${SANDBOX}/repo/backend/.env"
   CALL_LOG="${SANDBOX}/calls.log"
   : > "${CALL_LOG}"
+  # Per-test knobs for the health stub, reset for every sandbox:
+  # HEALTH_VERSION is the version /health reports (default: the deployed
+  # commit), HEALTH_FAIL=1 makes curl fail like on a 503.
+  HEALTH_VERSION="${STUB_SHA}"
+  HEALTH_FAIL=0
 
   # The git stub reports the branch from GIT_BRANCH (default main; set it to
   # an empty string to simulate a detached HEAD).
@@ -49,20 +56,33 @@ printf 'git %s\n' "$*" >> "${CALL_LOG}"
 if [[ "$*" == "branch --show-current" ]]; then
   printf '%s\n' "${GIT_BRANCH-main}"
 fi
+if [[ "$*" == "rev-parse HEAD" ]]; then
+  printf '%s\n' "${STUB_SHA}"
+fi
 exit 0
 STUB
 
   # The docker stub succeeds by default; MIGRATION_FAIL=1 fails the alembic
   # migration call, BUILD_FAIL=1 fails the compose build call, so the abort
-  # paths can be exercised.
+  # paths can be exercised. The build call also logs the GIT_SHA it sees, and
+  # the health call prints a /health body (see HEALTH_VERSION/HEALTH_FAIL).
   cat > "${SANDBOX}/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 printf 'docker %s\n' "$*" >> "${CALL_LOG}"
 if [[ "$*" == *"alembic upgrade head"* && "${MIGRATION_FAIL:-0}" == "1" ]]; then
   exit 7
 fi
-if [[ "$*" == *" build"* && "${BUILD_FAIL:-0}" == "1" ]]; then
-  exit 3
+if [[ "$*" == *" build"* ]]; then
+  printf 'build-env GIT_SHA=%s\n' "${GIT_SHA-<unset>}" >> "${CALL_LOG}"
+  if [[ "${BUILD_FAIL:-0}" == "1" ]]; then
+    exit 3
+  fi
+fi
+if [[ "$*" == *"curl -fsS http://127.0.0.1:8000/health"* ]]; then
+  if [[ "${HEALTH_FAIL:-0}" == "1" ]]; then
+    exit 22
+  fi
+  printf '{"status":"healthy","version":"%s","service":"lego-arbitrage-api"}\n' "${HEALTH_VERSION}"
 fi
 exit 0
 STUB
@@ -92,6 +112,8 @@ run_deploy() { # usage: run_deploy [migration_fail] [build_fail] [flock_busy] [g
     export FLOCK_BUSY="${flock_busy}"
     export GIT_BRANCH="${git_branch}"
     export LOCK_FILE="${SANDBOX}/deploy.lock"
+    export STUB_SHA HEALTH_VERSION HEALTH_FAIL
+    export HEALTH_ATTEMPTS=3 HEALTH_INTERVAL=0
     bash scripts/deploy-prod.sh
   ) > "${SANDBOX}/stdout.log" 2> "${SANDBOX}/stderr.log" || DEPLOY_RC=$?
 }
@@ -147,6 +169,10 @@ assert_order "${PULL_CALL}" "${BUILD_CALL}"
 assert_order "${BUILD_CALL}" "${MIGRATE_CALL}"
 assert_order "${MIGRATE_CALL}" "${UP_CALL}"
 assert_order "${UP_CALL}" "${HEALTH_CALL}"
+assert_called "build-env GIT_SHA=${STUB_SHA}"
+if ! grep -Fq "version ${STUB_SHA}" "${SANDBOX}/stdout.log"; then
+  fail "expected the verified version on stdout"
+fi
 
 # --- Test 2: failed migration aborts before any container is restarted -----
 
@@ -211,6 +237,37 @@ for branch in "feature/x" ""; do
     fail "expected a branch mismatch message on stderr"
   fi
 done
+
+# --- Test 6: API healthy but still on another version fails the deploy ------
+
+CURRENT_TEST="failure: /health reports a different version than the deployed commit"
+make_sandbox t6
+HEALTH_VERSION="0.2.0"
+run_deploy
+
+if [[ "${DEPLOY_RC}" -eq 0 ]]; then
+  fail "expected non-zero exit when /health reports another version"
+fi
+if ! grep -q "does not report the deployed commit ${STUB_SHA}" "${SANDBOX}/stderr.log"; then
+  fail "expected a version mismatch message on stderr"
+fi
+if grep -q "finished successfully" "${SANDBOX}/stdout.log"; then
+  fail "a version mismatch must not report success"
+fi
+
+# --- Test 7: /health stays unhealthy (503) fails the deploy -----------------
+
+CURRENT_TEST="failure: /health never answers 200 (database or redis down)"
+make_sandbox t7
+HEALTH_FAIL=1
+run_deploy
+
+if [[ "${DEPLOY_RC}" -eq 0 ]]; then
+  fail "expected non-zero exit when /health keeps failing"
+fi
+if ! grep -q "did not pass within" "${SANDBOX}/stderr.log"; then
+  fail "expected a healthcheck timeout message on stderr"
+fi
 
 # --- Result -----------------------------------------------------------------
 
