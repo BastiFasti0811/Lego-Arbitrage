@@ -210,6 +210,7 @@ export const api = {
   makePrimaryInventoryPhoto: (itemId, photoId) => request(`/inventory/${itemId}/photos/${photoId}/make-primary`, { method: "POST" }),
   inventoryPhotoUrl: (itemId, photoId) => `${BASE}/inventory/${itemId}/photos/${photoId}`,
   portfolioSummary: () => request("/inventory/summary"),
+  goalProgress: () => request("/goals/progress"),
   inventoryHistory: () => request("/inventory/history"),
   listListings: (itemId) => request(`/inventory/${itemId}/listings`),
   createListing: (itemId, data) => request(`/inventory/${itemId}/listings`, { method: "POST", body: JSON.stringify(data) }),

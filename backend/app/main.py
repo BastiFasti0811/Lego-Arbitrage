@@ -13,6 +13,7 @@ from app.api.routes import (
     auctions,
     auth,
     feedback,
+    goals,
     inventory,
     listings,
     remote_scan,
@@ -110,6 +111,7 @@ app.include_router(scout.router, prefix="/api/scout", tags=["Scout"])
 app.include_router(watchlist.router, prefix="/api/watchlist", tags=["Watchlist"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["Feedback"])
 app.include_router(inventory.router, prefix="/api/inventory", tags=["Inventory"])
+app.include_router(goals.router, prefix="/api/goals", tags=["Goals"])
 app.include_router(listings.router, prefix="/api/inventory", tags=["Listings"])
 app.include_router(settings_routes.router, prefix="/api/settings", tags=["Settings"])
 app.include_router(system.router, prefix="/api/system", tags=["System"])

@@ -15,6 +15,13 @@ from app.tasks import catawiki_scan
 
 
 @pytest.fixture(autouse=True)
+def _no_deal_counter_db(monkeypatch):
+    # Der Deal-Zaehler (record_bid_ready) schreibt in die DB; hier geht es um
+    # Scan und Meldung. Eigene Tests: test_goal_progress.py.
+    monkeypatch.setattr(catawiki_scan, "record_bid_ready", AsyncMock(return_value=0))
+
+
+@pytest.fixture(autouse=True)
 def _server_scans_catawiki(monkeypatch):
     # Diese Tests pruefen die Mechanik des Server-Scans am Beispiel Catawiki.
     # Im Betrieb scannt Catawiki der Heimrechner (HOME_RUNNER_PLATFORMS).

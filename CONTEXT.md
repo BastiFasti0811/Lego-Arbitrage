@@ -22,6 +22,13 @@ Der einzige Textweg zum Listing: legt den Entwurf mit KI-Text und Preisvorschlag
 **Montags-Paket** (`app.tasks.listing_pack`):
 Montags 08:00 bereitet das System fünf nicht inserierte Lego-Artikel als Kleinanzeigen-Entwurf vor (Fotos zuerst, dann höchster Preisvorschlag) und schickt Fotos, Titel und Text per Telegram. Eingestellt wird weiter von Hand (ADR 0002).
 
+**Geprüfter Deal**:
+Was der Zielzähler als Deal zählt (Ziel: 3 pro Woche): ein Offer mit GO oder GO_STAR (die Engine vergibt beides nur bei mindestens zwei Preisquellen) oder ein Auktionslos mit Gebotsfreigabe (`auction_deals`, nie NEEDS_REVIEW, nie allein auf BrickMerge). CHECK-Fälle zählen nicht und werden nur im Wochen-Digest als Zahl genannt.
+_Avoid_: Treffer, Alert
+
+**Wochen-Digest** (`app.tasks.goal_digest`):
+Montags 07:50, vor dem Montags-Paket: geprüfte Deals der abgeschlossenen Kalenderwoche (Berlin) gegen die Woche davor, dazu Lego-Artikel inseriert/verkauft gegen das Ziel (30 inseriert, 15 verkauft bis 1.12.2026). Dieselben Zahlen zeigt der Inventar-Kopf (`GET /api/goals/progress`); das Laufprotokoll holt sie mit `python -m app.tools.goal_progress`.
+
 **Offer** (`offers`-Tabelle):
 Ein fremdes Verkaufsangebot, das die Arbitrage-Pipeline beobachtet. Nie das eigene — das ist ein Listing.
 _Avoid_: Listing (für Fremdes), Deal

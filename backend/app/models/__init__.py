@@ -1,6 +1,7 @@
 """Database models."""
 
 from app.models.analysis_history import AnalysisHistoryEntry
+from app.models.auction_deal import AuctionDeal
 from app.models.auction_scan import AuctionScanState
 from app.models.auction_watch import AuctionWatchItem
 from app.models.base import Base, async_session, engine, get_session
@@ -29,6 +30,7 @@ __all__ = [
     "engine",
     "get_session",
     "AnalysisHistoryEntry",
+    "AuctionDeal",
     "AuctionWatchItem",
     "AuctionScanState",
     "LegoSet",

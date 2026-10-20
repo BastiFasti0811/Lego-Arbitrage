@@ -13,6 +13,13 @@ from app.services import remote_scan
 from app.services.catawiki import PARSER_VERSION
 from app.tasks import catawiki_scan
 
+
+@pytest.fixture(autouse=True)
+def _no_deal_counter_db(monkeypatch):
+    # Der Deal-Zaehler (record_bid_ready) schreibt in die DB; hier geht es um
+    # Scan und Meldung. Eigene Tests: test_goal_progress.py.
+    monkeypatch.setattr(catawiki_scan, "record_bid_ready", AsyncMock(return_value=0))
+
 JOB = "b" * 32
 
 TOKEN = "x" * 32

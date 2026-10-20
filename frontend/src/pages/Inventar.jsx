@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
+import GoalProgress from "../components/GoalProgress";
 import StatCard from "../components/StatCard";
 import ListingBadges from "../components/ListingBadges";
 import ListingManager from "../components/ListingManager";
@@ -338,6 +339,8 @@ export default function Inventar() {
   const { data: platforms = [] } = useQuery({ queryKey: ["platforms"], queryFn: api.listPlatforms });
   const { data: productGroups = [] } = useQuery({ queryKey: ["productGroups"], queryFn: api.listProductGroups });
   const { data: summary } = useQuery({ queryKey: ["portfolio"], queryFn: api.portfolioSummary });
+  // Unter ["portfolio", ...]: jede Invalidierung des Portfolios zieht den Zielstand mit.
+  const { data: goalProgress } = useQuery({ queryKey: ["portfolio", "goals"], queryFn: api.goalProgress });
   const { data: items, isLoading } = useQuery({
     queryKey: ["inventory", typeFilter, groupFilter],
     queryFn: () =>
@@ -635,6 +638,8 @@ export default function Inventar() {
           <StatCard label="Unrealisiert" value={`${summary.unrealized_profit >= 0 ? "+" : ""}${formatMoney(summary.unrealized_profit)}`} sub={`${summary.unrealized_roi_percent.toFixed(1)}%`} color={profitColor(summary.unrealized_profit)} />
         </div>
       )}
+
+      <GoalProgress progress={goalProgress} />
 
       <ValuationStatus />
 

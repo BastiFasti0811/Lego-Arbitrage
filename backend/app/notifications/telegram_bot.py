@@ -6,6 +6,7 @@ Supports inline buttons for quick actions.
 
 import html
 import re
+from dataclasses import dataclass
 
 import structlog
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
@@ -132,11 +133,62 @@ async def send_deal_alert(analysis: AnalysisResult, offer_url: str | None = None
         return False
 
 
-async def send_daily_summary(
-    deals_found: int,
+@dataclass
+class DailyBestDeal:
+    """Bestes GO-Angebot des Tages, aus der gespeicherten Offer-Zeile.
+
+    Die volle Analyse wird nicht nachgerechnet: ROI und Empfehlung stehen am
+    Angebot, der Preis ist der Angebotspreis plus Versand.
+    """
+
+    set_number: str
+    set_name: str
+    recommendation: str
+    roi_percent: float | None
+    price: float
+    platform: str
+    url: str | None = None
+
+
+def _de_number(value: float, digits: int = 0) -> str:
+    return f"{value:,.{digits}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def format_daily_summary(
+    offers_rated: int,
     go_deals: int,
-    best_deal: AnalysisResult | None = None,
-    total_potential_profit: float = 0,
+    best_deal: DailyBestDeal | None = None,
+    deals_this_week: int | None = None,
+    deals_goal: int | None = None,
+) -> str:
+    """HTML: Setnamen enthalten Klammern und Unterstriche, die Markdown zerlegt."""
+    lines = [
+        "📋 <b>LEGO Arbitrage — Tagesbericht</b> (letzte 24 h)",
+        "",
+        f"Angebote bewertet: {offers_rated}",
+        f"GO-Deals: {go_deals}",
+    ]
+    if deals_this_week is not None and deals_goal:
+        lines.append(f"Geprüfte Deals diese Woche: {deals_this_week}/{deals_goal}")
+    if best_deal:
+        star = " ⭐" if best_deal.recommendation == Recommendation.GO_STAR else ""
+        roi = f"ROI {_de_number(best_deal.roi_percent, 1)} %" if best_deal.roi_percent is not None else "ROI ?"
+        name = html.escape(f"LEGO {best_deal.set_number} — {best_deal.set_name}")
+        lines += [
+            "",
+            f"🏆 <b>Bester Deal{star}</b>",
+            f'<a href="{html.escape(best_deal.url, quote=True)}">{name}</a>' if best_deal.url else name,
+            f"{roi} · {_de_number(best_deal.price)} € · {html.escape(best_deal.platform)}",
+        ]
+    return "\n".join(lines)
+
+
+async def send_daily_summary(
+    offers_rated: int,
+    go_deals: int,
+    best_deal: DailyBestDeal | None = None,
+    deals_this_week: int | None = None,
+    deals_goal: int | None = None,
 ) -> bool:
     """Send daily summary via Telegram."""
     runtime_settings = await get_settings_map(["telegram_bot_token", "telegram_chat_id"])
@@ -148,27 +200,11 @@ async def send_daily_summary(
 
     try:
         bot = Bot(token=bot_token)
-
-        msg = (
-            f"📋 *LEGO Arbitrage — Tagesbericht*\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"Angebote gescannt: {deals_found}\n"
-            f"GO-Deals gefunden: {go_deals}\n"
-            f"Potentieller Gewinn: {total_potential_profit:.0f}€\n"
-        )
-
-        if best_deal:
-            msg += (
-                f"\n🏆 *Bester Deal:*\n"
-                f"LEGO {best_deal.set_number} — {best_deal.set_name}\n"
-                f"ROI: {best_deal.roi.roi_percent:.1f}% | "
-                f"Gewinn: {best_deal.roi.net_profit:.0f}€\n"
-            )
-
         await bot.send_message(
             chat_id=chat_id,
-            text=msg,
-            parse_mode=ParseMode.MARKDOWN,
+            text=format_daily_summary(offers_rated, go_deals, best_deal, deals_this_week, deals_goal),
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
         )
         return True
 
@@ -410,3 +446,70 @@ async def send_listing_pack(entries: list, unlisted_total: int) -> bool:
             logger.error("telegram.listing_pack_failed", stage="entry", item_id=entry.item_id, error=str(e))
     logger.info("telegram.listing_pack_sent", items=len(entries), complete=all_sent)
     return all_sent
+
+
+# ── Wochen-Digest: Abstand zu den Zielzahlen ────────────────────────
+
+
+def _trend(now: int, before: int) -> str:
+    diff = now - before
+    if diff > 0:
+        return f"▲ +{diff}"
+    if diff < 0:
+        return f"▼ −{-diff}"
+    return "= ±0"
+
+
+def _pace(progress, missing: int) -> str:
+    if missing == 0:
+        return "erreicht ✅"
+    per_week = progress.per_week_needed(missing)
+    if per_week is None:
+        return f"fehlen {missing}, Frist vorbei"
+    return f"fehlen {missing}, ≈ {_de_number(per_week, 1)}/Woche"
+
+
+def format_goal_digest(digest) -> str:
+    """Montags-Digest als HTML. `digest` ist ein goal_progress.GoalDigest."""
+    progress = digest.progress
+    week, deals, before_deals = digest.reported, digest.reported.deals, digest.before.deals
+    sales, before_sales = digest.reported.sales, digest.before.sales
+    goal_deals = progress.goal_deals_per_week
+    hit = "✅" if deals.total >= goal_deals else "⚠️"
+
+    lines = [
+        f"🎯 <b>Wochen-Digest {week.week.label}</b>",
+        f"Frist {progress.deadline:%d.%m.}: noch {progress.days_left} Tage",
+        "",
+        f"<b>Zukauf</b> (Ziel {goal_deals} geprüfte Deals/Woche)",
+        f"{hit} {deals.total}/{goal_deals} · Vorwoche {before_deals.total} ({_trend(deals.total, before_deals.total)})",
+        f"GO⭐ {deals.go_star} · GO {deals.go} · Auktion freigegeben {deals.auctions}",
+    ]
+    if deals.checks:
+        lines.append(f"🔍 Grenzfälle (CHECK, nicht gemeldet): {deals.checks}")
+    lines += [
+        "",
+        "<b>Verkauf</b> (Lego-Posten)",
+        f"📦 Inseriert {progress.lego_listed}/{progress.lego_items} · Ziel {progress.goal_listed}: "
+        f"{_pace(progress, progress.listed_missing)}",
+        f"Woche +{sales.listed} · Vorwoche +{before_sales.listed} ({_trend(sales.listed, before_sales.listed)})",
+        f"💶 Verkauft {progress.lego_sold}/{progress.goal_sold}: {_pace(progress, progress.sold_missing)}",
+        f"Woche +{sales.sold} · Vorwoche +{before_sales.sold} ({_trend(sales.sold, before_sales.sold)})",
+    ]
+    return "\n".join(lines)
+
+
+async def send_goal_digest(digest) -> bool:
+    runtime_settings = await get_settings_map(["telegram_bot_token", "telegram_chat_id"])
+    bot_token = runtime_settings.get("telegram_bot_token")
+    chat_id = runtime_settings.get("telegram_chat_id")
+    if not bot_token or not chat_id:
+        return False
+    try:
+        bot = Bot(token=bot_token)
+        await bot.send_message(chat_id=chat_id, text=format_goal_digest(digest), parse_mode=ParseMode.HTML)
+        logger.info("telegram.goal_digest_sent")
+        return True
+    except Exception as e:
+        logger.error("telegram.goal_digest_failed", error=str(e))
+        return False

@@ -9,8 +9,9 @@ from app.engine.decision_engine import Recommendation, analyze_deal
 from app.models import LegoSet, Offer, PriceRecord
 from app.models.base import async_session
 from app.notifications.delivery import require_delivery
-from app.notifications.telegram_bot import send_daily_summary, send_deal_alert
+from app.notifications.telegram_bot import DailyBestDeal, send_daily_summary, send_deal_alert
 from app.scrapers.base import ScrapedPrice
+from app.services.goal_progress import DEAL_RECOMMENDATIONS, load_goal_progress
 from app.tasks.async_runner import run_async as _run_async
 from app.tasks.celery_app import celery_app
 
@@ -116,32 +117,58 @@ def send_daily_summary_task() -> dict:
     return require_delivery(_run_async(_send_summary_async()), "Tagesbericht")
 
 
-async def _send_summary_async() -> dict:
-    """Send daily summary via Telegram."""
-    async with async_session() as session:
-        today = datetime.now(UTC).date()
-        yesterday = today - timedelta(days=1)
+def pick_best_deal(rows) -> DailyBestDeal | None:
+    """Hoechster ROI unter den GO-Angeboten; GO_STAR gewinnt bei Gleichstand.
 
-        # Count today's analyzed offers
+    `rows`: (Offer, LegoSet)-Paare. Ohne ROI kein Vergleich, dann zaehlt nur
+    die Empfehlung.
+    """
+    go_rows = [(offer, lego_set) for offer, lego_set in rows if offer.recommendation in DEAL_RECOMMENDATIONS]
+    if not go_rows:
+        return None
+    offer, lego_set = max(
+        go_rows,
+        key=lambda pair: (
+            pair[0].estimated_roi if pair[0].estimated_roi is not None else float("-inf"),
+            pair[0].recommendation == Recommendation.GO_STAR,
+        ),
+    )
+    price = offer.total_price_eur or offer.price_eur + (offer.shipping_eur or 0)
+    return DailyBestDeal(
+        set_number=lego_set.set_number,
+        set_name=lego_set.set_name,
+        recommendation=offer.recommendation,
+        roi_percent=offer.estimated_roi,
+        price=price,
+        platform=offer.platform,
+        url=offer.offer_url,
+    )
+
+
+async def _send_summary_async() -> dict:
+    """Tagesbericht der letzten 24 Stunden via Telegram.
+
+    Frueher: Fenster ab gestern 00:00 UTC (bis zu 44 h), "Bester Deal" fest
+    None und "Potentieller Gewinn" als Summe von ROI-Prozenten in Euro.
+    """
+    now = datetime.now(UTC)
+    async with async_session() as session:
         result = await session.execute(
-            select(Offer)
-            .where(Offer.discovered_at >= datetime.combine(yesterday, datetime.min.time()))
+            select(Offer, LegoSet)
+            .join(LegoSet, Offer.set_id == LegoSet.id)
+            .where(Offer.discovered_at >= now - timedelta(hours=24))
             .where(Offer.recommendation.isnot(None))
         )
-        offers = result.scalars().all()
+        rows = result.all()
+        progress = await load_goal_progress(session, now)
 
-        go_deals = [o for o in offers if o.recommendation in (Recommendation.GO_STAR, Recommendation.GO)]
-        total_profit = sum(o.estimated_roi or 0 for o in go_deals)
-
-        # Build best deal analysis (simplified) for summary
-        best_analysis = None
-        # (In production, you'd reconstruct the full analysis here)
-
-        sent = await send_daily_summary(
-            deals_found=len(offers),
-            go_deals=len(go_deals),
-            best_deal=best_analysis,
-            total_potential_profit=total_profit,
-        )
-
-    return {"sent": sent, "deals": len(offers), "go_deals": len(go_deals)}
+    go_deals = sum(1 for offer, _ in rows if offer.recommendation in DEAL_RECOMMENDATIONS)
+    best = pick_best_deal(rows)
+    sent = await send_daily_summary(
+        offers_rated=len(rows),
+        go_deals=go_deals,
+        best_deal=best,
+        deals_this_week=progress.current.deals.total,
+        deals_goal=progress.goal_deals_per_week,
+    )
+    return {"sent": sent, "deals": len(rows), "go_deals": go_deals, "best_deal": best.set_number if best else None}

@@ -88,7 +88,7 @@ Autonomes Arbitrage-System für **neue/OVP Lego-Sets** (Nutzerangabe 2026-08-16;
 Der Gegenblick-Scan fand 15 Behauptung-vs-Realität-Lücken; die wesentlichen sind oben ins Ledger eingearbeitet. Sie fielen im ersten Durchgang durch, weil die Inventur-Scouts Artefakte und Behauptungen *katalogisiert*, aber nicht gegen den Code *ausgeführt/verfolgt* haben. Die wichtigsten, vom Hauptagenten am Code nachverifiziert:
 
 1. **Scrape-Pipeline tot seit 2026-03-25** ([scrape_daily.py:85](backend/app/tasks/scrape_daily.py:85)) — selbst verifiziert: einzige `datetime.UTC`-Stelle, liegt vor jedem Scraper-Aufruf in der Funktion, die als einzige `offers`/`price_records` schreibt (:95/:165, nächste Funktion erst :210). Fehler wird pro Set geschluckt, Heartbeat meldet „ok".
-2. **`"sent": True` ohne Versand** + nie gerenderter „Bester Deal" ([analyze_new.py:140-150](backend/app/tasks/analyze_new.py)).
+2. **`"sent": True` ohne Versand** + nie gerenderter „Bester Deal" ([analyze_new.py:140-150](backend/app/tasks/analyze_new.py)). — Nachtrag 21.10.2026: Versand wird seit `require_delivery` geprüft; „Bester Deal" kommt jetzt aus der Offer-Zeile (Ticket a99f3f07).
 3. **Status-UI misst das Falsche** (hartkodiertes `/health` ohne `/lego`-Präfix; konstantes „healthy"; `/api/system/status` frontend-seitig unbenutzt).
 4. **Settings sammeln Klartext-Credentials für nicht existierende Funktionen** ([settings.py:37-63](backend/app/api/routes/settings.py)).
 5. **BrickLink-Festpreise als Auktionsgebote**; Discovery ohne konfigurierte URLs dauerhaft leer-grün ([catawiki_scan.py:29-31](backend/app/tasks/catawiki_scan.py)).

@@ -10,7 +10,7 @@ from billiard.exceptions import SoftTimeLimitExceeded
 from app.api.routes.auctions import _discover_configured_platform, _evaluate_lot
 from app.notifications.telegram_bot import send_auction_discovery_summary
 from app.runtime_settings import get_settings_map
-from app.services.auction_scan_state import mark_notified, save_scan, unnotified_results
+from app.services.auction_scan_state import mark_notified, record_bid_ready, save_scan, unnotified_results
 from app.tasks.async_runner import run_async as _run_async
 from app.tasks.celery_app import celery_app
 
@@ -66,6 +66,10 @@ async def _scan_configured_categories_async() -> dict:
 
 async def _notify_new_results(platform: str, results: list[dict], summary: dict, telegram_configured: bool) -> None:
     """Neue Freigaben per Telegram melden; nur tatsaechlich versendete Lose markieren."""
+    try:
+        await record_bid_ready(platform, results)
+    except Exception as exc:  # noqa: BLE001 -- der Zaehler darf keine Meldung verhindern
+        logger.warning("auction_scan.deal_record_failed", platform=platform, error=repr(exc)[:300])
     candidates = await unnotified_results(platform, results)
     if candidates and not telegram_configured:
         summary["skipped"].append(f"{platform}: Telegram nicht konfiguriert, {len(candidates)} Treffer ungemeldet")
