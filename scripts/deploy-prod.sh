@@ -7,6 +7,16 @@ REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 ENV_FILE="${ENV_FILE:-.env.prod}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
 
+# --auto-rollback: when the new containers fail the health checks, roll back
+# to the commit that was checked out before the pull (scripts/rollback-prod.sh).
+AUTO_ROLLBACK="${AUTO_ROLLBACK:-0}"
+for arg in "$@"; do
+  case "${arg}" in
+    --auto-rollback) AUTO_ROLLBACK=1 ;;
+    *) echo "Unknown argument: ${arg} (supported: --auto-rollback)" >&2; exit 2 ;;
+  esac
+done
+
 cd "${REPO_DIR}"
 
 # Serialize deploys on this host: the Actions concurrency group only covers
@@ -36,13 +46,17 @@ fi
 # Production deploys the main branch only. The checkout on victus is a plain
 # working copy: if it ever sits on a feature branch or a detached HEAD,
 # `git pull --ff-only` would deploy that branch (or fail half-way). Rollback to
-# an older commit follows docs/deploy.md#rollback, not this script.
+# an older commit uses scripts/rollback-prod.sh, which leaves a detached HEAD.
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 CURRENT_BRANCH="$(git branch --show-current)"
 if [[ "${CURRENT_BRANCH}" != "${DEPLOY_BRANCH}" ]]; then
   echo "Checkout is on '${CURRENT_BRANCH:-detached HEAD}', expected '${DEPLOY_BRANCH}'. Aborting deploy." >&2
   exit 1
 fi
+
+# Commit that runs before this deploy: the rollback target if the new release
+# fails its health checks.
+PREV_SHA="$(git rev-parse HEAD)"
 
 git pull --ff-only
 
@@ -73,18 +87,39 @@ docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --remove-orph
   postgres redis api worker beat frontend
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
 
+# Called once the new containers are up but fail a check: name the rollback
+# target, and with --auto-rollback run it (the deploy lock stays held).
+fail_after_swap() {
+  echo "Deploy of ${GIT_SHA} failed its health checks. Previous commit: ${PREV_SHA}" >&2
+  if [[ "${PREV_SHA}" == "${GIT_SHA}" ]]; then
+    echo "Nothing to roll back to: the previous commit is the deployed one." >&2
+    exit 1
+  fi
+  if [[ "${AUTO_ROLLBACK}" == "1" ]]; then
+    echo "Rolling back to ${PREV_SHA} (--auto-rollback)..." >&2
+    if DEPLOY_LOCK_HELD=1 bash scripts/rollback-prod.sh "${PREV_SHA}"; then
+      echo "Rolled back to ${PREV_SHA}. The deploy of ${GIT_SHA} counts as FAILED." >&2
+    else
+      echo "Rollback to ${PREV_SHA} failed as well. Manual action needed (docs/deploy.md#rollback)." >&2
+    fi
+  else
+    echo "Roll back with: bash scripts/rollback-prod.sh ${PREV_SHA}" >&2
+  fi
+  exit 1
+}
+
 # /health answers 200 only when PostgreSQL and Redis are reachable (503
 # otherwise, which `curl -f` turns into a failure) and must report GIT_SHA.
 HEALTH_ATTEMPTS="${HEALTH_ATTEMPTS:-30}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-2}"
 health_body=""
+api_ok=0
 for (( attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt++ )); do
   if health_body="$(docker exec lego-api-prod curl -fsS http://127.0.0.1:8000/health)"; then
     if [[ "${health_body}" == *"\"version\":\"${GIT_SHA}\""* ]]; then
       echo "API healthcheck passed (version ${GIT_SHA})."
-      echo "Deployed commit: $(git log -1 --format='%h %s')"
-      echo "Production deploy finished successfully."
-      exit 0
+      api_ok=1
+      break
     fi
   else
     health_body=""
@@ -93,10 +128,26 @@ for (( attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt++ )); do
   sleep "${HEALTH_INTERVAL}"
 done
 
-if [[ -n "${health_body}" ]]; then
-  echo "API is healthy but does not report the deployed commit ${GIT_SHA}: ${health_body}" >&2
-else
-  echo "API healthcheck did not pass within $(( HEALTH_ATTEMPTS * HEALTH_INTERVAL )) seconds." >&2
+if (( ! api_ok )); then
+  if [[ -n "${health_body}" ]]; then
+    echo "API is healthy but does not report the deployed commit ${GIT_SHA}: ${health_body}" >&2
+  else
+    echo "API healthcheck did not pass within $(( HEALTH_ATTEMPTS * HEALTH_INTERVAL )) seconds." >&2
+  fi
+  docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" logs --tail=100 api >&2
+  fail_after_swap
 fi
-docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" logs --tail=100 api >&2
-exit 1
+
+# Full post-deploy check: all six containers without restart loop, /lego/health
+# through Caddy with the new version, worker log without traceback. Worker and
+# beat need up to their 60 s start period before their healthcheck turns green.
+FULL_HEALTH_WAIT="${FULL_HEALTH_WAIT:-150}"
+if [[ "${SKIP_FULL_HEALTH_CHECK:-0}" == "1" ]]; then
+  echo "Full health check skipped (SKIP_FULL_HEALTH_CHECK=1)."
+elif ! bash scripts/health-check-prod.sh --expect-sha "${GIT_SHA}" --wait "${FULL_HEALTH_WAIT}"; then
+  fail_after_swap
+fi
+
+echo "Deployed commit: $(git log -1 --format='%h %s')"
+echo "Production deploy finished successfully."
+exit 0

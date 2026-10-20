@@ -51,6 +51,12 @@ jobs:
       - name: Test uptime check script
         run: bash tests/uptime-check.test.sh
 
+      - name: Test post-deploy health check script
+        run: bash tests/health-check-prod.test.sh
+
+      - name: Test rollback script
+        run: bash tests/rollback-prod.test.sh
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
