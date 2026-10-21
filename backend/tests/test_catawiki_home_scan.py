@@ -84,3 +84,29 @@ def test_missing_config_is_a_clear_error(tmp_path, monkeypatch):
     monkeypatch.delenv("LEGO_REMOTE_SCAN_TOKEN", raising=False)
     with pytest.raises(SystemExit, match="LEGO_API_URL"):
         catawiki_home_scan.load_config()
+
+
+async def test_structure_drift_keeps_the_scan_going(monkeypatch):
+    """NOTES.md S4: ein AttributeError aus dem Parser darf nicht den ganzen Scan beenden."""
+
+    class _DriftScraper(_FakeScraper):
+        async def scan_category(self, url, limit):
+            if url.endswith("/kaputt"):
+                raise AttributeError("'list' object has no attribute 'get'")
+            return await super().scan_category(url, limit)
+
+        async def get_lot(self, url):
+            if url.endswith("/1"):
+                raise TypeError("unerwartete Struktur")
+            return await super().get_lot(url)
+
+    monkeypatch.setattr(catawiki_home_scan, "CatawikiScraper", _DriftScraper)
+    _DriftScraper.blocked = set()
+    lots, errors = await catawiki_home_scan.scan({
+        "scan_urls": [f"{AUCTION}/kaputt", AUCTION], "max_results_per_url": 20,
+    })
+
+    assert [lot["lot_id"] for lot in lots] == ["1", "2", "3"]
+    assert [lot["details_verified"] for lot in lots] == [False, False, True]  # Los 1 bleibt gesperrt
+    assert any("kaputt" in error and "AttributeError" in error for error in errors)
+    assert any("Los 1 nicht auswertbar (TypeError)" in error for error in errors)

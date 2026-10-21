@@ -1,24 +1,29 @@
-"""Catawiki-Scan auf dem Heimrechner (Prod ist bei Akamai gesperrt).
+"""Catawiki-Scan ausserhalb des Bewertungs-Workers (frueher: Heimrechner).
 
 Fragt Prod, ob ein Scan faellig ist (Button in der App oder Zeitplan), liest
-die Lose ueber den eigenen Internetanschluss und liefert sie an Prod ab.
-Bewertung, Speicherung und Telegram macht Prod.
+die Lose und liefert sie an Prod ab. Bewertung, Speicherung und Telegram macht
+Prod.
 
-Aufruf aus dem Repo-Wurzelverzeichnis:
+Auf victus (Prod steht dort selbst an einem Heimanschluss) laeuft das Skript
+im api-Container von Prod: scripts/catawiki-home-scan.sh ruft es per
+`docker exec` auf, ein systemd-User-Timer (scripts/install-catawiki-home-scan.sh)
+alle 10 Minuten. So hat der Scanner immer dieselbe PARSER_VERSION wie Prod.
 
-    PYTHONPATH=backend backend/.venv/Scripts/python.exe -m app.tools.catawiki_home_scan
+Von Hand im Container:
+
+    python -m app.tools.catawiki_home_scan
     ... --dry-run           # bei Auftrag scannen und ausgeben, nichts an Prod schicken
     ... --force --dry-run   # auch ohne Auftrag scannen (nur zum Testen; Prod nimmt nichts an)
 
-Konfiguration (Umgebung oder Datei %USERPROFILE%\\.lego-arbitrage\\home-scan.env,
+Konfiguration (Umgebung oder Datei ~/.lego-arbitrage/home-scan.env,
 Zeilen KEY=VALUE):
 
-    LEGO_API_URL=<Adresse der App wie im Browser, mit Basispfad, z. B. https://example.de/lego>
+    LEGO_API_URL=<Adresse der App mit Basispfad, im Container http://127.0.0.1:8000>
     LEGO_REMOTE_SCAN_TOKEN=<derselbe Wert wie Einstellungen > Catawiki > Heimrechner-Token>
 
-Regelmaessig starten: scripts/install-catawiki-home-scan.ps1 legt eine
-Windows-Aufgabe an, die das alle 10 Minuten tut. Ohne Auftrag endet ein Lauf
-nach einer Anfrage.
+Ohne Auftrag endet ein Lauf nach einer Anfrage. Der fruehere Windows-Weg
+(scripts/install-catawiki-home-scan.ps1) gilt nur noch, falls Prod wieder in
+ein Rechenzentrum zieht, dessen IP Akamai sperrt.
 """
 
 import argparse
@@ -60,7 +65,7 @@ async def scan(job: dict) -> tuple[list[dict], list[str]]:
         for category_url in job["scan_urls"]:
             try:
                 listed = await scraper.scan_category(category_url, limit=job.get("max_results_per_url", 20))
-            except (httpx.HTTPError, CatawikiParseError) as exc:
+            except Exception as exc:  # noqa: BLE001 -- Strukturdrift (AttributeError ...) darf nicht alles beenden
                 errors.append(f"Heimrechner: {category_url[:80]} nicht lesbar ({type(exc).__name__})")
                 continue
             print(f"{category_url}: {len(listed)} Lose")
@@ -75,6 +80,8 @@ async def scan(job: dict) -> tuple[list[dict], list[str]]:
                         errors.append(f"Heimrechner: Los {lot.lot_id} nicht lesbar ({type(exc).__name__})")
                         if blocked == MAX_CONSECUTIVE_BLOCKS:
                             errors.append("Heimrechner: mehrfach gesperrt, restliche Lose ohne Details")
+                    except Exception as exc:  # noqa: BLE001 -- Strukturdrift: Los bleibt ohne Details (gesperrt)
+                        errors.append(f"Heimrechner: Los {lot.lot_id} nicht auswertbar ({type(exc).__name__})")
                 entry = asdict(lot)
                 entry["category_url"] = category_url
                 for unused in ("seller_location", "auction_end_label"):

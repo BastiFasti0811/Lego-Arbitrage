@@ -306,3 +306,37 @@ async def scan_status(session: AsyncSession, now: datetime | None = None) -> dic
             "errors": state.errors or [],
         } if state else None,
     }
+
+
+WATCHED_CONFIG_KEYS = (TOKEN_KEY, "catawiki_scan_urls", "catawiki_scan_frequency")
+
+
+async def load_scan_watch(session: AsyncSession):
+    """Eingaben fuer den Watchdog (evaluate_catawiki_scan), nur lesend."""
+    from app.services.heartbeat import CatawikiScanWatch
+    from app.tasks.catawiki_scan import HOME_RUNNER_PLATFORMS
+
+    rows = {
+        row.key: row for row in (await session.execute(
+            select(AppSetting).where(AppSetting.key.in_(WATCHED_CONFIG_KEYS))
+        )).scalars()
+    }
+    state = (await session.execute(
+        select(AuctionScanState).where(AuctionScanState.platform == PLATFORM)
+    )).scalar_one_or_none()
+    def value(key: str) -> str | None:
+        return rows[key].value if key in rows else None
+
+    changed = [row.updated_at for row in rows.values() if row.updated_at is not None]
+    return CatawikiScanWatch(
+        home_runner=PLATFORM in HOME_RUNNER_PLATFORMS,
+        token_configured=len((value(TOKEN_KEY) or "").strip()) >= MIN_TOKEN_LENGTH,
+        scan_urls_configured=bool(_scan_urls(value("catawiki_scan_urls"))),
+        frequency=value("catawiki_scan_frequency"),
+        config_changed_at=max(changed) if changed else None,
+        runner_seen_at=await _get_internal(session, RUNNER_SEEN_KEY),
+        last_scan_at=state.scanned_at if state else None,
+        last_scan_status=state.status if state else None,
+        last_scan_lots=len(state.results or []) if state else 0,
+        last_scan_errors=[str(error) for error in (state.errors or [])] if state else [],
+    )

@@ -51,6 +51,9 @@ jobs:
       - name: Test uptime check script
         run: bash tests/uptime-check.test.sh
 
+      - name: Test Catawiki home scan scripts
+        run: bash tests/catawiki-home-scan.test.sh
+
       - name: Test post-deploy health check script
         run: bash tests/health-check-prod.test.sh
 

@@ -18,12 +18,14 @@ from app.models.heartbeat import TaskHeartbeat
 from app.models.valuation_run import ValuationRun
 from app.notifications.telegram_bot import send_pipeline_health_alert
 from app.services.heartbeat import (
+    evaluate_catawiki_scan,
     evaluate_data_freshness,
     evaluate_health,
     evaluate_valuation_coverage,
     filter_unthrottled,
     load_heartbeats,
 )
+from app.services.remote_scan import load_scan_watch
 from app.tasks.async_runner import run_async as _run_async
 from app.tasks.celery_app import celery_app
 
@@ -60,6 +62,11 @@ async def _check_async() -> dict:
                 .limit(1)
             )
         ).scalar_one_or_none()
+        try:
+            catawiki_watch = await load_scan_watch(session)
+        except Exception as exc:  # noqa: BLE001 -- Catawiki darf den restlichen Watchdog nicht verhindern
+            logger.warning("health.catawiki_watch_failed", error=repr(exc)[:300])
+            catawiki_watch = None
     report = evaluate_health(heartbeats, now)
 
     # Nutzarbeit on top of task success: a green pipeline that stops writing
@@ -72,6 +79,11 @@ async def _check_async() -> dict:
     coverage_problem = evaluate_valuation_coverage(latest_run, now)
     if coverage_problem is not None:
         problems.append(coverage_problem)
+
+    # Catawiki kommt vom Heimscanner, nicht aus einem Beat-Task: dessen Ausfall
+    # sieht kein Heartbeat (Kritiker #4/#9 der Feedback-Runde 20.10.2026).
+    if catawiki_watch is not None:
+        problems.extend(evaluate_catawiki_scan(catawiki_watch, now))
 
     if not problems:
         logger.info("health.pipeline_ok", monitored=len(report.tasks))

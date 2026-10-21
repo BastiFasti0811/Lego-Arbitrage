@@ -3,7 +3,12 @@
   Richtet den Catawiki-Scan auf dem Heimrechner ein (Windows-Aufgabenplanung).
 
 .DESCRIPTION
-  Prod ist bei Catawiki per IP gesperrt. Diese Aufgabe startet alle
+  ALTWEG. Seit Oktober 2026 laeuft Prod auf victus an einem Heimanschluss; dort
+  scannt scripts/install-catawiki-home-scan.sh (systemd-Timer, Scan im
+  api-Container von Prod). Dieses Skript nur noch verwenden, falls Prod wieder
+  in ein Rechenzentrum zieht, dessen IP Akamai sperrt.
+
+  Prod war bei Catawiki per IP gesperrt. Diese Aufgabe startet alle
   -IntervalMinutes Minuten backend\app\tools\catawiki_home_scan.py. Ein Lauf
   fragt Prod nur, ob ein Scan faellig ist (Button "Catawiki jetzt scannen" in
   der Watchlist oder Zeitplan in den Einstellungen), und endet sonst sofort.

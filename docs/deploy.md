@@ -533,18 +533,53 @@ covered by [tests/deploy-prod.test.sh](../tests/deploy-prod.test.sh).
 
 ## Catawiki Home Scanner
 
-Prod does not scan Catawiki itself (`HOME_RUNNER_PLATFORMS`); a machine with a
-home internet connection fetches jobs from `/api/remote-scan/runner/job` and
-posts results back (see `backend/app/tools/catawiki_home_scan.py`). Its
-`LEGO_API_URL` must be the app URL including `/lego`:
+Prod does not scan Catawiki from its Celery worker (`HOME_RUNNER_PLATFORMS`);
+a runner fetches jobs from `/api/remote-scan/runner/job` and posts results
+back (see `backend/app/tools/catawiki_home_scan.py`). Akamai blocked the old
+Hetzner IP; prod now runs on victus behind a home connection, and a test on
+21.10.2026 from inside `lego-api-prod` got category pages and lot details
+(shipping, commission) through.
 
-- on victus itself: `http://localhost/lego`
-- from another machine in the home network: `http://<victus LAN IP>/lego`
-  (Windows: `scripts/install-catawiki-home-scan.ps1 -ApiUrl http://<victus LAN IP>/lego`)
+On victus the runner is a systemd user timer that runs the tool **inside the
+running api container** (`docker exec`). There is no separate checkout or venv:
+runner and API share one `PARSER_VERSION`, so a deploy updates both and the
+409 after parser changes cannot happen any more.
 
-The old address `http://178.104.97.121/lego` is dead. As of 20.10.2026 the
-prod database holds no `remote_scan_token` and no `catawiki_scan_urls`, so no
-scanner is connected yet.
+Setup (once, from the prod checkout, after the deploy that brought the scripts):
+
+1. In the app: Einstellungen > Catawiki: set `Heimrechner-Token` (at least 24
+   random characters), `Scan URLs` (one category URL per line, e.g.
+   `https://www.catawiki.com/de/c/375-lego`) and `Automatischer Scan`
+   (`daily` = 08:40 Berlin).
+2. On victus:
+
+   ```bash
+   cd /srv/lego-arbitrage
+   bash scripts/install-catawiki-home-scan.sh --import-token
+   systemctl --user list-timers 'lego-catawiki-scan-*'
+   journalctl --user -u lego-catawiki-scan-lego-arbitrage.service -n 20
+   ```
+
+   Without `--import-token` the installer generates a token into
+   `~/.config/lego-catawiki-scan/lego-arbitrage.env` (0600), which then has to
+   be entered in the app. The installer warns (without printing values) when
+   the token differs from `app_settings` or URLs/schedule are missing.
+3. Test by hand: `bash scripts/catawiki-home-scan.sh --force --dry-run` scans
+   without a job and sends nothing; the button "Catawiki jetzt scannen" in the
+   watchlist triggers a real job within 10 minutes.
+
+Alarm: the hourly pipeline watchdog (`check_pipeline_health`) reports
+`catawiki_home_runner` when the runner has not polled for more than 1 h
+(token and URLs set), and `catawiki_scan` when no scan arrived within 26 h
+(`daily`) or 170 h (`weekly`), or the last scan failed with zero lots. Both
+use the normal re-alert throttle. Telegram must work for the alarm to arrive.
+
+Uninstall: `bash scripts/install-catawiki-home-scan.sh --uninstall`. The
+Windows task (`scripts/install-catawiki-home-scan.ps1`, checkout under
+`F:\-=Projekte\Privat\LA-catawiki-scanner`) is retired; only use it if prod
+moves back to a host whose IP Akamai blocks. From another machine the runner
+needs `LEGO_API_URL=http://<victus LAN IP>/lego`; the old address
+`http://178.104.97.121/lego` is dead.
 
 ## GitHub Account Note
 
