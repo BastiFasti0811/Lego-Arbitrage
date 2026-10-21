@@ -28,6 +28,7 @@ from app.config import settings
 from app.health import CHECK_OK, run_health_checks
 from app.logging_setup import quiet_http_client_loggers
 from app.models import Base, engine
+from app.security.origin_guard import is_allowed_write
 
 # Beim Start des API-Prozesses: httpx loggt sonst jede URL auf INFO, darunter
 # api.telegram.org/bot<TOKEN>/... (siehe app/logging_setup.py).
@@ -55,10 +56,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS for dashboard frontend
+# CORS nur fuer ausdruecklich eingetragene fremde Origins (CORS_ALLOWED_ORIGINS,
+# Default leer). Das Dashboard selbst laeuft same-origin und braucht kein CORS.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://lego-arbitrage.de"],
+    allow_origins=settings.cors_origin_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -76,6 +78,23 @@ RUNNER_PATH_PREFIX = "/api/remote-scan/runner/"
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
+    # CSRF: schreibende API-Aufrufe nur aus dem eigenen Origin, vor dem
+    # Cookie-Check und auch fuer Login/Logout. Der Heimrechner hat kein Cookie
+    # und schickt keine Browser-Header; seine Pfade prueft das Token.
+    if (
+        path.startswith("/api/")
+        and not path.startswith(RUNNER_PATH_PREFIX)
+        and not is_allowed_write(request.method, request.headers, settings.cors_origin_list)
+    ):
+        logger.warning(
+            "auth.cross_origin_write_rejected",
+            method=request.method,
+            path=path,
+            origin=(request.headers.get("origin") or "")[:200],
+            sec_fetch_site=request.headers.get("sec-fetch-site"),
+        )
+        return JSONResponse(status_code=403, content={"detail": "Cross-origin write rejected"})
+
     if path in PUBLIC_PATHS:
         return await call_next(request)
 

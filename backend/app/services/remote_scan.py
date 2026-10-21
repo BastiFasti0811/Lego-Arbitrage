@@ -233,7 +233,12 @@ async def runner_job(session: AsyncSession, now: datetime | None = None) -> dict
         "scan_urls": urls,
         "max_results_per_url": max_results,
         "user_agent": config.get("catawiki_user_agent") or None,
-        "cookie_header": config.get("catawiki_cookie_header") or None,
+        # Die Catawiki-Sitzung nur mit einem gerade ausgegebenen Auftrag, nicht
+        # bei jedem Poll (Security-Nachtlauf 21.10.2026, Ticket 1e3cd68a): ein
+        # Token allein liefert den Cookie nicht mehr auf Abruf, nur noch, wenn
+        # ein Scan faellig ist. `--force --dry-run` am Heimrechner scannt ohne
+        # Auftrag und damit ohne Anmeldung.
+        "cookie_header": (config.get("catawiki_cookie_header") or None) if reason else None,
     }
 
 
