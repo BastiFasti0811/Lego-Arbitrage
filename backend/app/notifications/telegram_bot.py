@@ -513,3 +513,104 @@ async def send_goal_digest(digest) -> bool:
     except Exception as e:
         logger.error("telegram.goal_digest_failed", error=str(e))
         return False
+
+
+# ── Tages-Check: faellige Preisanpassungen ──────────────────────────
+
+_LISTING_PLATFORM_SHORT = {"KLEINANZEIGEN": "KA", "EBAY": "eBay"}
+
+
+def _listing_link(entry) -> str:
+    label = html.escape(entry.label)
+    if entry.url and entry.url.startswith(("https://", "http://")):
+        return f'<a href="{html.escape(entry.url, quote=True)}">{label}</a>'
+    return label
+
+
+def _listing_facts(entry) -> str:
+    platform = _LISTING_PLATFORM_SHORT.get(entry.platform, entry.platform)
+    days = f", {entry.days_online} T online" if entry.days_online is not None else ""
+    return f"{platform}{days}"
+
+
+def _price(value: float | None) -> str:
+    if value is None:
+        return "?"
+    return _de_number(value, 0 if float(value).is_integer() else 2)
+
+
+def format_listing_check(plan) -> str:
+    """Sammelnachricht des Tages-Checks, sicher unter Telegrams 4096-Zeichen-Grenze.
+
+    Ausgefuehrt wird von Hand (ADR 0002): die Nachricht nennt nur, was zu tun ist."""
+    blocks: list[list[str]] = []
+    if plan.suggestions:
+        count = len(plan.suggestions)
+        head = f"🏷️ <b>{count} Preisanpassung{'en' if count != 1 else ''} fällig</b>"
+        if plan.new_suggestions and plan.new_suggestions < count:
+            head += f" ({plan.new_suggestions} neu)"
+        lines = [head]
+        for entry in plan.suggestions:
+            new = "🆕 " if entry.is_new else ""
+            lines.append(
+                f"• {new}{_listing_link(entry)} ({_listing_facts(entry)}): "
+                f"{_price(entry.current_price)} → <b>{_price(entry.suggested_price)} €</b>"
+                + (f"\n  <i>{html.escape(entry.reason)}</i>" if entry.reason else "")
+            )
+        blocks.append(lines)
+    if plan.floor_hints:
+        lines = ["🧱 <b>An der Schmerzgrenze</b> (Hinweis kommt nur einmal)"]
+        for entry in plan.floor_hints:
+            lines.append(
+                f"• {_listing_link(entry)} ({_listing_facts(entry)}): {_price(entry.current_price)} € "
+                "= Schmerzgrenze. Schmerzgrenze senken, Text/Fotos auffrischen oder beenden."
+            )
+        blocks.append(lines)
+    if plan.sold_leftovers:
+        lines = ["🪦 <b>Verkauft, Anzeige läuft noch</b>"]
+        for entry in plan.sold_leftovers:
+            lines.append(f"• {_listing_link(entry)} ({_listing_facts(entry)}): Anzeige löschen und in der App beenden.")
+        blocks.append(lines)
+    footer = "In der App unter <i>Anpassungen</i>: Übernommen, Später (3 Tage) oder Verwerfen."
+    if plan.snoozed:
+        footer += f" Zurückgestellt: {plan.snoozed}."
+
+    text = ""
+    omitted = 0
+    for lines in blocks:
+        for line in lines:
+            candidate = f"{text}\n{line}" if text else line
+            if len(candidate) + len(footer) + 60 > _TELEGRAM_TEXT_LIMIT:
+                omitted += 1
+                continue
+            text = candidate
+        text += "\n"
+    if omitted:
+        text += f"… und {omitted} weitere in der App.\n"
+    return f"{text}\n{footer}".strip()
+
+
+async def send_listing_check(plan) -> bool:
+    runtime_settings = await get_settings_map(["telegram_bot_token", "telegram_chat_id"])
+    bot_token = runtime_settings.get("telegram_bot_token")
+    chat_id = runtime_settings.get("telegram_chat_id")
+    if not bot_token or not chat_id:
+        return False
+    try:
+        bot = Bot(token=bot_token)
+        await bot.send_message(
+            chat_id=chat_id,
+            text=format_listing_check(plan),
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        logger.info(
+            "telegram.listing_check_sent",
+            suggestions=len(plan.suggestions),
+            floor_hints=len(plan.floor_hints),
+            sold_leftovers=len(plan.sold_leftovers),
+        )
+        return True
+    except Exception as e:
+        logger.error("telegram.listing_check_failed", error=str(e))
+        return False

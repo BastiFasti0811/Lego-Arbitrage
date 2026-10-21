@@ -44,6 +44,7 @@ MONITORED_TASKS: dict[str, int] = {
     "app.tasks.weekly_report.send_weekly_report_task": 194,       # weekly Sunday 18:00
     "app.tasks.listing_pack.send_listing_pack_task": 194,         # weekly Monday 08:00
     "app.tasks.goal_digest.send_goal_digest_task": 194,           # weekly Monday 07:50
+    "app.tasks.listing_check.run_listing_check_task": 26,         # daily 08:05
 }
 
 # Die Tasks, die Angebote in die DB schreiben. Der Live Feed meldet ihren
