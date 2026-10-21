@@ -239,6 +239,46 @@ RC=$?
 set -e
 expect_rc 2
 
+# ── 14. Backup freshness: fresh dump ok, stale dump alarms, fixed reason text ──
+make_sandbox backup-fresh
+mkdir -p "${SANDBOX}/backups"
+printf 'BACKUP_DIR=%s\n' "${SANDBOX}/backups" >> "${SANDBOX}/config/test.env"
+touch "${SANDBOX}/backups/lego_lego_arbitrage_20261021-033000.sql.gz"
+run_check
+expect_rc 0
+touch -d '30 hours ago' "${SANDBOX}/backups/lego_lego_arbitrage_20261021-033000.sql.gz"
+run_check
+run_check
+expect_rc 1
+expect_tg 1
+grep -q 'backup: newest database dump older than 26 h' "${TG_LOG}" || fail "alarm should name the stale dump"
+run_check
+expect_tg 1  # same reason text on later runs: no 'Störung verändert' spam
+touch "${SANDBOX}/backups/lego_lego_arbitrage_20261022-033000.sql.gz"
+run_check
+expect_rc 0
+grep -q '🟢' "${TG_LOG}" || fail "fresh dump should send the all-clear"
+
+# ── 15. Backup freshness: no dump at all, stale photo archive ──
+make_sandbox backup-missing
+mkdir -p "${SANDBOX}/backups"
+printf 'BACKUP_DIR=%s\n' "${SANDBOX}/backups" >> "${SANDBOX}/config/test.env"
+run_check
+expect_rc 1
+grep -q 'backup: no database dump' "${SANDBOX}/out.log" || fail "empty backup dir should fail"
+touch "${SANDBOX}/backups/lego_lego_arbitrage_20261021-033000.sql.gz"
+run_check
+expect_rc 0  # no photo archive yet: not a failure
+touch -d '30 hours ago' "${SANDBOX}/backups/lego_media_20261020-033000.tar"
+run_check
+expect_rc 1
+grep -q 'backup: newest photo archive older than 26 h' "${SANDBOX}/out.log" || fail "stale photo archive should fail"
+
+# ── 16. Without BACKUP_DIR the backup is not checked ──
+make_sandbox backup-off
+run_check
+expect_rc 0
+
 if (( FAILURES > 0 )); then
   echo "${FAILURES} uptime-check test assertion(s) failed" >&2
   exit 1
