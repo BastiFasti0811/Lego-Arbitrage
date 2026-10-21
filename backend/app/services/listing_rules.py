@@ -63,9 +63,8 @@ def apply_price_change(listing, new_price: float, now: datetime) -> ListingPrice
 # ── Tages-Check (PR 3) ────────────────────────────────────────────────
 
 SNOOZE_DAYS = 3  # "Spaeter" — fest verdrahtet (Spec)
-# Der gespeicherte Marktpreis gilt nur als Anker, wenn er frisch ist ...
-MARKET_MAX_AGE_DAYS = 7
-# ... und deutlich unter der Treppe liegt; sonst bleibt es bei der Treppe.
+# Der gespeicherte Marktpreis gilt nur als Anker, wenn er frisch ist
+# (`app.domain.market_freshness`) und deutlich unter der Treppe liegt; sonst bleibt es bei der Treppe.
 MARKET_UNDERCUT_RATIO = 0.9
 
 

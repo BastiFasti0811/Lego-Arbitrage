@@ -12,6 +12,7 @@ Kein Import aus den Routen-Modulen, sonst Zirkularimport.
 
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from urllib.parse import urlparse
 
@@ -19,6 +20,7 @@ import structlog
 
 from app.ai import AIProviderError, ListingText, get_provider
 from app.domain.condition import condition_ad_label, condition_ad_title_suffix, condition_value_factor
+from app.domain.market_freshness import is_market_price_stale
 from app.engine.market_consensus import PriceBasis
 from app.models.inventory import InventoryItem, InventoryItemType, InventoryStatus
 from app.models.listing import OPEN_LISTING_STATUSES, Listing, ListingPlatform, ListingStatus, PriceType
@@ -112,6 +114,21 @@ def draft_price(item: InventoryItem, listing: Listing | None, body_price: float 
     return None
 
 
+def stale_market_warning(item: InventoryItem, now: datetime) -> str | None:
+    """Hinweis, wenn der Preisvorschlag auf einem veralteten Marktwert beruht.
+
+    Nur fuer den Fall, dass `draft_price` tatsaechlich beim Marktwert landet;
+    der Aufrufer prueft, dass weder Body- noch Listing-Preis greifen.
+    """
+    if condition_market_price(item) is None:
+        return None
+    if not is_market_price_stale(item.market_price_updated_at, now):
+        return None
+    updated_at = item.market_price_updated_at
+    since = f"vom {updated_at:%d.%m.%Y} " if updated_at else ""
+    return f"Preisvorschlag beruht auf einem veralteten Marktwert {since}— bitte Preis prüfen"
+
+
 def template_listing_text(item: InventoryItem, *, price: float, price_type: str) -> ListingText:
     """Feste Vorlage, wenn die KI nicht schreibt. Behauptet nur, was in der
     Zeile steht: der Zustand kommt aus `item.condition`, nie fest verdrahtet."""
@@ -192,9 +209,11 @@ async def prepare_listing_draft(
     if price is not None and price <= 0:
         raise ListingPrepareError("Preis muss groesser 0 sein")
     existing_price = existing.current_price if existing is not None else None
+    from_market = price is None and not existing_price
     resolved_price = price if price is not None else existing_price or draft_price(item, None, None)
     if resolved_price is None:
         raise ListingPrepareError("Kein Preis ermittelbar — bitte Preis angeben")
+    stale_warning = stale_market_warning(item, datetime.now(UTC)) if from_market else None
     resolved_price = round(resolved_price, 2)
 
     created = existing is None
@@ -214,7 +233,9 @@ async def prepare_listing_draft(
     # Der Preis steht im Text. Kommt ein anderer Preis, waere der alte Text falsch.
     price_unchanged = existing_price is None or existing_price == resolved_price
     if listing.title and listing.body and price_unchanged:
-        return PreparedDraft(listing=listing, created=created, text_source=TextSource.EXISTING)
+        return PreparedDraft(
+            listing=listing, created=created, text_source=TextSource.EXISTING, warning=stale_warning
+        )
 
     warning = None
     try:
@@ -226,6 +247,7 @@ async def prepare_listing_draft(
         source = TextSource.TEMPLATE
         warning = f"KI-Text nicht verfügbar ({exc.detail}) — Vorlagentext verwendet"
     apply_text(listing, text)
+    warning = " · ".join(w for w in (stale_warning, warning) if w) or None
     return PreparedDraft(listing=listing, created=created, text_source=source, warning=warning)
 
 

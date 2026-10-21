@@ -466,6 +466,15 @@ def _scripted_scraper_cls(name: str, script: dict):
     return type(name, (_ScriptedScraperBase,), {"script": script})
 
 
+def _held_item(**fields):
+    """Gehaltener Posten wie aus der DB: ohne gespeicherten Marktwert, ohne Signal."""
+    defaults = {
+        "current_market_price": None, "market_price_updated_at": None, "market_price_basis": None,
+        "sell_signal_active": False, "sell_signal_reason": None,
+    }
+    return SimpleNamespace(**{**defaults, **fields})
+
+
 @pytest.mark.asyncio
 async def test_the_loop_writes_exactly_one_row_per_item_with_the_reason_the_inputs_imply(monkeypatch):
     # Der Test, der den urspruenglichen Bug gefangen haette: 41 gehaltene
@@ -493,12 +502,12 @@ async def test_the_loop_writes_exactly_one_row_per_item_with_the_reason_the_inpu
     monkeypatch.setattr(update_inventory, "BrickMergeScraper", _FakeBrickMerge)
 
     items = [
-        SimpleNamespace(id=1, set_number="10280", buy_price=100.0, buy_shipping=5.0, buy_date=date(2025, 1, 1)),
-        SimpleNamespace(id=2, set_number="40800", buy_price=20.0, buy_shipping=0.0, buy_date=date(2025, 1, 1)),
-        SimpleNamespace(id=3, set_number="43230", buy_price=15.0, buy_shipping=0.0, buy_date=date(2025, 1, 1)),
-        SimpleNamespace(id=4, set_number="75192", buy_price=150.0, buy_shipping=0.0, buy_date=None),
-        SimpleNamespace(id=5, set_number="70620", buy_price=60.0, buy_shipping=0.0, buy_date=date(2025, 1, 1)),
-        SimpleNamespace(id=6, set_number="21367", buy_price=None, buy_shipping=0.0, buy_date=date(2025, 1, 1)),
+        _held_item(id=1, set_number="10280", buy_price=100.0, buy_shipping=5.0, buy_date=date(2025, 1, 1)),
+        _held_item(id=2, set_number="40800", buy_price=20.0, buy_shipping=0.0, buy_date=date(2025, 1, 1)),
+        _held_item(id=3, set_number="43230", buy_price=15.0, buy_shipping=0.0, buy_date=date(2025, 1, 1)),
+        _held_item(id=4, set_number="75192", buy_price=150.0, buy_shipping=0.0, buy_date=None),
+        _held_item(id=5, set_number="70620", buy_price=60.0, buy_shipping=0.0, buy_date=date(2025, 1, 1)),
+        _held_item(id=6, set_number="21367", buy_price=None, buy_shipping=0.0, buy_date=date(2025, 1, 1)),
     ]
     set_rows = [SimpleNamespace(set_number="70620", release_year=2022, uvp_eur=90.0)]
     run = SimpleNamespace(
@@ -618,3 +627,39 @@ async def test_soft_time_limit_is_not_swallowed_and_marks_the_run_failed(monkeyp
 
     assert main_session.added == []  # kein teilweise geschriebener Kram
     assert run.status == ValuationRunStatus.FAILED.value
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_item_with_a_stale_value_loses_its_price_based_signal(monkeypatch):
+    # Prod 21.10.2026: 8 uebersprungene Sets trugen Marktwerte vom 20.08. bis
+    # 04.10. samt "ROI erreicht". Der Skip-Zweig liess beides stehen.
+    from datetime import UTC, datetime
+
+    only_brickeconomy = _scripted_scraper_cls("OnlyBrickEconomy", {
+        "42055": ScrapedPrice(source="BRICKECONOMY", price_eur=249.66),
+    })
+    monkeypatch.setattr(update_inventory, "PRICE_SCRAPERS", [only_brickeconomy])
+    monkeypatch.setattr(update_inventory, "BrickMergeScraper", _FakeBrickMerge)
+
+    stale_at = datetime(2026, 8, 20, 16, 30, tzinfo=UTC)
+    item = _held_item(
+        id=3, set_number="42055", buy_price=240.0, buy_shipping=0.0, buy_date=date.today(),
+        current_market_price=600.0, market_price_updated_at=stale_at, market_price_basis=None,
+        unrealized_roi_percent=150.0,
+        sell_signal_active=True, sell_signal_reason="ROI 150% hat Zielwert 25% erreicht",
+    )
+    run = SimpleNamespace(
+        id=99, items_total=-1, items_valued=-1, items_skipped=-1, items_failed=-1,
+        finished_at=None, status=ValuationRunStatus.RUNNING.value,
+    )
+    session = _FakeRunSession(set_rows=[], item_rows=[item], run=run)
+    monkeypatch.setattr(update_inventory, "async_session", lambda: session)
+
+    result = await _update_valuations_async(run_id=99)
+
+    assert result["skipped"] == 1 and result["failed"] == 0
+    assert session.added[0].reason == "single_source"
+    assert item.sell_signal_active is False
+    assert item.sell_signal_reason is None
+    # Wert und Zeitstempel bleiben unangetastet: die Oberflaeche zeigt das Alter.
+    assert (item.current_market_price, item.market_price_updated_at) == (600.0, stale_at)

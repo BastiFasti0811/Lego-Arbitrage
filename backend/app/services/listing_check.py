@@ -14,14 +14,14 @@ Nichts davon aendert eine Anzeige oder einen Preis (ADR 0002).
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 
+from app.domain.market_freshness import is_market_price_stale
 from app.engine.market_consensus import PriceBasis
 from app.models.inventory import InventoryStatus
 from app.models.listing import ListingStatus
 from app.services.listing_prepare import condition_market_price
 from app.services.listing_rules import (
-    MARKET_MAX_AGE_DAYS,
     as_utc,
     compute_suggestion,
     is_at_floor,
@@ -87,8 +87,7 @@ def fresh_market_price(item, now: datetime) -> float | None:
     """Zustandsbereinigter Marktpreis, wenn er belastbar und hoechstens 7 Tage alt ist."""
     if item.market_price_basis not in _TRUSTED_MARKET_BASES:
         return None
-    updated_at = as_utc(item.market_price_updated_at)
-    if updated_at is None or now - updated_at > timedelta(days=MARKET_MAX_AGE_DAYS):
+    if is_market_price_stale(item.market_price_updated_at, now):
         return None
     return condition_market_price(item)
 

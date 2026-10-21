@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.domain.classification import categorize_release_year
 from app.domain.identity import is_plausible_price
+from app.domain.market_freshness import is_market_price_stale
 from app.engine.market_consensus import PriceBasis, calculate_consensus, resolve_market_price
 from app.models.base import async_session
 from app.models.inventory import InventoryItem, InventoryStatus
@@ -74,6 +75,55 @@ def _detect_price_peak(history: list[dict] | None) -> bool:
     peak = max(recent)
     peak_index = recent.index(peak)
     return peak_index < len(recent) - 1 and recent[-1] < peak * 0.97
+
+
+def _price_independent_signals(item, now: datetime, release_year: int | None) -> list[str]:
+    """Sell-Gruende, die ohne aktuellen Marktpreis gelten: die Haltedauer."""
+    optimal_months = OPTIMAL_HOLDING.get(_categorize_set(release_year), 12.0)
+    holding_months = (now.date() - item.buy_date).days / 30.44
+    if holding_months >= optimal_months:
+        return [f"Optimale Haltedauer ({optimal_months:.0f} Monate) erreicht"]
+    return []
+
+
+def _roi_signal(item, release_year: int | None) -> str | None:
+    roi_target = ROI_TARGETS.get(_categorize_set(release_year), 25.0)
+    if item.unrealized_roi_percent and item.unrealized_roi_percent >= roi_target:
+        return f"ROI {item.unrealized_roi_percent:.0f}% hat Zielwert {roi_target:.0f}% erreicht"
+    return None
+
+
+def _apply_signals(item, signals: list[str], suffix: str | None = None) -> None:
+    if signals:
+        item.sell_signal_active = True
+        item.sell_signal_reason = " | ".join(signals) + (f" {suffix}" if suffix else "")
+    else:
+        item.sell_signal_active = False
+        item.sell_signal_reason = None
+
+
+def _downgrade_stale_signal(item, now: datetime, release_year: int | None) -> None:
+    """Uebersprungener Posten: das Sell-Signal darf nicht auf einem alten Preis stehen.
+
+    Bis hierher behielt ein uebersprungener Posten Marktwert UND Sell-Signal
+    des letzten erfolgreichen Laufs. 42055 zeigte am 21.10. "ROI erreicht"
+    auf 600 EUR vom 20.08., waehrend BrickEconomy 250 EUR meldete.
+
+    Solange der Wert frisch ist (siehe `is_market_price_stale`), bleibt alles
+    stehen: ein einzelner Fehlversuch soll das Signal nicht flackern lassen.
+    Ist er veraltet, bleiben nur preisunabhaengige Gruende (Haltedauer). Der
+    Marktwert selbst bleibt als Anhaltspunkt erhalten; die Oberflaeche
+    kennzeichnet ihn ueber `market_price_stale`.
+    """
+    if item.current_market_price is None:
+        return
+    if not is_market_price_stale(item.market_price_updated_at, now):
+        return
+    updated_at = item.market_price_updated_at
+    suffix = (
+        f"(Marktwert vom {updated_at:%d.%m.%Y} veraltet)" if updated_at else "(Marktwert veraltet)"
+    )
+    _apply_signals(item, _price_independent_signals(item, now, release_year), suffix)
 
 
 # Ohne Konsens, aber mit BrickMerge-Preis: dann bewertet der Lauf mit BrickMerge.
@@ -259,6 +309,9 @@ async def _update_valuations_async(run_id: int | None = None) -> dict:
                             set_number=item.set_number, reason=reason.value,
                             sources=consensus.num_sources,
                         )
+                        # Vor record_skipped: scheitert es, gibt es genau eine
+                        # Zeile (failed) statt zweier fuer denselben Posten.
+                        _downgrade_stale_signal(item, now, release_year_by_set.get(item.set_number))
                         recorder.record_skipped(
                             item_id=item.id, set_number=item.set_number,
                             reason=reason, probes=probes,
@@ -281,20 +334,12 @@ async def _update_valuations_async(run_id: int | None = None) -> dict:
                             if total_invested > 0 else 0
                         )
 
-                    category = _categorize_set(release_year_by_set.get(item.set_number))
-                    roi_target = ROI_TARGETS.get(category, 25.0)
-                    optimal_months = OPTIMAL_HOLDING.get(category, 12.0)
-                    holding_days = (now.date() - item.buy_date).days
-                    holding_months = holding_days / 30.44
-
+                    release_year = release_year_by_set.get(item.set_number)
                     signals: list[str] = []
-                    if item.unrealized_roi_percent and item.unrealized_roi_percent >= roi_target:
-                        signals.append(
-                            f"ROI {item.unrealized_roi_percent:.0f}% hat Zielwert {roi_target:.0f}% erreicht"
-                        )
-
-                    if holding_months >= optimal_months:
-                        signals.append(f"Optimale Haltedauer ({optimal_months:.0f} Monate) erreicht")
+                    roi_signal = _roi_signal(item, release_year)
+                    if roi_signal:
+                        signals.append(roi_signal)
+                    signals.extend(_price_independent_signals(item, now, release_year))
 
                     try:
                         async with BrickMergeScraper() as brickmerge:
@@ -304,14 +349,10 @@ async def _update_valuations_async(run_id: int | None = None) -> dict:
                     except Exception:
                         pass
 
-                    if signals:
-                        item.sell_signal_active = True
-                        item.sell_signal_reason = " | ".join(signals)
-                        if basis == PriceBasis.BRICKMERGE_ONLY:
-                            item.sell_signal_reason += " (nur BrickMerge)"
-                    else:
-                        item.sell_signal_active = False
-                        item.sell_signal_reason = None
+                    _apply_signals(
+                        item, signals,
+                        "(nur BrickMerge)" if basis == PriceBasis.BRICKMERGE_ONLY else None,
+                    )
 
                     recorder.record_valued(
                         item_id=item.id, set_number=item.set_number,
