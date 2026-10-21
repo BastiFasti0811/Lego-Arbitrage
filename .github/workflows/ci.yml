@@ -60,6 +60,11 @@ jobs:
       - name: Test rollback script
         run: bash tests/rollback-prod.test.sh
 
+      # Real BuildKit build of a FROM-scratch probe (no pull, no stored image)
+      # against the repository's .dockerignore files, plus .gitignore checks.
+      - name: Test secret hygiene (.gitignore, .dockerignore)
+        run: SECRET_HYGIENE_DOCKER=1 bash tests/secret-hygiene.test.sh
+
       - name: Test backup script
         run: bash tests/backup-db.test.sh
 

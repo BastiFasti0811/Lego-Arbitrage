@@ -1,0 +1,27 @@
+# Build context of the backend image (docker-compose*.yml: context ./backend,
+# infra/Dockerfile.backend runs `COPY . .`). Everything listed here stays out
+# of the image and out of its layers.
+
+# Secrets: the runtime env comes from compose `env_file: ./backend/.env`, the
+# app never needs the file inside the image. Covers backups like .env.bak-*.
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+
+# Not needed at runtime
+tests/
+data/
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage

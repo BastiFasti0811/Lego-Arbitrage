@@ -1,0 +1,15 @@
+# Build context "." (infra/Dockerfile.frontend in docker-compose*.yml). The
+# frontend build only copies frontend/, but keep secrets and bulky local state
+# out of the context in case a COPY ever gets wider. The backend image has its
+# own backend/.dockerignore (context ./backend).
+
+# Secrets (.env.prod, backend/.env and backups such as .env.bak-*)
+**/.env
+**/.env.*
+!**/*.example
+
+.git
+**/node_modules
+frontend/dist
+backend/data
+Eingang/

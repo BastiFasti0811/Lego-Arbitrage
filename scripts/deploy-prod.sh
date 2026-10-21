@@ -43,6 +43,19 @@ if [[ ! -f "backend/.env" ]]; then
   exit 1
 fi
 
+# The env files hold every prod secret. compose reads them as their owner (the
+# deploying user), so nobody else needs access; a fresh `cp` or an editor
+# backup would otherwise leave them world-readable (0644). Backups such as
+# backend/.env.bak-* are tightened too and flagged: they belong outside the
+# repo directory (docs/deploy.md#secrets).
+shopt -s nullglob
+SECRET_BACKUPS=(.env.bak* backend/.env.bak*)
+shopt -u nullglob
+chmod go-rwx "${ENV_FILE}" backend/.env "${SECRET_BACKUPS[@]}"
+if (( ${#SECRET_BACKUPS[@]} > 0 )); then
+  echo "Warning: env backups inside ${REPO_DIR}: ${SECRET_BACKUPS[*]} (permissions tightened; move them out of the repo directory)." >&2
+fi
+
 # Production deploys the main branch only. The checkout on victus is a plain
 # working copy: if it ever sits on a feature branch or a detached HEAD,
 # `git pull --ff-only` would deploy that branch (or fail half-way). Rollback to
