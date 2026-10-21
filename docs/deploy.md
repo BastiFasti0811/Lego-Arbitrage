@@ -307,8 +307,10 @@ journalctl --user -u lego-uptime-lego-arbitrage.service -n 20
 
 Re-run with `--import-telegram` after changing the bot token in the
 dashboard settings. Remove with `--uninstall`. Other knobs (`FAIL_THRESHOLD`,
-`REALERT_SECONDS`, `HEALTH_URL`, `SERVICES`) can go into the same config file;
-see the header of the script. State (failure counter) lives in
+`REALERT_SECONDS`, `HEALTH_URL`, `SERVICES`, `BACKUP_DIR`,
+`BACKUP_MAX_AGE_HOURS`) can go into the same config file; see the header of
+the script. With `BACKUP_DIR` set the check also fails on a stale nightly
+backup, see [Backup → Alarms](#alarms). State (failure counter) lives in
 `~/.local/state/lego-uptime/<project>.state`.
 
 Limit: the check runs on victus itself. If victus is off or has no power, no
@@ -340,12 +342,24 @@ Tuning lives in `backend/.env`: `HEARTBEAT_ENABLED` (default `true`) and
 
 ## Backup
 
-The PostgreSQL data lives under `${DATA_ROOT}/postgres` on victus' local disk;
-nothing backs it up automatically. Use the bundled scripts to take and verify
-logical dumps, and set `BACKUP_REMOTE` for a copy that survives a disk loss.
+What is backed up, and where (state 21.10.2026):
+
+| What | Where | When | Retention |
+|---|---|---|---|
+| PostgreSQL dump `lego_<db>_<ts>.sql.gz` | `${DATA_ROOT}/backups` | 03:30, `scripts/backup-db.sh` | `BACKUP_KEEP` (14) |
+| Inventory photos `lego_media_<ts>.tar` (`${DATA_ROOT}/media`) | `${DATA_ROOT}/backups` | same run | `BACKUP_MEDIA_KEEP` (7) |
+| Mirror of both archive kinds | `BACKUP_REMOTE` (rclone or rsync) | same run | = local rotation |
+| Whole `/srv` and `/mnt/HC_Volume_105179687` (without the raw `postgres/` dir) | restic repo on OneDrive, host config `services.restic.backups.onedrive` | ~04:00 | 7 daily, 4 weekly, 6 monthly |
+
+`${DATA_ROOT}` is `/mnt/HC_Volume_105179687/lego-arbitrage`, on the same NVMe
+disk as everything else on victus. The local archives alone do not survive a
+disk loss; the off-site copies do. The restic job is part of the NixOS host
+configuration, runs as root and is not managed from this repo; it encrypts
+with its own password. Archives are written with mode 0600: the dump contains
+`app_settings` (bot token, API keys).
 
 ```bash
-# One-off backup (writes a verified, gzipped dump to ${BACKUP_DIR:-${DATA_ROOT}/backups})
+# One-off backup (dump + photo archive, verified, rotated, mirrored if BACKUP_REMOTE is set)
 bash scripts/backup-db.sh
 
 # List backups
@@ -353,27 +367,87 @@ ls -lh /mnt/HC_Volume_105179687/lego-arbitrage/backups
 
 # Restore a dump (DESTRUCTIVE — drops & recreates objects)
 CONFIRM=yes bash scripts/restore-db.sh /mnt/HC_Volume_105179687/lego-arbitrage/backups/<file>.sql.gz
+
+# Restore the photos (stack stopped or into an empty DATA_ROOT; entries are media/...)
+tar -C /mnt/HC_Volume_105179687/lego-arbitrage -xf /mnt/HC_Volume_105179687/lego-arbitrage/backups/lego_media_<ts>.tar
 ```
 
-Schedule it nightly via cron on the server (as the deploy user). On victus
-(NixOS) a user crontab or a systemd timer from the system configuration does
-the same job; as of 20.10.2026 none is set up and the newest dump is from
-30.06.2026.
+### Schedule
+
+On victus the nightly run comes from the NixOS system cron
+(`services.cron.systemCronJobs` in the host configuration), as user sebastian:
+
+```
+30 3 * * * sebastian PATH=/run/current-system/sw/bin cd /srv/lego-arbitrage && bash scripts/backup-db.sh >> /mnt/HC_Volume_105179687/lego-arbitrage/backups/cron.log 2>&1
+```
+
+On another host use a crontab with the same line (and a PATH that contains
+docker, tar, flock and rclone/rsync).
+
+### Off-site target (`BACKUP_REMOTE`)
+
+Set in `.env.prod` (no secrets in the value; credentials live in the rclone
+config or the ssh key of the user that runs the backup):
+
+- `BACKUP_REMOTE=rclone:<remote>:<path>` — `rclone sync` of the archives. Use
+  a `crypt` remote so the provider never sees the dump in clear text.
+- `BACKUP_REMOTE=rsync:[user@]host:/path` — `rsync -a --delete` over ssh, e.g.
+  to a Hetzner Storage Box or a second machine.
+- `BACKUP_REMOTE=<remote>:<path>` — older form, same as `rclone:`.
+
+The remote mirrors the retained archives (only `lego_<db>_*.sql.gz` and
+`lego_media_*.tar`; foreign files on the remote are not touched), so its size
+follows the local rotation. A wiped local backup directory is mirrored too on
+the next run; history beyond the rotation window comes from the restic
+snapshots or from snapshots on the remote side. Empty `BACKUP_REMOTE` is a
+warning in the log, not an alarm.
+
+### Alarms
+
+- `backup-db.sh` sends a Telegram message on every failure: 🔴 when the local
+  backup failed (step named: `config`, `lock`, `db-dump`, `db-verify`,
+  `media-archive`, `media-verify`, `rotation`; exit 1), 🟠 when only the
+  off-site mirror failed (exit 2). Token and chat id come from
+  `~/.config/lego-uptime/lego-arbitrage.env`, the config of the uptime check
+  (`scripts/install-uptime-check.sh --import-telegram`). Without them the
+  alarm is only logged (`ALARM NOT SENT` in `cron.log`).
+- A cron that does not run at all is caught by the uptime check: with
+  `BACKUP_DIR` in its config it fails when the newest dump (or, once one
+  exists, the newest photo archive) is older than `BACKUP_MAX_AGE_HOURS`
+  (26). `install-uptime-check.sh` enables this for prod on first install from
+  `.env.prod`, or explicitly with `--backup-dir <dir>`.
+- The restic job has no alarm of its own; `journalctl -u restic-backups-onedrive`
+  shows its runs.
+
+### Restore probe
+
+`scripts/restore-probe.sh` proves that the newest backup restores, without
+touching prod:
 
 ```bash
-crontab -e
-# Daily 03:30 — adjust the repo path to your checkout. The explicit PATH is
-# required because cron's default PATH does not include docker/rclone.
-30 3 * * * cd /srv/lego-arbitrage && PATH=/usr/local/bin:/usr/bin:/bin bash scripts/backup-db.sh >> /var/log/lego-backup.log 2>&1
+cd /srv/lego-arbitrage
+bash scripts/restore-probe.sh --report /tmp/restore-probe.md
+# options: --dump FILE --media FILE --no-media --no-prod --alert
 ```
 
-Backup tunables live in `.env.prod`: `BACKUP_DIR`, `BACKUP_KEEP` (retained
-dumps, default 14) and `BACKUP_REMOTE` (optional rclone destination for a true
-off-site copy — the local dump alone does not survive volume loss).
+It counts the rows of every table from the dump's COPY blocks, restores the
+dump into a throwaway `postgres:16-alpine` container (`--network none`, data
+on tmpfs, removed afterwards), requires the restored row count of every table
+to equal the dump, compares `offers`, `price_records`, `inventory_items` and
+`inventory_photos` and the Alembic revision with prod (read-only transaction;
+prod keeps growing, so the difference is what was added since the dump), and
+resolves every `inventory_photos` row to
+`media/inventory_photos/<item_id>/<filename>` in the photo archive of the
+same run and in the live directory. Exit 0 = PASS, 1 = FAIL.
 
-> **Verify restores.** A backup you have never restored is not a backup. After
-> the first nightly run, restore the latest dump into a throwaway database and
-> confirm row counts before trusting it.
+Probe log:
+
+| Date | Dump | Result |
+|---|---|---|
+| 21.10.2026 03:56 | fresh run of the new `backup-db.sh` (609 590 B dump, 185-file photo archive, 83 MB) | PASS: 19 tables, 13 823 rows restored = dump; offers 908, price_records 6 467, inventory_items 125, inventory_photos 185 = prod; Alembic `b6d1f0a4c7e3` = prod; 185/185 photo paths in the archive and live |
+| 21.10.2026 03:57 | nightly cron dump `lego_lego_arbitrage_20261021-033001.sql.gz` | PASS, same counts |
+
+Repeat the probe after schema changes and at least monthly; add a line here.
 
 ## Rollback
 

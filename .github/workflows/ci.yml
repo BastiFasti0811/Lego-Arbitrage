@@ -57,6 +57,14 @@ jobs:
       - name: Test rollback script
         run: bash tests/rollback-prod.test.sh
 
+      - name: Test backup script
+        run: bash tests/backup-db.test.sh
+
+      # The postgres:16-alpine image is already pulled for the service above,
+      # so the probe's throwaway container starts without an extra download.
+      - name: Test restore probe (real throwaway container)
+        run: RESTORE_PROBE_DOCKER=1 bash tests/restore-probe.test.sh
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:

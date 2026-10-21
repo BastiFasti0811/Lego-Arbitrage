@@ -13,6 +13,10 @@
 #   --health-url URL      health URL (default http://localhost/lego/health)
 #   --label TEXT          stack name in the Telegram messages (default: project)
 #   --services "a b"      services that must run (default: all six)
+#   --backup-dir DIR      also alarm when the nightly backup in DIR is stale
+#                         (see BACKUP_DIR in uptime-check.sh). Default for the
+#                         prod project on first install: BACKUP_DIR, else
+#                         ${DATA_ROOT}/backups, from ../.env.prod. "" disables.
 #   --import-telegram     copy bot token and chat id from the app_settings table
 #                         of a running stack (values are never printed)
 #   --telegram-from NAME  project whose database holds the Telegram settings
@@ -39,6 +43,8 @@ PROJECT="lego-arbitrage"
 HEALTH_URL=""
 LABEL=""
 SERVICES=""
+BACKUP_DIR_OPT=""
+BACKUP_DIR_SET=0
 IMPORT_TELEGRAM=0
 TELEGRAM_FROM="lego-arbitrage"
 START=1
@@ -50,11 +56,12 @@ while (( $# > 0 )); do
     --health-url) HEALTH_URL="$2"; shift 2 ;;
     --label) LABEL="$2"; shift 2 ;;
     --services) SERVICES="$2"; shift 2 ;;
+    --backup-dir) BACKUP_DIR_OPT="$2"; BACKUP_DIR_SET=1; shift 2 ;;
     --import-telegram) IMPORT_TELEGRAM=1; shift ;;
     --telegram-from) TELEGRAM_FROM="$2"; shift 2 ;;
     --no-start) START=0; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
-    -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,36p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -95,6 +102,24 @@ set_cfg COMPOSE_PROJECT "${PROJECT}"
 [[ -n "${HEALTH_URL}" ]] && set_cfg HEALTH_URL "${HEALTH_URL}"
 [[ -n "${LABEL}" ]] && set_cfg STACK_LABEL "${LABEL}"
 [[ -n "${SERVICES}" ]] && set_cfg SERVICES "${SERVICES}"
+
+# Backup freshness: explicit option wins; otherwise the prod project gets the
+# backup directory of the checkout's .env.prod once (a later manual change of
+# BACKUP_DIR in the config file is kept on re-install).
+if (( BACKUP_DIR_SET == 1 )); then
+  set_cfg BACKUP_DIR "${BACKUP_DIR_OPT}"
+elif [[ "${PROJECT}" == "lego-arbitrage" ]] && ! grep -q '^BACKUP_DIR=' "${CONFIG_FILE}"; then
+  prod_env="${SCRIPT_DIR}/../.env.prod"
+  if [[ -r "${prod_env}" ]]; then
+    env_value() { sed -n "s/^$1=//p" "${prod_env}" | tail -n1 | tr -d '\r'; }
+    detected="$(env_value BACKUP_DIR)"
+    [[ -z "${detected}" && -n "$(env_value DATA_ROOT)" ]] && detected="$(env_value DATA_ROOT)/backups"
+    if [[ -n "${detected}" ]]; then
+      set_cfg BACKUP_DIR "${detected}"
+      echo "Backup freshness check enabled for ${detected}"
+    fi
+  fi
+fi
 
 if (( IMPORT_TELEGRAM == 1 )); then
   pg_id="$(docker ps -q \

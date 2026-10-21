@@ -11,6 +11,7 @@
 #   2. Every service in SERVICES has a container of compose project
 #      COMPOSE_PROJECT that is running and not unhealthy (worker and beat have
 #      liveness healthchecks, see backend/app/liveness.py).
+#   3. Optional (BACKUP_DIR set): the nightly backup is fresh.
 #
 # Telegram is called directly with curl: the app (and its database, where the
 # dashboard keeps the bot token) may be the thing that is down. Token and chat
@@ -29,6 +30,12 @@
 #   HTTP_TIMEOUT        seconds for the health request (default 10)
 #   STATE_DIR           default ${XDG_STATE_HOME:-~/.local/state}/lego-uptime
 #   STACK_LABEL         name used in messages (default: COMPOSE_PROJECT)
+#   BACKUP_DIR          if set: also fail when the newest database dump
+#                       (lego_*.sql.gz) there, or the newest photo archive
+#                       (lego_media_*.tar, once one exists), is older than
+#                       BACKUP_MAX_AGE_HOURS (default 26). Catches a backup cron
+#                       that does not run at all; backup-db.sh alarms on its
+#                       own failures.
 #   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 #   TELEGRAM_API_BASE   default https://api.telegram.org (tests point it elsewhere)
 
@@ -62,8 +69,11 @@ TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-$(cfg_get TELEGRAM_BOT_TOKEN)}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-$(cfg_get TELEGRAM_CHAT_ID)}"
 TELEGRAM_API_BASE="${TELEGRAM_API_BASE:-https://api.telegram.org}"
 STATE_DIR="${STATE_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/lego-uptime}"
+BACKUP_DIR="${BACKUP_DIR:-$(cfg_get BACKUP_DIR)}"
+BACKUP_MAX_AGE_HOURS="${BACKUP_MAX_AGE_HOURS:-$(cfg_get BACKUP_MAX_AGE_HOURS)}"
+BACKUP_MAX_AGE_HOURS="${BACKUP_MAX_AGE_HOURS:-26}"
 
-for num in FAIL_THRESHOLD REALERT_SECONDS HTTP_TIMEOUT; do
+for num in FAIL_THRESHOLD REALERT_SECONDS HTTP_TIMEOUT BACKUP_MAX_AGE_HOURS; do
   if ! [[ "${!num}" =~ ^[0-9]+$ ]] || (( ${!num} < 1 )); then
     echo "${num} must be a positive integer, got '${!num}'" >&2
     exit 2
@@ -128,6 +138,30 @@ check_containers() {
   done
 }
 
+# The reason texts are fixed (no age in hours), otherwise every hour would
+# count as a changed failure and repeat the alarm.
+check_backup() {
+  [[ -n "${BACKUP_DIR}" ]] || return 0
+  local limit=$((BACKUP_MAX_AGE_HOURS * 3600)) now newest
+  now="$(date +%s)"
+  if [[ ! -d "${BACKUP_DIR}" ]]; then
+    REASONS+=("backup: ${BACKUP_DIR} missing")
+    return
+  fi
+  newest="$(compgen -G "${BACKUP_DIR}/lego_*.sql.gz" | sort | tail -n1)" || newest=""
+  if [[ -z "${newest}" ]]; then
+    REASONS+=("backup: no database dump")
+  elif (( now - $(stat -c %Y "${newest}") > limit )); then
+    REASONS+=("backup: newest database dump older than ${BACKUP_MAX_AGE_HOURS} h")
+  fi
+  # Photo archives exist only since backup-db.sh archives media; until the
+  # first one is written their absence is not a failure.
+  newest="$(compgen -G "${BACKUP_DIR}/lego_media_*.tar" | sort | tail -n1)" || newest=""
+  if [[ -n "${newest}" ]] && (( now - $(stat -c %Y "${newest}") > limit )); then
+    REASONS+=("backup: newest photo archive older than ${BACKUP_MAX_AGE_HOURS} h")
+  fi
+}
+
 # ── Telegram ─────────────────────────────────────────────
 send_telegram() {
   local text="$1"
@@ -181,6 +215,7 @@ fmt_time() { date -d "@$1" '+%d.%m. %H:%M'; }
 # ── Run ──────────────────────────────────────────────────
 check_http
 check_containers
+check_backup
 
 NOW="$(date +%s)"
 HOST="$(hostname 2>/dev/null || echo unknown-host)"
