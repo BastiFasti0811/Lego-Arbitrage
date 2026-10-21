@@ -377,6 +377,41 @@ if [[ -s "${CALL_LOG}" ]]; then
   fail "expected no calls for an unknown argument"
 fi
 
+# --- Test 13: env files and backups lose group/other access before the build
+
+mode_of() { stat -c '%a' "$1"; }
+
+CURRENT_TEST="secrets: world-readable env files are tightened to owner-only"
+make_sandbox t13
+: > "${SANDBOX}/repo/backend/.env.bak-20260930"
+: > "${SANDBOX}/repo/backend/.env.example"
+chmod 644 "${SANDBOX}/repo/.env.prod" "${SANDBOX}/repo/backend/.env" \
+  "${SANDBOX}/repo/backend/.env.bak-20260930" "${SANDBOX}/repo/backend/.env.example"
+run_deploy
+
+if [[ "${DEPLOY_RC}" -ne 0 ]]; then
+  fail "expected exit 0, got ${DEPLOY_RC} (stderr: $(cat "${SANDBOX}/stderr.log"))"
+fi
+for f in .env.prod backend/.env backend/.env.bak-20260930; do
+  mode="$(mode_of "${SANDBOX}/repo/${f}")"
+  if [[ "${mode}" != "600" ]]; then
+    fail "expected ${f} to be 600 after the deploy, got ${mode}"
+  fi
+done
+if [[ "$(mode_of "${SANDBOX}/repo/backend/.env.example")" != "644" ]]; then
+  fail "the tracked template backend/.env.example must keep its mode"
+fi
+if ! grep -Fq "backend/.env.bak-20260930" "${SANDBOX}/stderr.log"; then
+  fail "expected a warning naming the env backup inside the repo directory"
+fi
+
+CURRENT_TEST="secrets: no backup, no warning"
+make_sandbox t13b
+run_deploy
+if grep -qi "env backups" "${SANDBOX}/stderr.log"; then
+  fail "no backup present, but a backup warning was printed"
+fi
+
 # --- Result -----------------------------------------------------------------
 
 if [[ "${FAILURES}" -gt 0 ]]; then

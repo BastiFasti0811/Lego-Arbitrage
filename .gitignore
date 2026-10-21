@@ -14,8 +14,11 @@ env/
 backend/uv.lock
 
 # Environment & Secrets
+# .env.* also covers backups such as backend/.env.bak-20260930 (public repo:
+# a stray `git add -A` must never pick them up); templates stay tracked.
 .env
-.env.prod
+.env.*
+!*.example
 *.env.local
 backend/.env
 

@@ -37,7 +37,8 @@ point at it any more.
    long as prod is served over plain HTTP (victus as of 20.10.2026), set
    `SESSION_COOKIE_SECURE=false`, otherwise the browser drops the session
    cookie and login fails.
-4. Replace every placeholder secret before the first start.
+4. Replace every placeholder secret before the first start, then
+   `chmod 600 .env.prod backend/.env` (see [Secrets](#secrets)).
 5. Create the persistent data directories below `DATA_ROOT`. On victus
    `DATA_ROOT` is still `/mnt/HC_Volume_105179687/lego-arbitrage`: the name
    comes from the Hetzner volume, the directory now lives on victus' local disk.
@@ -79,6 +80,32 @@ are unused now and can be deleted in the repository settings.
 If the deploy should run without a human again, the options are a
 self-hosted GitHub runner on victus that runs `bash scripts/deploy-prod.sh`,
 or SSH from the runner to victus over a private network such as Tailscale.
+
+## Secrets
+
+`.env.prod` and `backend/.env` hold every prod secret (database password,
+session secret, API keys, Telegram token, Catawiki cookie). Three rules keep
+them where they belong:
+
+- **Mode 0600.** compose reads both files as the deploying user, nobody else
+  needs them. `scripts/deploy-prod.sh` runs `chmod go-rwx` on both (and on any
+  `.env.bak*` it finds) before every build, so a fresh copy cannot stay 0644.
+- **Never in an image.** `backend/.dockerignore` keeps `.env`, `.env.*`
+  (except `.env.example`), `tests/` and `data/` out of the backend build
+  context; the containers get their settings from compose `env_file`. The root
+  `.dockerignore` does the same for the frontend context `.`. Check after a
+  build: `docker exec lego-api-prod sh -c 'ls -a /app'` lists no `.env*`
+  besides `.env.example`.
+- **Never in git, never in the repo directory.** The repository is public.
+  `.gitignore` ignores `.env.*` except `*.example`. Backups of an env file go
+  outside the checkout, e.g. `~/.local/share/lego-arbitrage/env-backups/`
+  (directory 0700, files 0600); the deploy script warns when it finds one in
+  the checkout.
+
+Images built before 22.10.2026 and the BuildKit cache still contain the env
+files of their time. Do not `docker builder prune` while the backend has no
+lock file (the pip layer pins today's versions); rotate the secrets instead if
+an image or `/var/lib/docker` backup ever left the host.
 
 ## Required Config Split
 
