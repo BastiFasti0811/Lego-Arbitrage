@@ -52,6 +52,10 @@ Bestehender Hinweis am Artikel: „Jetzt lohnt sich das Einstellen" — Marktlag
 Vom Nutzer je Listing gesetzter Mindestpreis. Kein Anpassungsvorschlag unterschreitet ihn.
 _Avoid_: Limit, Floor, Mindestgebot
 
-**Tages-Check**:
-Täglicher Celery-Lauf, der fällige Listings prüft und Anpassungsvorschläge erzeugt. Es gibt kein häufigeres Scanning für Listings.
+**Tages-Check** (`app.tasks.listing_check`, täglich 08:05):
+Täglicher Celery-Lauf, der fällige Listings prüft und Anpassungsvorschläge erzeugt. Es gibt kein häufigeres Scanning für Listings. Fällig ist ein ACTIVE-Listing, dessen `next_check_at` erreicht ist und das keinen offenen Vorschlag hat. Telegram bekommt eine Sammelnachricht nur, wenn etwas offen ist; die App zeigt dasselbe unter „Anpassungen“ (`GET /api/listings/due`).
+
+**Preistreppe**:
+Regel des Tages-Checks: je volles Prüfintervall (Default 14 Tage) ohne Preisänderung eine Stufe à `price_drop_percent` (Default 10 %), also 14/28/42 Tage = 1/2/3 Stufen, gerundet auf 1 € (unter 50 €) bzw. 5 €. Liegt der gespeicherte, zustandsbereinigte Marktpreis (Konsens oder eBay-Verkäufe, höchstens 7 Tage alt) unter 90 % der Treppe, gilt er. Nie unter der Schmerzgrenze. Antworten: Übernommen (Preis + Historie, neu planen), Später (3 Tage), Verwerfen (neu planen; die Treppe holt die Stufe nach).
+_Avoid_: Auto-Reduzierung
 _Avoid_: Scan, Monitoring

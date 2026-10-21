@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { copyListingText, downloadPhotos, PLATFORM_LABELS, platformCreateUrl } from "../pages/listingPrep";
+import { formatEuro } from "../lib/euro";
+import SuggestionActions from "./SuggestionActions";
 import { useToast } from "./toastContext";
 
 const PLATFORMS = ["KLEINANZEIGEN", "EBAY"];
@@ -302,6 +304,15 @@ function OpenListing({ itemId, listing, onDone }) {
         <button onClick={() => end.mutate()}
           className="text-xs px-2 py-1 rounded bg-bg-hover text-no-go border border-border">Beendet/geloescht</button>
       </div>
+      {listing.suggested_price != null && listing.status === "ACTIVE" && (
+        <div className="rounded-lg border border-lego-yellow/40 bg-bg-primary p-2 space-y-2">
+          <p className="text-xs text-text-primary">
+            Vorschlag Tages-Check: <b className="text-go-star">{formatEuro(listing.suggested_price)}</b>
+            {listing.suggestion_reason && <span className="text-text-secondary"> · {listing.suggestion_reason}</span>}
+          </p>
+          <SuggestionActions itemId={itemId} listing={listing} onDone={onDone} />
+        </div>
+      )}
       {error && <p className="text-xs text-no-go">{error}</p>}
       {listing.price_changes.length > 0 && (
         <p className="text-xs text-text-secondary">

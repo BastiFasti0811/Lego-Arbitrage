@@ -18,6 +18,7 @@ from app.ai import AIProviderError
 from app.models import get_session
 from app.models.inventory import InventoryItem, InventoryStatus
 from app.models.listing import OPEN_LISTING_STATUSES, Listing, ListingStatus
+from app.services.listing_check import days_online, item_label
 from app.services.listing_prepare import (
     ListingPrepareError,
     apply_text,
@@ -31,11 +32,17 @@ from app.services.listing_rules import (
     compute_next_check,
     default_min_price,
     default_price_type,
+    dismiss_suggestion,
+    is_at_floor,
+    is_snoozed,
+    snooze_suggestion,
     validate_activation,
 )
 
 logger = structlog.get_logger()
 router = APIRouter()
+# Uebersicht "Faellige Anpassungen" ueber alle Posten, gemountet unter /api/listings.
+overview_router = APIRouter()
 
 
 class ListingCreate(BaseModel):
@@ -102,6 +109,7 @@ class ListingResponse(BaseModel):
     suggested_price: float | None
     suggestion_reason: str | None
     suggestion_at: datetime | None
+    snoozed_until: datetime | None
     at_floor: bool
     price_changes: list[PriceChangeResponse]
     created_at: datetime
@@ -141,6 +149,7 @@ def to_listing_response(listing: Listing) -> ListingResponse:
         suggested_price=listing.suggested_price,
         suggestion_reason=listing.suggestion_reason,
         suggestion_at=listing.suggestion_at,
+        snoozed_until=listing.snoozed_until,
         at_floor=at_floor,
         price_changes=[PriceChangeResponse.model_validate(change) for change in listing.price_changes],
         created_at=listing.created_at,
@@ -387,6 +396,10 @@ async def update_listing(
             raise HTTPException(status_code=400, detail="Nur Wechsel zwischen ACTIVE und PAUSED erlaubt")
         listing.status = data.status
 
+    if data.min_price is not None and data.min_price != listing.min_price:
+        # Neue Schmerzgrenze: der einmalige Hinweis darf wieder kommen.
+        listing.floor_notified_at = None
+
     for field in ("url", "min_price", "price_type", "check_interval_days", "price_drop_percent", "title", "body"):
         value = getattr(data, field)
         if value is not None:
@@ -425,3 +438,120 @@ async def delete_listing(item_id: int, listing_id: int, session: AsyncSession = 
     await session.delete(listing)
     await session.commit()
     return {"status": "deleted", "id": listing_id}
+
+
+# ── Anpassungsvorschlaege (Tages-Check, PR 3) ─────────────────────────
+
+
+async def _get_open_suggestion(item_id: int, listing_id: int, session: AsyncSession) -> Listing:
+    listing = await _get_listing(item_id, listing_id, session)
+    if listing.status != ListingStatus.ACTIVE.value:
+        raise HTTPException(status_code=400, detail="Vorschlaege gibt es nur fuer aktive Listings")
+    if listing.suggested_price is None:
+        raise HTTPException(status_code=400, detail="Kein offener Preisvorschlag")
+    return listing
+
+
+@router.post("/{item_id}/listings/{listing_id}/suggestion/accept", response_model=ListingResponse)
+async def accept_suggestion(item_id: int, listing_id: int, session: AsyncSession = Depends(get_session)):
+    """"Uebernommen": Sebastian hat den Preis in der Anzeige selbst geaendert.
+    Setzt current_price, schreibt das Price-Change-Event, plant neu."""
+    listing = await _get_open_suggestion(item_id, listing_id, session)
+    new_price = listing.suggested_price
+    if listing.min_price is not None and new_price < listing.min_price:
+        raise HTTPException(status_code=400, detail="Vorschlag liegt unter der Schmerzgrenze")
+    old_price = listing.current_price
+    change = apply_price_change(listing, new_price, datetime.now(UTC))
+    if change is not None:
+        session.add(change)
+    await session.commit()
+    await session.refresh(listing)
+    logger.info("listing.suggestion_accepted", item_id=item_id, listing_id=listing_id, old=old_price, new=new_price)
+    return to_listing_response(listing)
+
+
+@router.post("/{item_id}/listings/{listing_id}/suggestion/snooze", response_model=ListingResponse)
+async def snooze_listing_suggestion(item_id: int, listing_id: int, session: AsyncSession = Depends(get_session)):
+    """"Spaeter": Vorschlag bleibt offen, 3 Tage keine Erinnerung."""
+    listing = await _get_open_suggestion(item_id, listing_id, session)
+    snooze_suggestion(listing, datetime.now(UTC))
+    await session.commit()
+    await session.refresh(listing)
+    logger.info("listing.suggestion_snoozed", item_id=item_id, listing_id=listing_id)
+    return to_listing_response(listing)
+
+
+@router.post("/{item_id}/listings/{listing_id}/suggestion/dismiss", response_model=ListingResponse)
+async def dismiss_listing_suggestion(item_id: int, listing_id: int, session: AsyncSession = Depends(get_session)):
+    """"Verwerfen": Vorschlag weg, Preis bleibt, naechster Check in einem Intervall."""
+    listing = await _get_open_suggestion(item_id, listing_id, session)
+    dismiss_suggestion(listing, datetime.now(UTC))
+    await session.commit()
+    await session.refresh(listing)
+    logger.info("listing.suggestion_dismissed", item_id=item_id, listing_id=listing_id)
+    return to_listing_response(listing)
+
+
+class DueListingEntry(BaseModel):
+    item_id: int
+    item_label: str
+    condition: str | None
+    days_online: int | None
+    snoozed: bool
+    listing: ListingResponse
+
+
+class DueAdjustmentsResponse(BaseModel):
+    # Zahl fuer das Menue-Badge: offene, nicht zurueckgestellte Vorschlaege plus Leichen.
+    due_count: int
+    suggestions: list[DueListingEntry]
+    at_floor: list[DueListingEntry]
+    sold_leftovers: list[DueListingEntry]
+
+
+def build_due_overview(items, now: datetime) -> DueAdjustmentsResponse:
+    suggestions: list[DueListingEntry] = []
+    at_floor: list[DueListingEntry] = []
+    leftovers: list[DueListingEntry] = []
+
+    def entry(item, listing) -> DueListingEntry:
+        return DueListingEntry(
+            item_id=item.id,
+            item_label=item_label(item),
+            condition=item.condition,
+            days_online=days_online(listing, now),
+            snoozed=is_snoozed(listing, now),
+            listing=to_listing_response(listing),
+        )
+
+    for item in items:
+        for listing in item.listings:
+            if item.status == InventoryStatus.SOLD.value:
+                if listing.status in (ListingStatus.ACTIVE.value, ListingStatus.PAUSED.value):
+                    leftovers.append(entry(item, listing))
+                continue
+            if item.status != InventoryStatus.HOLDING.value or listing.status != ListingStatus.ACTIVE.value:
+                continue
+            if listing.suggested_price is not None:
+                suggestions.append(entry(item, listing))
+            elif is_at_floor(listing):
+                at_floor.append(entry(item, listing))
+
+    suggestions.sort(key=lambda e: (e.snoozed, -(e.days_online or 0), e.listing.id))
+    at_floor.sort(key=lambda e: (-(e.days_online or 0), e.listing.id))
+    due_count = sum(1 for e in suggestions if not e.snoozed) + len(leftovers)
+    return DueAdjustmentsResponse(
+        due_count=due_count, suggestions=suggestions, at_floor=at_floor, sold_leftovers=leftovers
+    )
+
+
+@overview_router.get("/due", response_model=DueAdjustmentsResponse)
+async def due_adjustments(session: AsyncSession = Depends(get_session)):
+    """"Faellige Anpassungen": offene Vorschlaege, Listings an der Schmerzgrenze
+    und verkaufte Posten mit laufender Anzeige."""
+    result = await session.execute(
+        select(InventoryItem).where(
+            InventoryItem.status.in_((InventoryStatus.HOLDING.value, InventoryStatus.SOLD.value))
+        )
+    )
+    return build_due_overview(result.scalars().all(), datetime.now(UTC))

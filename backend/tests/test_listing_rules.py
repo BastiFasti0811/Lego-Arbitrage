@@ -36,9 +36,18 @@ def test_activation_requires_positive_price_and_min_price():
     assert validate_activation("KLEINANZEIGEN", 50.0, 35.0) is None
 
 
-def _listing(price=50.0, interval=14):
+def _listing(price=50.0, interval=14, min_price=35.0):
     return SimpleNamespace(
-        id=1, current_price=price, check_interval_days=interval, next_check_at=None
+        id=1,
+        current_price=price,
+        check_interval_days=interval,
+        next_check_at=None,
+        min_price=min_price,
+        suggested_price=None,
+        suggestion_reason=None,
+        suggestion_at=None,
+        snoozed_until=None,
+        floor_notified_at=None,
     )
 
 

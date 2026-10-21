@@ -225,6 +225,14 @@ export const api = {
     request(`/inventory/${itemId}/listings/${listingId}`, { method: "PATCH", body: JSON.stringify(data) }),
   endListing: (itemId, listingId) => request(`/inventory/${itemId}/listings/${listingId}/end`, { method: "POST" }),
   deleteListing: (itemId, listingId) => request(`/inventory/${itemId}/listings/${listingId}`, { method: "DELETE" }),
+  // Tages-Check (PR 3): faellige Anpassungen und die drei Antworten auf einen Vorschlag.
+  dueAdjustments: () => request("/listings/due"),
+  acceptSuggestion: (itemId, listingId) =>
+    request(`/inventory/${itemId}/listings/${listingId}/suggestion/accept`, { method: "POST" }),
+  snoozeSuggestion: (itemId, listingId) =>
+    request(`/inventory/${itemId}/listings/${listingId}/suggestion/snooze`, { method: "POST" }),
+  dismissSuggestion: (itemId, listingId) =>
+    request(`/inventory/${itemId}/listings/${listingId}/suggestion/dismiss`, { method: "POST" }),
   splitInventory: (itemId, splitQuantity) =>
     request(`/inventory/${itemId}/split`, { method: "POST", body: JSON.stringify({ split_quantity: splitQuantity }) }),
   listProductGroups: () => request("/inventory/product-groups"),
