@@ -64,8 +64,8 @@ server; add it under its own `Host` alias and point `origin` at that alias.
 
 ## Continuous Integration
 
-[ci.yml](../.github/workflows/ci.yml) runs the `verify` job (deploy- and uptime-script
-tests, frontend lint and build, pytest, ruff, `alembic upgrade head` and
+[ci.yml](../.github/workflows/ci.yml) runs the `verify` job (tests of the deploy,
+uptime, health-check and rollback scripts, frontend lint and build, pytest, ruff, `alembic upgrade head` and
 `alembic check` against an empty PostgreSQL, Compose and Caddy validation) on
 pull requests against `main`, on pushes to `main` and on manual dispatch. PR
 runs use their own concurrency group, so a new push cancels the stale run.
@@ -108,6 +108,8 @@ After a merge to `main` with a green `verify` run, deploy on victus:
 cd /srv/lego-arbitrage
 git branch --show-current          # must print: main
 bash scripts/deploy-prod.sh        # pulls main, builds, migrates, swaps, health-checks
+# unattended (autopilot): roll back by itself when the checks fail
+bash scripts/deploy-prod.sh --auto-rollback
 git fetch origin && test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" && echo "prod = origin/main"
 curl -fsS http://localhost/lego/health
 ```
@@ -133,7 +135,20 @@ it. The script then performs these steps in order:
    new images
 5. Poll the API health endpoint for up to 60 seconds until it answers 200
    (PostgreSQL and Redis reachable) **and** reports the deployed commit as
-   `version`; otherwise the script exits 1 and prints the API log
+   `version`; otherwise the script prints the API log and fails
+6. Run the full post-deploy check
+   [scripts/health-check-prod.sh](../scripts/health-check-prod.sh)
+   `--expect-sha <deployed commit> --wait 150` (all six containers, Caddy
+   route, worker log; see [Post-Deploy Health Check](#post-deploy-health-check))
+
+When step 5 or 6 fails, the new containers are already running. The script
+then prints the commit that ran before the pull and the command to go back
+(`bash scripts/rollback-prod.sh <previous commit>`) and exits 1. With
+`--auto-rollback` it runs that rollback itself, still holding the deploy
+lock, and exits 1 afterwards either way: a rolled back deploy is a failed
+deploy. A failed build or migration (steps 2 and 3) never triggers a
+rollback, because the old containers were not touched. `FULL_HEALTH_WAIT`
+changes the 150 s budget, `SKIP_FULL_HEALTH_CHECK=1` skips step 6.
 
 Before the build the script exports `GIT_SHA=$(git rev-parse HEAD)`;
 [docker-compose.prod.yml](../docker-compose.prod.yml) passes it as build arg
@@ -171,6 +186,38 @@ bash tests/deploy-prod.test.sh
 ```
 
 ## Health Checks
+
+### Post-Deploy Health Check
+
+[scripts/health-check-prod.sh](../scripts/health-check-prod.sh) is the check
+the merge rule demands after every deploy and rollback. It is read-only and
+exits 0 when everything passes, 1 on a failed check, 2 on a usage error:
+
+- each of `api worker beat frontend postgres redis` (compose project
+  `lego-arbitrage`, found by label, so test stacks work too) has exactly one
+  container that is `running`, not `unhealthy`, no longer `starting`, and not
+  in a restart loop (3 or more restarts with the last start under 10 minutes
+  ago; a single old restart is only a `WARN`)
+- `http://localhost/lego/health` (through Caddy) answers 200 with
+  `"status": "healthy"` and reports the expected commit as `version`
+- `docker logs --since 5m` of the worker contains no
+  `Traceback (most recent call last)`
+
+```bash
+cd /srv/lego-arbitrage
+bash scripts/health-check-prod.sh                      # expects git rev-parse HEAD
+bash scripts/health-check-prod.sh --expect-sha 671e96c # a specific commit (prefix >= 7)
+bash scripts/health-check-prod.sh --wait 150           # retry while containers start
+```
+
+`--wait` retries every 5 s. A restart loop or a worker traceback ends it at
+once, since neither heals by waiting. Right after `up -d` the API container
+stays `starting` until its first Docker healthcheck, 30 s later, so a green
+result takes at least that long. Variables (`HEALTH_URL`, `COMPOSE_PROJECT`,
+`LOG_SINCE`, `MAX_RESTARTS`, `RESTART_WINDOW`, ...) are listed in the header
+of the script; tests: [tests/health-check-prod.test.sh](../tests/health-check-prod.test.sh).
+
+### Endpoints And Logs
 
 ```bash
 docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f --tail=200
@@ -330,21 +377,85 @@ off-site copy — the local dump alone does not survive volume loss).
 
 ## Rollback
 
+[scripts/rollback-prod.sh](../scripts/rollback-prod.sh) puts the stack back
+on an earlier commit, usually the one that ran before the failed deploy
+(`deploy-prod.sh` prints it). Always try `--dry-run` first: it resolves the
+commit, compares the schema and shows the current state, but changes nothing.
+
+```bash
+cd /srv/lego-arbitrage
+bash scripts/rollback-prod.sh --dry-run <previous-commit>
+bash scripts/rollback-prod.sh <previous-commit>
+```
+
+Steps: deploy lock (the same as `deploy-prod.sh`), `git fetch origin`,
+refuse a checkout with local changes to tracked files, schema comparison,
+`git checkout --detach <commit>`, `docker compose build` with
+`GIT_SHA=<commit>` while the old containers keep serving, `up -d`, then
+`health-check-prod.sh --expect-sha <commit> --wait 180`. A failed build
+restores the previous checkout and leaves the containers alone (exit 1). If
+the rolled back stack fails its check too, the script prints the api and
+worker logs and exits 1; then roll back further by hand.
+
+The script runs from a private copy of itself and of the health check (in
+`$TMPDIR`), because the target commit usually predates both files and
+`git checkout` would remove them under the running script.
+
+**Migrations are never rolled back.** The script reads the Alembic revision
+from `alembic_version` in the postgres container and compares it with the
+revisions in the target commit:
+
+- equal to the target's head: nothing to say
+- unknown to the target (`WARN: SCHEMA AHEAD`): the target's revision is
+  older than the database's. The old code runs against the newer schema,
+  which is fine as long as the migrations followed the backward-compatibility
+  rule above. If not: ticket, deliberate `alembic downgrade` by a human, no
+  further deploys that night (merge-und-deploy rule)
+- older than the target's head (`WARN: SCHEMA BEHIND`): the target expects
+  migrations the database does not have; the rollback does not run them
+
+Afterwards the checkout is on a detached HEAD, so `scripts/deploy-prod.sh`
+refuses to run until it is back on `main`. Revert the broken merge on main
+(`git revert -m 1 <merge-sha>`, PR, green `verify`), then
+`git checkout main && bash scripts/deploy-prod.sh`.
+
+Variables for test stacks: `COMPOSE_OVERRIDE` (second compose file),
+`COMPOSE_PROJECT` (passed as `-p`), `HEALTH_URL`, `LOCK_FILE`,
+`SKIP_FETCH=1`, `HEALTH_WAIT`; full list in the script header. Tests:
+[tests/rollback-prod.test.sh](../tests/rollback-prod.test.sh) (real git
+repository, stubbed docker and curl).
+
+Manual fallback without the script:
+
 ```bash
 git fetch --all --tags
 git checkout <known-good-commit-or-tag>
 GIT_SHA="$(git rev-parse HEAD)" docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
-curl -fsS http://127.0.0.1/lego/health   # version must equal the checked-out commit
+bash scripts/health-check-prod.sh --wait 150   # or: curl -fsS http://127.0.0.1/lego/health
 ```
 
-The checkout is now on a detached HEAD, so `scripts/deploy-prod.sh` refuses
-to run until it is back on `main`. Once the fix is merged:
-`git checkout main && bash scripts/deploy-prod.sh`.
+### Rollback Probe (21.10.2026)
 
-Rolling back the code does not downgrade the schema. As long as migrations
-follow the backward-compatibility rule above, the previous release runs fine
-against the newer schema; a schema downgrade (`alembic downgrade`) is a
-deliberate manual step.
+Run against a separate stack (`-p lego-rbtest`, prod compose file plus an
+override without fixed container names and without the Caddy network, API on
+`127.0.0.1:18000`, its own data directory), never against `*-prod`:
+
+1. Good commit deployed, `health-check-prod.sh --expect-sha <good> --wait 150`
+   green after 7 attempts (API `starting` until its first Docker healthcheck).
+2. Commit with `import rbtest_absichtlich_kaputt` at the top of
+   `backend/app/main.py` built and started: the API exits with
+   `ModuleNotFoundError` and Docker restarts it in a loop. The health check
+   fails with `api: restarting (10 restarts)` and
+   `health: HTTP 000`, exit 1, and stops waiting at once.
+3. `rollback-prod.sh --dry-run <good>`: schema matches, plan printed,
+   nothing changed.
+4. `rollback-prod.sh <good>`: exit 0 after **36 s** from start to green
+   check, of which about 30 s were the wait for the API container's first
+   Docker healthcheck; `/health` reported the good commit again.
+
+Not covered by the probe: `deploy-prod.sh --auto-rollback` end to end,
+because the script polls the fixed container `lego-api-prod`; that path is
+covered by [tests/deploy-prod.test.sh](../tests/deploy-prod.test.sh).
 
 ## Catawiki Home Scanner
 
