@@ -68,7 +68,10 @@ on_exit() {
     return 0
   fi
   if (( rc == 2 && OFFSITE_FAILED == 1 )); then
-    tg_send "🟠 Lego-Backup (${HOST}): lokale Sicherung ok, Off-site-Kopie nach ${BACKUP_REMOTE:-?} fehlgeschlagen. Log: ${BACKUP_DIR:-?}/cron.log" || true
+    # Strip any "user:secret@" so credentials embedded in the target never reach the chat.
+    local remote_shown
+    remote_shown="$(printf '%s' "${BACKUP_REMOTE:-?}" | sed -E 's#[^ /@:]+:[^ /@]+@#***@#')"
+    tg_send "🟠 Lego-Backup (${HOST}): lokale Sicherung ok, Off-site-Kopie nach ${remote_shown} fehlgeschlagen. Log: ${BACKUP_DIR:-?}/cron.log" || true
   else
     tg_send "🔴 Lego-Backup (${HOST}) fehlgeschlagen im Schritt '${STEP}' (Exit ${rc}). Kein neues Backup von heute. Log: ${BACKUP_DIR:-${DATA_ROOT:-?}/backups}/cron.log" || true
   fi
