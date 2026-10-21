@@ -122,6 +122,17 @@ an image or `/var/lib/docker` backup ever left the host.
   andere Apps; ohne den Pfad gilt das Session-Cookie fuer den ganzen Host.
   Der Browser prueft den Pfad gegen `/lego/api/...`, dass Caddy das Praefix vor
   dem Backend abschneidet, aendert daran nichts. Lokal bleibt der Default `/`.
+- Der Cookie-Pfad ist keine Sicherheitsgrenze gegen die Nachbar-Apps. Schreibende
+  Aufrufe (POST/PUT/PATCH/DELETE unter `/api/*`, ausser `/api/remote-scan/runner/*`)
+  lehnt die API mit 403 ab, wenn der Browser `Sec-Fetch-Site: same-site`/`cross-site`
+  meldet oder ein `Origin` schickt, der weder zum `Host` passt noch in
+  `CORS_ALLOWED_ORIGINS` steht (`backend/app/security/origin_guard.py`). Das
+  schliesst Formular-POSTs von anderen Ports desselben Hosts. Skript-Code einer
+  Nachbar-App unter `http://<host>/...` bleibt fuer den Browser same-origin; dagegen
+  hilft erst ein eigener Origin fuer Lego (offen, zusammen mit HTTPS).
+- `CORS_ALLOWED_ORIGINS` bleibt in Produktion leer (Frontend und API teilen sich
+  den Origin). Ein Eintrag oeffnet CORS mit Cookie und schreibende Aufrufe fuer
+  genau diesen Origin.
 - Dashboard-Sessions liegen in Redis (Key `lego:session:*`, Laufzeit 30 Tage),
   der Login-Zaehler ebenfalls (`lego:login_attempts:<ip>`, bei IPv6 pro /64; 5 Fehlversuche pro
   15 Minuten, danach HTTP 429). Ist Redis weg, ist niemand angemeldet (401)

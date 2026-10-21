@@ -138,6 +138,12 @@ class Settings(BaseSettings):
     # Der Browser vergleicht mit dem Pfad, den er aufruft (/lego/api/...);
     # dass Caddy das Praefix vor dem Backend abschneidet, spielt keine Rolle.
     session_cookie_path: str = Field(default="/", pattern=r"^/[^;\s]*$")
+    # Fremde Origins, die die API mit Cookie aufrufen duerfen (CORS) und deren
+    # schreibende Aufrufe der Origin-Guard durchlaesst (app/security/origin_guard.py).
+    # Kommagetrennt, z. B. "https://lego.example.org". Leer = nur der eigene
+    # Origin: Prod liefert Frontend und API unter demselben Origin aus, lokal
+    # leitet der Vite-Dev-Server /api weiter (auch same-origin).
+    cors_allowed_origins: str = ""
 
     # ── Media / Uploads ─────────────────────────────────
     media_root: Path = Path("data")
@@ -155,6 +161,11 @@ class Settings(BaseSettings):
     heartbeat_realert_hours: int = 6  # Min hours between repeat alerts per task
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "case_sensitive": False}
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        """CORS_ALLOWED_ORIGINS als Liste, ohne Leereintraege und Schraegstrich am Ende."""
+        return [o.strip().rstrip("/") for o in self.cors_allowed_origins.split(",") if o.strip()]
 
     @property
     def build_version(self) -> str:

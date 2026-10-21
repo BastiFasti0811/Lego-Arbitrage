@@ -265,6 +265,28 @@ async def test_request_then_job_then_results_clear_the_request(db, monkeypatch):
     assert nxt["run"] is True and nxt["job_id"] != job["job_id"]
 
 
+async def test_cookie_header_only_comes_with_an_issued_job(db, monkeypatch):
+    # Security-Nachtlauf 21.10.2026 (Ticket 1e3cd68a, Punkt 4): vorher lag der
+    # Catawiki-Cookie in jeder Poll-Antwort, auch ohne faelligen Auftrag.
+    monkeypatch.setattr(remote_scan, "get_settings_map", AsyncMock(return_value={
+        "catawiki_scan_urls": "https://www.catawiki.com/de/a/1\n", "catawiki_scan_frequency": "off",
+        "catawiki_cookie_header": "cw_session=geheim", "catawiki_user_agent": "UA",
+    }))
+    t0 = datetime(2026, 9, 25, 10, 0, tzinfo=UTC)
+
+    idle = await remote_scan.runner_job(db, now=t0)
+    assert idle["run"] is False and idle["cookie_header"] is None
+    assert idle["scan_urls"] and idle["user_agent"] == "UA"  # --force --dry-run braucht sie weiter
+
+    await remote_scan.request_scan(db, now=t0)
+    issued = await remote_scan.runner_job(db, now=t0)
+    assert issued["run"] is True and issued["cookie_header"] == "cw_session=geheim"
+
+    # Folge-Poll waehrend der Auftrag laeuft: kein zweiter Auftrag, kein Cookie.
+    busy = await remote_scan.runner_job(db, now=t0 + timedelta(minutes=10))
+    assert busy["run"] is False and busy["cookie_header"] is None
+
+
 async def test_results_without_matching_job_or_version_are_rejected(db, monkeypatch):
     monkeypatch.setattr(remote_scan, "get_settings_map", AsyncMock(return_value={
         "catawiki_scan_urls": "https://www.catawiki.com/de/a/1\n", "catawiki_scan_frequency": "off",

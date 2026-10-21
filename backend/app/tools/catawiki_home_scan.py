@@ -13,7 +13,8 @@ Von Hand im Container:
 
     python -m app.tools.catawiki_home_scan
     ... --dry-run           # bei Auftrag scannen und ausgeben, nichts an Prod schicken
-    ... --force --dry-run   # auch ohne Auftrag scannen (nur zum Testen; Prod nimmt nichts an)
+    ... --force --dry-run   # auch ohne Auftrag scannen (nur zum Testen; Prod nimmt nichts an,
+                            # und ohne Auftrag liefert Prod keinen Catawiki-Cookie mit)
 
 Konfiguration (Umgebung oder Datei ~/.lego-arbitrage/home-scan.env,
 Zeilen KEY=VALUE):
