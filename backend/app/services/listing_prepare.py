@@ -18,7 +18,8 @@ from urllib.parse import urlparse
 import structlog
 
 from app.ai import AIProviderError, ListingText, get_provider
-from app.domain.condition import condition_ad_label, condition_ad_title_suffix
+from app.domain.condition import condition_ad_label, condition_ad_title_suffix, condition_value_factor
+from app.engine.market_consensus import PriceBasis
 from app.models.inventory import InventoryItem, InventoryItemType, InventoryStatus
 from app.models.listing import OPEN_LISTING_STATUSES, Listing, ListingPlatform, ListingStatus, PriceType
 from app.services.listing_rules import default_price_type
@@ -64,21 +65,46 @@ def listing_name(item: InventoryItem) -> str:
     return f"LEGO {item.set_number} {_LEGO_PREFIX.sub('', item.set_name)}"
 
 
+def condition_market_price(item: InventoryItem) -> float | None:
+    """Marktpreis der Position, umgerechnet auf ihren Zustand.
+
+    Die Lego-Preisquellen (Konsens, BrickMerge, Analyse-Historie) liefern den
+    Preis fuer neue, vollstaendige Ware. Ein gebrauchtes Set bekam deshalb den
+    OVP-Preis vorgeschlagen. Der Faktor kommt aus derselben Tabelle wie im
+    Deal-Checker (`condition_value_factor`).
+
+    Ausnahme EBAY_SOLD: die manuelle Neubewertung sonstiger Artikel sucht ohne
+    Zustand, ihr Median mischt neue und gebrauchte Verkaeufe schon. Ein
+    Abschlag darauf zaehlte den Zustand doppelt.
+    """
+    if item.current_market_price is None:
+        return None
+    if item.market_price_basis == PriceBasis.EBAY_SOLD:
+        return item.current_market_price
+    return round(item.current_market_price * condition_value_factor(item.condition), 2)
+
+
 def draft_price(item: InventoryItem, listing: Listing | None, body_price: float | None) -> float | None:
     """Preis-Fallback-Kette fuer Entwuerfe und Text-Refresh.
 
     Reihenfolge: expliziter Preis aus dem Request-Body, dann der laufende
     Anzeigenpreis eines schon eingestellten Listings (ACTIVE/PAUSED — beim
-    Text-Refresh gibt es keinen Body-Preis), dann der Marktpreis der Position,
-    dann die Mitte der KI-Preisspanne (nur wenn beide Grenzen bekannt sind),
-    dann der 1,5-fache Einkaufspreis. None, wenn keine Quelle greift.
+    Text-Refresh gibt es keinen Body-Preis), dann der Marktpreis der Position
+    nach Zustand (`condition_market_price`), dann die Mitte der KI-Preisspanne
+    (nur wenn beide Grenzen bekannt sind), dann der 1,5-fache Einkaufspreis.
+    None, wenn keine Quelle greift.
+
+    Die KI-Spanne und der Einkaufspreis bleiben ohne Abschlag: die KI sieht den
+    Zustand auf den Fotos, und der Einkaufspreis wurde schon fuer genau diesen
+    Zustand bezahlt.
     """
     if body_price is not None:
         return body_price
     if listing is not None and listing.status in (ListingStatus.ACTIVE.value, ListingStatus.PAUSED.value):
         return listing.current_price
-    if item.current_market_price is not None:
-        return item.current_market_price
+    market = condition_market_price(item)
+    if market is not None:
+        return market
     if item.ai_price_min is not None and item.ai_price_max is not None:
         return (item.ai_price_min + item.ai_price_max) / 2
     if item.buy_price is not None:
