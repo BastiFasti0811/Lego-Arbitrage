@@ -5,6 +5,7 @@ import GoalProgress from "../components/GoalProgress";
 import StatCard from "../components/StatCard";
 import ListingBadges from "../components/ListingBadges";
 import ListingManager from "../components/ListingManager";
+import MarketAge from "../components/MarketAge";
 import PhotoFirstModal from "../components/PhotoFirstModal";
 import PriceBasis from "../components/PriceBasis";
 import ValuationStatus from "../components/ValuationStatus";
@@ -634,7 +635,12 @@ export default function Inventar() {
             sub={`${summary.lego_sold} verkauft`}
           />
           <StatCard label="Investiert" value={formatMoney(summary.total_invested)} />
-          <StatCard label="Aktueller Wert" value={formatMoney(summary.current_value)} color="text-lego-yellow" />
+          <StatCard
+            label="Aktueller Wert"
+            value={formatMoney(summary.current_value)}
+            sub={summary.stale_market_values > 0 ? `${summary.stale_market_values} Marktwert${summary.stale_market_values > 1 ? "e" : ""} veraltet` : undefined}
+            color="text-lego-yellow"
+          />
           <StatCard label="Unrealisiert" value={`${summary.unrealized_profit >= 0 ? "+" : ""}${formatMoney(summary.unrealized_profit)}`} sub={`${summary.unrealized_roi_percent.toFixed(1)}%`} color={profitColor(summary.unrealized_profit)} />
         </div>
       )}
@@ -781,12 +787,13 @@ export default function Inventar() {
                   {item.current_market_price && (
                     <>
                       <div className="text-text-muted text-xs mt-2">Marktwert</div>
-                      <div className="text-lego-yellow font-[family-name:var(--font-mono)] font-semibold">
+                      <div className={`text-lego-yellow font-[family-name:var(--font-mono)] font-semibold ${item.market_price_stale ? "opacity-60" : ""}`}>
                         <PriceBasis basis={item.market_price_basis}>{formatMoney(item.current_market_price)}</PriceBasis>
                       </div>
+                      <MarketAge updatedAt={item.market_price_updated_at} stale={item.market_price_stale} />
                       {/* Ohne Kaufpreis (Dachbodenfund) gibt es keinen Gewinn -- nicht "+0 €" zeigen. */}
                       {item.unrealized_profit != null && (
-                        <div className={`font-[family-name:var(--font-mono)] text-sm font-bold ${profitColor(item.unrealized_profit)}`}>
+                        <div className={`font-[family-name:var(--font-mono)] text-sm font-bold ${profitColor(item.unrealized_profit)} ${item.market_price_stale ? "opacity-60" : ""}`}>
                           {item.unrealized_profit > 0 ? "+" : ""}{formatMoney(item.unrealized_profit)}
                           {item.unrealized_roi_percent != null && (
                             <span className="text-xs ml-1">({item.unrealized_roi_percent.toFixed(1)}%)</span>

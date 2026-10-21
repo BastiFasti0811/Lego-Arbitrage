@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai import AIProviderError, ItemDraft, get_provider, prepare_photo
 from app.api.routes.listings import ListingResponse, open_listing_responses
 from app.config import settings
+from app.domain.market_freshness import is_market_price_stale
 from app.engine.market_consensus import PriceBasis
 from app.engine.roi_calculator import calculate_ebay_fees
 from app.models import AnalysisHistoryEntry, DealFeedback, LegoSet, get_session
@@ -204,6 +205,9 @@ class InventoryResponse(BaseModel):
     current_market_price: float | None
     market_price_basis: str | None = None
     market_price_updated_at: datetime | None
+    # Vom Server berechnet, damit die Oberflaeche dieselbe Altersregel nutzt
+    # wie Bewertungslauf und Listing-Check (app.domain.market_freshness).
+    market_price_stale: bool = False
     unrealized_profit: float | None
     unrealized_roi_percent: float | None
     sell_signal_active: bool
@@ -230,6 +234,9 @@ class PortfolioSummary(BaseModel):
     unrealized_roi_percent: float
     total_realized_profit: float
     sell_signals_active: int
+    # Gehaltene Posten, deren Marktwert aelter als MARKET_MAX_AGE_DAYS ist.
+    # Sie stecken weiter in current_value -- mit dem Wert, den sie zuletzt hatten.
+    stale_market_values: int = 0
     # Zielzaehler Verkauf (projekt-ziel: 30 von 49 Lego-Posten inseriert, 15 verkauft).
     # Posten, nicht Stueck; "inseriert" heisst: mindestens eine Anzeige war je aktiv.
     lego_items: int = 0
@@ -1005,6 +1012,7 @@ async def portfolio_summary(session: AsyncSession = Depends(get_session)):
 
     holding = [i for i in items if i.status == InventoryStatus.HOLDING.value]
     sold = [i for i in items if i.status == InventoryStatus.SOLD.value]
+    now = datetime.now(UTC)
 
     priced_holding = [i for i in holding if i.buy_price is not None]
     total_invested = sum(i.buy_price + (i.buy_shipping or 0) for i in priced_holding)
@@ -1028,6 +1036,7 @@ async def portfolio_summary(session: AsyncSession = Depends(get_session)):
         unrealized_roi_percent=round((unrealized / total_invested) * 100, 1) if total_invested > 0 else 0,
         total_realized_profit=round(sum(i.realized_profit or 0 for i in sold), 2),
         sell_signals_active=sum(1 for i in holding if i.sell_signal_active),
+        stale_market_values=sum(1 for i in holding if _market_price_stale(i, now)),
         **lego_listing_counts(items),
     )
 
@@ -1312,6 +1321,12 @@ def _to_photo_response(photo: InventoryPhoto) -> InventoryPhotoResponse:
     )
 
 
+def _market_price_stale(item: InventoryItem, now: datetime) -> bool:
+    return item.current_market_price is not None and is_market_price_stale(
+        item.market_price_updated_at, now
+    )
+
+
 def _to_response(item: InventoryItem) -> InventoryResponse:
     has_buy_price = item.buy_price is not None
     total_invested = round(item.buy_price + (item.buy_shipping or 0), 2) if has_buy_price else None
@@ -1345,6 +1360,7 @@ def _to_response(item: InventoryItem) -> InventoryResponse:
         current_market_price=item.current_market_price,
         market_price_basis=item.market_price_basis,
         market_price_updated_at=item.market_price_updated_at,
+        market_price_stale=_market_price_stale(item, datetime.now(UTC)),
         unrealized_profit=item.unrealized_profit,
         unrealized_roi_percent=item.unrealized_roi_percent,
         sell_signal_active=item.sell_signal_active,
