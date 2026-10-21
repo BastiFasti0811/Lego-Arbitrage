@@ -23,14 +23,19 @@ def _listing(status, listed_at=None, platform="KLEINANZEIGEN"):
     return SimpleNamespace(status=status, listed_at=listed_at, platform=platform)
 
 
-def _item(item_id=1, *, status="HOLDING", item_type="LEGO", listings=(), photos=(), market=None, buy=None):
+def _item(
+    item_id=1, *, status="HOLDING", item_type="LEGO", listings=(), photos=(), market=None, buy=None,
+    condition="NEW_SEALED",
+):
     return SimpleNamespace(
         id=item_id,
         status=status,
         item_type=item_type,
+        condition=condition,
         listings=list(listings),
         photos=list(photos),
         current_market_price=market,
+        market_price_basis=None,
         ai_price_min=None,
         ai_price_max=None,
         buy_price=buy,
@@ -85,6 +90,17 @@ def test_pick_prefers_photos_then_highest_price_and_skips_ineligible():
     picked = pick_pack_candidates(items, limit=3)
 
     assert [i.id for i in picked] == [3, 2, 8]
+
+
+def test_pick_ranks_by_condition_adjusted_price():
+    # Gebraucht unvollstaendig 100 -> 50 liegt hinter neu 60.
+    photo = SimpleNamespace(filename="a.jpg")
+    items = [
+        _item(1, market=100.0, photos=[photo], condition="USED_INCOMPLETE"),
+        _item(2, market=60.0, photos=[photo]),
+    ]
+
+    assert [i.id for i in pick_pack_candidates(items)] == [2, 1]
 
 
 def test_pick_respects_limit_of_five_by_default():

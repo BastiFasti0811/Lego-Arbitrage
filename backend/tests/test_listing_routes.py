@@ -23,6 +23,7 @@ from app.api.routes.listings import (
 )
 from app.models.listing import Listing, ListingStatus
 from app.services.listing_prepare import draft_price as _draft_price
+from app.services.listing_prepare import prepare_listing_draft
 
 
 class _ScalarOneResult:
@@ -85,6 +86,7 @@ def _item(
     condition="NEW_SEALED",
     notes=None,
     current_market_price=None,
+    market_price_basis=None,
     ai_price_min=None,
     ai_price_max=None,
     buy_price=None,
@@ -103,6 +105,7 @@ def _item(
         condition=condition,
         notes=notes,
         current_market_price=current_market_price,
+        market_price_basis=market_price_basis,
         ai_price_min=ai_price_min,
         ai_price_max=ai_price_max,
         buy_price=buy_price,
@@ -794,6 +797,79 @@ def test_draft_price_falls_back_to_buy_price_times_1_5():
 def test_draft_price_returns_none_when_no_source_available():
     item = _item()
     assert _draft_price(item, None, None) is None
+
+
+# Zustandsabschlag auf den Marktpreis (Feedback-Plan Rang 7): die Lego-Quellen
+# liefern den OVP-Preis, ein gebrauchtes Set ist weniger wert.
+
+
+@pytest.mark.parametrize(
+    ("condition", "expected"),
+    [
+        ("NEW_SEALED", 100.0),
+        ("NEW_OPEN_BOX", 90.0),
+        ("USED_COMPLETE", 70.0),
+        ("USED_INCOMPLETE", 50.0),
+        ("UNKNOWN", 70.0),
+    ],
+)
+def test_draft_price_applies_condition_factor_to_market_price(condition, expected):
+    item = _item(
+        item_type="LEGO", set_number="10331", condition=condition,
+        current_market_price=100.0, market_price_basis="CONSENSUS", buy_price=20.0,
+    )
+    assert _draft_price(item, None, None) == expected
+
+
+def test_draft_price_used_item_is_below_market_price():
+    item = _item(
+        item_type="LEGO", set_number="10331", condition="USED_COMPLETE",
+        current_market_price=37.89, market_price_basis="BRICKMERGE_ONLY",
+    )
+    price = _draft_price(item, None, None)
+    assert price == 26.52
+    assert price < item.current_market_price
+
+
+def test_draft_price_discounts_market_price_without_basis():
+    # Analyse-Historie schreibt basis=None, liefert aber ebenfalls den Neupreis.
+    item = _item(condition="USED_COMPLETE", current_market_price=80.0, market_price_basis=None)
+    assert _draft_price(item, None, None) == 56.0
+
+
+def test_draft_price_keeps_ebay_sold_market_price_unchanged():
+    # Freitext-Median mischt die Zustaende schon -- kein zweiter Abschlag.
+    item = _item(condition="USED_COMPLETE", current_market_price=80.0, market_price_basis="EBAY_SOLD")
+    assert _draft_price(item, None, None) == 80.0
+
+
+def test_draft_price_does_not_discount_ai_range_or_buy_price():
+    used_ai = _item(condition="USED_COMPLETE", ai_price_min=40.0, ai_price_max=60.0)
+    used_buy = _item(condition="USED_COMPLETE", buy_price=20.0)
+    assert _draft_price(used_ai, None, None) == 50.0
+    assert _draft_price(used_buy, None, None) == 30.0
+
+
+def test_draft_price_does_not_discount_body_or_running_listing_price():
+    item = _item(condition="USED_INCOMPLETE", current_market_price=200.0)
+    listing = _listing(status=ListingStatus.ACTIVE.value, current_price=77.0)
+    assert _draft_price(item, None, 45.0) == 45.0
+    assert _draft_price(item, listing, None) == 77.0
+
+
+@pytest.mark.asyncio
+async def test_prepare_draft_for_used_item_uses_discounted_price(monkeypatch):
+    provider = _FakeProvider(text=ListingText(title="LEGO 10331", body="Text", platform_category=""))
+    monkeypatch.setattr("app.services.listing_prepare.get_provider", lambda: provider)
+    item = _item(
+        item_type="LEGO", set_number="10331", set_name="Eisvogel", condition="USED_COMPLETE",
+        current_market_price=100.0, market_price_basis="CONSENSUS",
+    )
+
+    prepared = await prepare_listing_draft(item, "KLEINANZEIGEN")
+
+    assert prepared.listing.current_price == 70.0
+    assert provider.calls[0]["price"] == 70.0
 
 
 # ---------------------------------------------------------------------------
