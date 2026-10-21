@@ -323,3 +323,126 @@ async def test_results_stay_open_when_the_broker_is_down(db, monkeypatch):
         )
     assert exc.value.status_code == 503
     rollback.assert_awaited_once()
+
+
+# --- Watchdog: kommt der Catawiki-Scan an? (Feedback-Runde 20.10.2026, Rang 10) ---------
+
+
+async def test_scan_watch_reads_config_runner_and_last_scan(db, monkeypatch):
+    from app.models import AppSetting, AuctionScanState
+
+    monkeypatch.setattr(remote_scan, "get_settings_map", AsyncMock(return_value={}))
+
+    assert (await remote_scan.load_scan_watch(db)).scan_urls_configured is False  # nichts eingerichtet
+
+    t0 = datetime(2026, 10, 21, 8, 50, tzinfo=UTC)
+    db.add(AppSetting(key="remote_scan_token", value=f" {TOKEN} ", is_secret=True, category="catawiki"))
+    urls = "\nhttps://www.catawiki.com/de/c/375-lego\n"
+    db.add(AppSetting(key="catawiki_scan_urls", value=urls, category="catawiki"))
+    db.add(AppSetting(key="catawiki_scan_frequency", value="daily", category="catawiki"))
+    db.add(AuctionScanState(platform="CATAWIKI", scanned_at=t0, status="FAILED", results=[],
+                            errors=["Heimrechner: Seite nicht lesbar"], notified_urls=[]))
+    await db.commit()
+    await remote_scan.runner_job(db, now=t0)  # Heimrechner fragt an
+
+    watch = await remote_scan.load_scan_watch(db)
+
+    assert watch.home_runner is True  # CATAWIKI steht in HOME_RUNNER_PLATFORMS
+    assert watch.token_configured and watch.scan_urls_configured and watch.frequency == "daily"
+    assert watch.runner_seen_at == t0 and watch.config_changed_at is not None
+    assert watch.last_scan_status == "FAILED" and watch.last_scan_lots == 0
+    assert watch.last_scan_errors == ["Heimrechner: Seite nicht lesbar"]
+
+
+async def test_watchdog_alerts_on_missing_catawiki_scan(monkeypatch):
+    from app.services.heartbeat import CatawikiScanWatch
+    from app.tasks import health_check
+
+    long_ago = datetime.now(UTC) - timedelta(days=3)
+    watch = CatawikiScanWatch(
+        home_runner=True, token_configured=True, scan_urls_configured=True, frequency="daily",
+        config_changed_at=long_ago, runner_seen_at=long_ago, last_scan_at=long_ago,
+        last_scan_status="OK", last_scan_lots=5, last_scan_errors=[],
+    )
+
+    class _Result:
+        def __init__(self, value):
+            self.value = value
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return []
+
+        def scalar_one_or_none(self):
+            return None
+
+        def scalar_one(self):
+            return 0
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def execute(self, statement):
+            return _Result(None)
+
+        async def commit(self):
+            return None
+
+    sent = []
+
+    async def _send(payload):
+        sent.append(payload)
+        return False  # Telegram kaputt: dann wird auch nichts als gemeldet markiert
+
+    monkeypatch.setattr(health_check, "async_session", _Session)
+    monkeypatch.setattr(health_check, "load_scan_watch", AsyncMock(return_value=watch))
+    monkeypatch.setattr(health_check, "send_pipeline_health_alert", _send)
+
+    result = await health_check._check_async()
+
+    names = {problem["task_name"] for problem in sent[0]}
+    assert names >= {"pipeline.catawiki_home_runner", "pipeline.catawiki_scan"}
+    assert result["healthy"] is False and result["notification_sent"] is False
+
+
+async def test_watchdog_survives_a_broken_catawiki_watch(monkeypatch):
+    from app.tasks import health_check
+
+    monkeypatch.setattr(health_check, "load_scan_watch", AsyncMock(side_effect=RuntimeError("kaputt")))
+    monkeypatch.setattr(health_check, "evaluate_catawiki_scan",
+                        lambda *args: pytest.fail("ohne Daten keine Catawiki-Bewertung"))
+
+    class _Result:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return []
+
+        def scalar_one_or_none(self):
+            return None
+
+        def scalar_one(self):
+            return 0
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def execute(self, statement):
+            return _Result()
+
+    monkeypatch.setattr(health_check, "async_session", _Session)
+
+    result = await health_check._check_async()
+
+    assert result["healthy"] is True  # restlicher Watchdog lief durch (keine Heartbeats = pending)

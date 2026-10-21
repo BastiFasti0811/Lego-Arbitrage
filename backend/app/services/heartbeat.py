@@ -311,6 +311,100 @@ def evaluate_valuation_coverage(run: "ValuationRun | None", now: datetime) -> Ta
     )
 
 
+# Catawiki laeuft nicht als Beat-Task, sondern ueber den Heimscanner (Timer alle
+# 10 min, siehe app/tools/catawiki_home_scan.py). Sein Ausfall hinterlaesst
+# keinen Heartbeat: der Server-Task scan_configured_categories meldet weiter
+# Erfolg, weil er Catawiki nur ueberspringt.
+CATAWIKI_RUNNER_MAX_SILENCE_HOURS = 1
+# Zeitplan 08:40 plus Luft: daily einen Tag, weekly (Sonntag) eine Woche.
+CATAWIKI_SCAN_MAX_AGE_HOURS = {"daily": 26, "weekly": 170}
+CATAWIKI_RUNNER_HINT = "victus: systemctl --user status lego-catawiki-scan-lego-arbitrage.timer"
+
+
+@dataclass
+class CatawikiScanWatch:
+    """Was der Watchdog ueber den Catawiki-Scan weiss (aus app_settings und auction_scan_states)."""
+
+    home_runner: bool                 # Prod scannt nicht selbst (HOME_RUNNER_PLATFORMS)
+    token_configured: bool
+    scan_urls_configured: bool
+    frequency: str | None
+    config_changed_at: datetime | None  # juengste Aenderung an Token, URLs oder Zeitplan
+    runner_seen_at: datetime | None
+    last_scan_at: datetime | None
+    last_scan_status: str | None
+    last_scan_lots: int
+    last_scan_errors: list[str]
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
+def _latest(*values: datetime | None) -> datetime | None:
+    present = [v for v in (_aware(value) for value in values) if v is not None]
+    return max(present) if present else None
+
+
+def evaluate_catawiki_scan(watch: CatawikiScanWatch, now: datetime) -> list[TaskHealth]:
+    """Nutzarbeit des Catawiki-Scans: kommt regelmaessig ein Scan an, lebt der Heimscanner?
+
+    Ohne Scan-URLs ist nichts eingerichtet, dann schweigt die Pruefung. Frisch
+    eingerichtete Werte bekommen dieselbe Frist wie ein Scan (gemessen ab
+    ``config_changed_at``), damit das Speichern der Einstellung nicht sofort
+    alarmiert. Rein (kein I/O).
+    """
+    problems: list[TaskHealth] = []
+    if not watch.scan_urls_configured:
+        return problems
+
+    if watch.home_runner and watch.token_configured:
+        reference = _latest(watch.runner_seen_at, watch.config_changed_at)
+        max_age = CATAWIKI_RUNNER_MAX_SILENCE_HOURS * 3600
+        age = (now - reference).total_seconds() if reference else None
+        if age is None or age > max_age:
+            seen = "noch nie gemeldet" if watch.runner_seen_at is None else "meldet sich nicht mehr"
+            problems.append(TaskHealth(
+                task_name="pipeline.catawiki_home_runner", status="stale",
+                last_success_at=_aware(watch.runner_seen_at), last_run_at=None, last_status=None,
+                age_seconds=age, max_age_seconds=max_age,
+                detail=f"Catawiki-Heimscanner {seen} ({CATAWIKI_RUNNER_HINT})",
+            ))
+
+    max_hours = CATAWIKI_SCAN_MAX_AGE_HOURS.get((watch.frequency or "off").strip().lower())
+    if max_hours is None:
+        return problems
+    max_age = max_hours * 3600
+    last_scan_at = _aware(watch.last_scan_at)
+    reference = _latest(last_scan_at, watch.config_changed_at)
+    age = (now - reference).total_seconds() if reference else None
+    if age is None or age > max_age:
+        if watch.home_runner and not watch.token_configured:
+            detail = "Zeitplan an, aber kein Heimrechner-Token: Catawiki wird nicht gescannt"
+        elif last_scan_at is None:
+            detail = "Noch nie ein Catawiki-Scan angekommen"
+        else:
+            detail = f"Letzter Catawiki-Scan vor {(now - last_scan_at).total_seconds() / 3600:.1f} h"
+        problems.append(TaskHealth(
+            task_name="pipeline.catawiki_scan", status="stale",
+            last_success_at=last_scan_at, last_run_at=None, last_status=watch.last_scan_status,
+            age_seconds=age, max_age_seconds=max_age, detail=detail,
+        ))
+    elif watch.last_scan_status == "FAILED" and watch.last_scan_lots == 0 and last_scan_at is not None:
+        # Frisch, aber leer: Sperre oder Strukturdrift. Teilergebnisse mit
+        # einzelnen Losfehlern sind normal und alarmieren nicht.
+        first_error = (watch.last_scan_errors or ["ohne Fehlertext"])[0]
+        problems.append(TaskHealth(
+            task_name="pipeline.catawiki_scan", status="failing",
+            last_success_at=None, last_run_at=last_scan_at, last_status=watch.last_scan_status,
+            age_seconds=(now - last_scan_at).total_seconds(), max_age_seconds=max_age,
+            detail=f"Letzter Catawiki-Scan ohne Lose: {str(first_error)[:200]}",
+        ))
+    return problems
+
+
 def filter_unthrottled(
     problems: Sequence[TaskHealth],
     by_name: dict[str, TaskHeartbeat],
