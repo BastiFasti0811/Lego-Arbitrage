@@ -1,5 +1,7 @@
 """FastAPI application entry point."""
 
+import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 
 import structlog
@@ -28,6 +30,7 @@ from app.config import settings
 from app.health import CHECK_OK, run_health_checks
 from app.logging_setup import quiet_http_client_loggers
 from app.models import Base, engine
+from app.notifications.telegram_callbacks import poll_callbacks
 from app.security.origin_guard import is_allowed_write
 
 # Beim Start des API-Prozesses: httpx loggt sonst jede URL auf INFO, darunter
@@ -45,7 +48,17 @@ async def lifespan(app: FastAPI):
         logger.warning("db.auto_create_tables_enabled")
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+    stop = asyncio.Event()
+    poller = None
+    if settings.telegram_callback_polling:
+        # Klicks auf "Gekauft"/"Abgelehnt" im Deal-Alert (notifications/deal_actions).
+        poller = asyncio.create_task(poll_callbacks(stop), name="telegram-callbacks")
     yield
+    stop.set()
+    if poller is not None:
+        poller.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await poller
     logger.info("app.shutdown")
 
 

@@ -9,10 +9,12 @@ import re
 from dataclasses import dataclass
 
 import structlog
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from telegram import Bot, InputMediaPhoto
 from telegram.constants import ParseMode
+from telegram.error import BadRequest
 
 from app.engine.decision_engine import AnalysisResult, Recommendation
+from app.notifications.deal_actions import checker_link, deal_keyboard
 from app.runtime_settings import as_bool, get_settings_map
 
 logger = structlog.get_logger()
@@ -83,13 +85,20 @@ def _format_deal_message(analysis: AnalysisResult) -> str:
     return msg
 
 
-async def send_deal_alert(analysis: AnalysisResult, offer_url: str | None = None) -> bool:
+async def send_deal_alert(
+    analysis: AnalysisResult,
+    offer_url: str | None = None,
+    offer_id: int | None = None,
+) -> bool:
     """Send a deal alert via Telegram.
+
+    Knöpfe: siehe notifications/deal_actions. Ohne `offer_id` (z. B. ein Alert
+    ohne gespeicherte Offer-Zeile) fehlen "Gekauft"/"Abgelehnt" und der Deep-Link.
 
     Returns True if sent successfully.
     """
     runtime_settings = await get_settings_map(
-        ["telegram_bot_token", "telegram_chat_id", "telegram_alert_on_go_only"]
+        ["telegram_bot_token", "telegram_chat_id", "telegram_alert_on_go_only", "app_public_url"]
     )
     bot_token = runtime_settings.get("telegram_bot_token")
     chat_id = runtime_settings.get("telegram_chat_id")
@@ -104,26 +113,29 @@ async def send_deal_alert(analysis: AnalysisResult, offer_url: str | None = None
         if analysis.recommendation not in (Recommendation.GO_STAR, Recommendation.GO):
             return False
 
+    checker_url = checker_link(runtime_settings.get("app_public_url"), offer_id) if offer_id else None
+    bot = Bot(token=bot_token)
+    message = _format_deal_message(analysis)
     try:
-        bot = Bot(token=bot_token)
-        message = _format_deal_message(analysis)
-
-        # Inline keyboard with action buttons
-        keyboard = []
-        if offer_url:
-            keyboard.append([InlineKeyboardButton("🔗 Angebot öffnen", url=offer_url)])
-        keyboard.append([
-            InlineKeyboardButton("📊 Details", callback_data=f"detail_{analysis.set_number}"),
-            InlineKeyboardButton("👁️ Watchlist", callback_data=f"watch_{analysis.set_number}"),
-        ])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await bot.send_message(
-            chat_id=chat_id,
-            text=message,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=reply_markup,
-        )
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=message,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=deal_keyboard(offer_id, offer_url, checker_url),
+            )
+        except BadRequest as e:
+            # Telegram lehnt manche URL-Knöpfe ab (z. B. Hostnamen ohne Punkt).
+            # Der Alert ist wichtiger als der Deep-Link: einmal ohne ihn.
+            if not checker_url:
+                raise
+            logger.warning("telegram.deep_link_rejected", error=str(e))
+            await bot.send_message(
+                chat_id=chat_id,
+                text=message,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=deal_keyboard(offer_id, offer_url, None),
+            )
 
         logger.info("telegram.sent", set_number=analysis.set_number, recommendation=analysis.recommendation)
         return True
@@ -487,6 +499,8 @@ def format_goal_digest(digest) -> str:
     ]
     if deals.checks:
         lines.append(f"🔍 Grenzfälle (CHECK, nicht gemeldet): {deals.checks}")
+    if deals.bought or deals.rejected:
+        lines.append(f"🛒 Entschieden: gekauft {deals.bought} · abgelehnt {deals.rejected}")
     lines += [
         "",
         "<b>Verkauf</b> (Lego-Posten)",

@@ -82,6 +82,14 @@ DEFAULT_SETTINGS = [
         "value": "true",
     },
     {
+        "key": "app_public_url",
+        "category": "telegram",
+        "label": "App-Adresse für Links",
+        "description": "Adresse, unter der das Handy die App erreicht, z. B. http://victus.<tailnet>.ts.net/lego. "
+        "Ohne sie fehlt im Deal-Alert der Knopf „Im Checker“.",
+        "is_secret": False,
+    },
+    {
         "key": "catawiki_cookie_header",
         "category": "catawiki",
         "label": "Cookie Header",

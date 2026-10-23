@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import { useAppStore } from "../stores/appStore";
 import VerdictBadge from "../components/VerdictBadge";
@@ -56,6 +57,13 @@ export default function DealChecker() {
   const liveVideoRef = useRef(null);
   const liveScannerStreamRef = useRef(null);
   const liveScannerTimeoutRef = useRef(null);
+
+  // Deep-Link aus dem Telegram-Alert (?offer=<id>): Angebot laden, Felder
+  // vorbefuellen, Analyse sofort rechnen. Kauf aus dem Modal meldet "Gekauft"
+  // an dasselbe Angebot zurueck, damit der Wochen-Digest es zaehlt.
+  const [searchParams] = useSearchParams();
+  const [alertOffer, setAlertOffer] = useState(null); // { id, setNumber, url }
+  const handledOfferParam = useRef(null);
 
   // Smart input — accepts URL or set number
   const [smartInput, setSmartInput] = useState("");
@@ -201,12 +209,60 @@ export default function DealChecker() {
   // Add to inventory mutation
   const addToInventory = useMutation({
     mutationFn: (data) => api.addInventory(data),
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       setShowBuyModal(false);
       queryClient.invalidateQueries({ queryKey: ["inventory"] });
       queryClient.invalidateQueries({ queryKey: ["portfolio"] });
+      // Nur wenn wirklich das Set aus dem Alert gekauft wurde, nicht ein
+      // spaeter von Hand eingegebenes. Fehlschlag kostet nur die Digest-Zeile.
+      if (alertOffer && variables?.set_number === alertOffer.setNumber && variables?.buy_url === alertOffer.url) {
+        api.decideOffer(alertOffer.id, "BOUGHT").catch(() => {});
+      }
     },
   });
+
+  useEffect(() => {
+    const offerParam = searchParams.get("offer");
+    if (!offerParam || handledOfferParam.current === offerParam) return;
+    handledOfferParam.current = offerParam;
+    const offerId = Number.parseInt(offerParam, 10);
+    if (!Number.isInteger(offerId) || offerId <= 0) {
+      setParseMessage("Ungültiger Link aus dem Alert");
+      return;
+    }
+    api
+      .offerForChecker(offerId)
+      .then((offer) => {
+        const shippingValue = offer.shipping_eur != null ? String(offer.shipping_eur) : "";
+        setSelectedHistoryItem(null);
+        setIsKonvolut(false);
+        setKonvolutSets([]);
+        setKonvolutPrice("");
+        setSmartInput(offer.offer_url);
+        setSetNumber(offer.set_number);
+        setOfferPrice(String(offer.price_eur));
+        setShipping(shippingValue);
+        setCondition(offer.condition || "UNKNOWN");
+        setBoxDamage(Boolean(offer.box_damage));
+        setSourceUrl(offer.offer_url);
+        setSourcePlatform(offer.platform);
+        setAlertOffer({ id: offer.id, setNumber: offer.set_number, url: offer.offer_url });
+        const decided = { BOUGHT: " · schon als gekauft markiert", REJECTED: " · abgelehnt" }[offer.decision] || "";
+        setParseMessage(`Aus dem Telegram-Alert: Set ${offer.set_number}, ${offer.price_eur} €${decided}`);
+        analyze.mutate({
+          set_number: offer.set_number,
+          offer_price: offer.price_eur,
+          condition: offer.condition || "UNKNOWN",
+          box_damage: Boolean(offer.box_damage),
+          purchase_shipping: offer.shipping_eur ?? null,
+          source_url: offer.offer_url,
+          source_platform: offer.platform,
+        });
+      })
+      .catch(() => setParseMessage("Das Angebot aus dem Alert ist nicht mehr in der Datenbank"));
+    // analyze ist ein stabiles Mutationsobjekt; nur der Link-Parameter zaehlt.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   function stopLiveScanner({ closeModal = true } = {}) {
     if (liveScannerTimeoutRef.current) {

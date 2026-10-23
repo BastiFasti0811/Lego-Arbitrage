@@ -97,7 +97,7 @@ async def _analyze_new_async() -> dict:
                 if analysis.recommendation in (Recommendation.GO_STAR, Recommendation.GO):
                     summary["go_deals"] += 1
                     if not offer.notified:
-                        sent = await send_deal_alert(analysis, offer_url=offer.offer_url)
+                        sent = await send_deal_alert(analysis, offer_url=offer.offer_url, offer_id=offer.id)
                         if sent:
                             offer.notified = True
                             summary["notifications_sent"] += 1

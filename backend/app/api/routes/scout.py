@@ -13,12 +13,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.condition import condition_value_factor
 from app.domain.identity import is_set_offer
-from app.domain.offer_url import canonical_offer_url, offer_identity
+from app.domain.offer_url import canonical_offer_url
 from app.engine.decision_engine import analyze_deal
 from app.models import DismissedOffer, LegoSet, Offer, OfferPlatform, get_session
+from app.models.dismissal import dismissal_key
+from app.models.offer_decision import DecisionKind, DecisionSource
 from app.scrapers import OFFER_SCRAPERS, PRICE_SCRAPERS
 from app.scrapers.base import ScrapedOffer, ScrapedPrice
 from app.services.heartbeat import latest_scan_success, load_scan_heartbeats
+from app.services.offer_decisions import current_decision, load_offer, record_decision, undo_decision
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -127,7 +130,6 @@ class DismissedOfferResponse(BaseModel):
 
 # Spaltenbreiten aus dem Modell, nicht getippt: eine Abweichung waere sonst
 # erst als StringDataRightTruncation auf Prod aufgefallen.
-_IDENTITY_MAX = DismissedOffer.__table__.c.offer_identity.type.length
 _TITLE_MAX = DismissedOffer.__table__.c.offer_title.type.length
 _SET_NUMBER_MAX = DismissedOffer.__table__.c.set_number.type.length
 
@@ -137,23 +139,6 @@ def _clip(value: str | None, limit: int) -> str | None:
     if value is None:
         return None
     return value[:limit]
-
-
-def dismissal_key(platform: str | None, offer_url: str | None) -> str:
-    """The identity a dismissal is stored under and matched by.
-
-    `offer_identity` is unbounded: `canonical_offer_url` returns unparseable
-    input verbatim and keeps the full path for hosts it has no rule for, so a
-    725-character identity against a 600-character column is reachable. That
-    would make the ✕ answer 500.
-
-    The clipping lives here, in one function both sides call, precisely because
-    clipping only on write would be worse than the crash: the feed would go on
-    computing the full identity, the stored key would never match, and the
-    listing would sit in the dismissed list AND in the feed with nothing to
-    explain it.
-    """
-    return offer_identity(platform, offer_url)[:_IDENTITY_MAX]
 
 
 def dismissal_values(payload: DismissRequest, now: datetime) -> dict:
@@ -505,3 +490,64 @@ async def quick_scout(
     # Antwortfeld von Hand nachgezogen werden — diese Aenderung hat das
     # einmal bezahlt, die naechste haette es wieder getan.
     return response.model_copy(update={"deals": response.deals[:max_results], "sets_analyzed": 1})
+
+
+# ── Deep-Link aus dem Deal-Alert ────────────────────────────────────
+
+
+class OfferForChecker(BaseModel):
+    """Was der Deal-Checker braucht, um ein gemeldetes Angebot vorzubefüllen."""
+
+    id: int
+    set_number: str
+    set_name: str | None = None
+    platform: str
+    offer_url: str
+    offer_title: str | None = None
+    price_eur: float
+    shipping_eur: float | None = None
+    condition: str | None = None
+    box_damage: bool = False
+    recommendation: str | None = None
+    decision: str | None = None
+
+
+class DecisionRequest(BaseModel):
+    """None nimmt die Entscheidung zurück."""
+
+    decision: DecisionKind | None = None
+
+
+@router.get("/offers/{offer_id}", response_model=OfferForChecker)
+async def offer_for_checker(offer_id: int, session: AsyncSession = Depends(get_session)):
+    loaded = await load_offer(session, offer_id)
+    if loaded is None:
+        raise HTTPException(status_code=404, detail="Angebot nicht gefunden")
+    offer, lego_set = loaded
+    return OfferForChecker(
+        id=offer.id,
+        set_number=lego_set.set_number,
+        set_name=lego_set.set_name,
+        platform=offer.platform,
+        offer_url=offer.offer_url,
+        offer_title=offer.offer_title,
+        price_eur=offer.price_eur,
+        shipping_eur=offer.shipping_eur,
+        condition=offer.condition,
+        box_damage=bool(offer.box_damage),
+        recommendation=offer.recommendation,
+        decision=await current_decision(session, offer),
+    )
+
+
+@router.post("/offers/{offer_id}/decision")
+async def decide_offer(offer_id: int, payload: DecisionRequest, session: AsyncSession = Depends(get_session)):
+    """Dieselbe Entscheidung wie die Telegram-Knöpfe, aus der App (Kauf-Modal)."""
+    if payload.decision is None:
+        outcome = await undo_decision(session, offer_id)
+    else:
+        outcome = await record_decision(session, offer_id, payload.decision, datetime.now(UTC), DecisionSource.APP)
+    if not outcome.found:
+        raise HTTPException(status_code=404, detail="Angebot nicht gefunden")
+    return {"offer_id": offer_id, "decision": outcome.decision, "previous": outcome.previous}
+

@@ -113,6 +113,13 @@ class Settings(BaseSettings):
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     telegram_alert_on_go_only: bool = True
+    # Knöpfe "Gekauft"/"Abgelehnt" im Deal-Alert: der API-Prozess holt die
+    # Klicks per getUpdates ab (Webhook bräuchte HTTPS von außen). Aus, wenn ein
+    # anderer Dienst denselben Bot abfragt, sonst antwortet Telegram 409.
+    telegram_callback_polling: bool = True
+    # Adresse, unter der das Handy die App erreicht, z. B. http://victus.<tailnet>.ts.net/lego.
+    # Ohne sie fehlt im Alert der Knopf "Im Checker öffnen".
+    app_public_url: str | None = None
 
     # ── Ziele (Memory projekt-ziel, Stand 20.10.2026) ───
     # Zaehler in App, Wochen-Digest und Laufprotokoll rechnen dagegen.

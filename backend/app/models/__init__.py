@@ -12,6 +12,7 @@ from app.models.inventory import InventoryItem, InventoryItemType, InventoryStat
 from app.models.inventory_photo import InventoryPhoto
 from app.models.listing import Listing, ListingPlatform, ListingPriceChange, ListingStatus, PriceType
 from app.models.offer import Offer, OfferCondition, OfferPlatform, OfferStatus
+from app.models.offer_decision import DecisionKind, DecisionSource, OfferDecision
 from app.models.price import PriceRecord, PriceSource
 from app.models.set import EOLStatus, LegoSet, SetCategory, ThemeTier
 from app.models.settings import AppSetting
@@ -43,6 +44,9 @@ __all__ = [
     "OfferPlatform",
     "OfferCondition",
     "OfferStatus",
+    "OfferDecision",
+    "DecisionKind",
+    "DecisionSource",
     "DealFeedback",
     "DismissedOffer",
     "WatchlistItem",

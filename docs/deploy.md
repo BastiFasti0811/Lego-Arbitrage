@@ -363,6 +363,33 @@ of its containers and wait for the message; afterwards
 [tests/uptime-check.test.sh](../tests/uptime-check.test.sh) (stubbed docker
 and curl), which runs in the verify job.
 
+### Deal Alert Buttons
+
+Each GO/GO_STAR alert carries `🔗 Angebot öffnen`, `🔎 Im Checker` (deep link
+`<app_public_url>/checker?offer=<id>`: the checker loads the offer and runs the
+analysis) and `✅ Gekauft` / `❌ Abgelehnt`. A decision is stored in
+`offer_decisions` (one row per listing identity, a second tap changes it,
+`↩️ rückgängig` deletes it); "Abgelehnt" also dismisses the listing from the
+Live Feed. The Monday goal digest shows `gekauft · abgelehnt` of the week.
+
+The API process fetches the clicks itself with `getUpdates` long polling
+(`app/notifications/telegram_callbacks.py`, started in the FastAPI lifespan):
+a webhook would need HTTPS reachable from outside. Consequences:
+
+- Only one poller per bot. During a deploy the old and new API container may
+  overlap for a moment; Telegram answers 409 and the loop retries after 30 s.
+  Set `TELEGRAM_CALLBACK_POLLING=false` on any other stack that shares the bot
+  token (e.g. a `lego-feedback` test stack).
+- A manual `getUpdates` in the browser returns 409 while prod runs. To find the
+  chat id, send the bot `/id`; it answers with the id of that chat.
+- The `🔎 Im Checker` button needs `app_public_url` (dashboard settings, or
+  `APP_PUBLIC_URL`), the address the phone reaches the app under. Without it
+  the button is left out. If Telegram rejects the URL, the alert is sent again
+  without it.
+  Use a host name with a dot or an IP; Telegram is likely to reject a bare
+  `http://victus/...` button.
+- Clicks from any chat other than `telegram_chat_id` are ignored.
+
 ### Pipeline Health
 
 Beyond the API `/health` endpoint, the worker tracks when each scheduled task

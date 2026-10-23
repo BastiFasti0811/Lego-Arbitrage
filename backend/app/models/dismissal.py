@@ -5,6 +5,7 @@ from datetime import datetime
 from sqlalchemy import DateTime, Float, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.domain.offer_url import offer_identity
 from app.models.base import Base
 
 
@@ -33,3 +34,20 @@ class DismissedOffer(Base):
 
     def __repr__(self) -> str:
         return f"<DismissedOffer {self.offer_identity}>"
+
+
+def dismissal_key(platform: str | None, offer_url: str | None) -> str:
+    """The identity a dismissal is stored under and matched by.
+
+    `offer_identity` is unbounded: `canonical_offer_url` returns unparseable
+    input verbatim and keeps the full path for hosts it has no rule for, so a
+    725-character identity against a 600-character column is reachable. That
+    would make the ✕ answer 500.
+
+    The clipping lives here, in one function both sides call, precisely because
+    clipping only on write would be worse than the crash: the feed would go on
+    computing the full identity, the stored key would never match, and the
+    listing would sit in the dismissed list AND in the feed with nothing to
+    explain it.
+    """
+    return offer_identity(platform, offer_url)[: DismissedOffer.__table__.c.offer_identity.type.length]

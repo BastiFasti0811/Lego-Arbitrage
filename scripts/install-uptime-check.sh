@@ -163,8 +163,8 @@ else
   # A chat id is numeric (user/group, groups start with -) or @channelname.
   if ! [[ "$(cfg_value TELEGRAM_CHAT_ID)" =~ ^(-?[0-9]+|@[A-Za-z0-9_]{5,})$ ]]; then
     echo "WARNING: TELEGRAM_CHAT_ID is neither a numeric chat id nor an @channel name;" >&2
-    echo "         a bot username does not work. Send the bot a message and read the id" >&2
-    echo "         from https://api.telegram.org/bot<token>/getUpdates (message.chat.id)." >&2
+    echo "         a bot username does not work. Send the bot /id: the API answers with the" >&2
+    echo "         chat id (it polls getUpdates itself, a manual getUpdates gets 409)." >&2
   fi
 fi
 

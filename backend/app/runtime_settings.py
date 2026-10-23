@@ -26,6 +26,7 @@ async def get_settings_map(keys: Iterable[str]) -> dict[str, str | None]:
         "telegram_bot_token": env_settings.telegram_bot_token,
         "telegram_chat_id": env_settings.telegram_chat_id,
         "telegram_alert_on_go_only": str(env_settings.telegram_alert_on_go_only).lower(),
+        "app_public_url": env_settings.app_public_url,
     }
 
     for key in requested_keys:
