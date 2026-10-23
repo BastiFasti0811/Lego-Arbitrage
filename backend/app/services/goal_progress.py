@@ -30,6 +30,7 @@ from app.engine.decision_engine import Recommendation
 from app.models.auction_deal import AuctionDeal
 from app.models.inventory import InventoryItem, InventoryItemType, InventoryStatus
 from app.models.offer import Offer
+from app.models.offer_decision import DecisionKind, OfferDecision
 
 BERLIN = ZoneInfo("Europe/Berlin")
 DEAL_RECOMMENDATIONS = (Recommendation.GO_STAR, Recommendation.GO)
@@ -96,6 +97,11 @@ class DealCount:
     go: int = 0
     auctions: int = 0
     checks: int = 0  # nicht im Ziel, nur Hinweis
+    # Entscheidungen aus dem Deal-Alert (offer_decisions), gezaehlt nach
+    # Entscheidungszeitpunkt. Ein Montag-Kauf eines Sonntag-Deals zaehlt also
+    # in der neuen Woche; der Digest nennt sie als eigene Zeile.
+    bought: int = 0
+    rejected: int = 0
 
     @property
     def total(self) -> int:
@@ -139,8 +145,9 @@ def lego_listing_counts(items) -> dict[str, int]:
     }
 
 
-def count_deals(offers, auction_deals, week: Week) -> DealCount:
-    """`offers`: Zeilen mit recommendation und discovered_at; `auction_deals`: mit found_at."""
+def count_deals(offers, auction_deals, week: Week, decisions=()) -> DealCount:
+    """`offers`: Zeilen mit recommendation und discovered_at; `auction_deals`: mit found_at;
+    `decisions`: mit decision und decided_at."""
     count = DealCount()
     for offer in offers:
         if not week.contains(offer.discovered_at):
@@ -152,6 +159,13 @@ def count_deals(offers, auction_deals, week: Week) -> DealCount:
         elif offer.recommendation == Recommendation.CHECK:
             count.checks += 1
     count.auctions = sum(1 for deal in auction_deals if week.contains(deal.found_at))
+    for decision in decisions:
+        if not week.contains(decision.decided_at):
+            continue
+        if decision.decision == DecisionKind.BOUGHT.value:
+            count.bought += 1
+        elif decision.decision == DecisionKind.REJECTED.value:
+            count.rejected += 1
     return count
 
 
@@ -168,8 +182,12 @@ def count_sales(items, week: Week) -> SalesCount:
     return count
 
 
-def week_numbers(items, offers, auction_deals, week: Week) -> WeekNumbers:
-    return WeekNumbers(week=week, deals=count_deals(offers, auction_deals, week), sales=count_sales(items, week))
+def week_numbers(items, offers, auction_deals, week: Week, decisions=()) -> WeekNumbers:
+    return WeekNumbers(
+        week=week,
+        deals=count_deals(offers, auction_deals, week, decisions),
+        sales=count_sales(items, week),
+    )
 
 
 @dataclass
@@ -209,14 +227,14 @@ class GoalProgress:
         return missing / self.weeks_left if self.weeks_left else None
 
 
-def build_progress(items, offers, auction_deals, now: datetime) -> GoalProgress:
+def build_progress(items, offers, auction_deals, now: datetime, decisions=()) -> GoalProgress:
     current = week_of(now)
     totals = lego_listing_counts(items)
     return GoalProgress(
         now=now,
         **totals,
-        current=week_numbers(items, offers, auction_deals, current),
-        previous=week_numbers(items, offers, auction_deals, current.previous()),
+        current=week_numbers(items, offers, auction_deals, current, decisions),
+        previous=week_numbers(items, offers, auction_deals, current.previous(), decisions),
     )
 
 
@@ -229,13 +247,13 @@ class GoalDigest:
     before: WeekNumbers
 
 
-def build_digest(items, offers, auction_deals, now: datetime) -> GoalDigest:
-    progress = build_progress(items, offers, auction_deals, now)
+def build_digest(items, offers, auction_deals, now: datetime, decisions=()) -> GoalDigest:
+    progress = build_progress(items, offers, auction_deals, now, decisions)
     reported = progress.previous
     return GoalDigest(
         progress=progress,
         reported=reported,
-        before=week_numbers(items, offers, auction_deals, reported.week.previous()),
+        before=week_numbers(items, offers, auction_deals, reported.week.previous(), decisions),
     )
 
 
@@ -262,6 +280,10 @@ def auction_deals_query(since: datetime):
     return select(AuctionDeal.found_at).where(AuctionDeal.found_at >= since)
 
 
+def decisions_query(since: datetime):
+    return select(OfferDecision.decision, OfferDecision.decided_at).where(OfferDecision.decided_at >= since)
+
+
 def lego_items_query():
     return select(InventoryItem).where(
         InventoryItem.item_type == InventoryItemType.LEGO.value,
@@ -269,24 +291,25 @@ def lego_items_query():
     )
 
 
-async def load_rows(session: AsyncSession, since: datetime) -> tuple[list, list, list]:
+async def load_rows(session: AsyncSession, since: datetime) -> tuple[list, list, list, list]:
     """Inventar komplett (Gesamtstand), Deals ab `since`. Bei 125 Posten und
     einigen hundert Angeboten je Woche ist Zaehlen in Python billig."""
     items = (await session.execute(lego_items_query())).scalars().all()
     offers = (await session.execute(deal_offers_query(since))).all()
     auction_deals = (await session.execute(auction_deals_query(since))).all()
-    return list(items), list(offers), list(auction_deals)
+    decisions = (await session.execute(decisions_query(since))).all()
+    return list(items), list(offers), list(auction_deals), list(decisions)
 
 
 async def load_goal_progress(session: AsyncSession, now: datetime | None = None) -> GoalProgress:
     now = now or datetime.now(UTC)
     since = week_of(now).previous().start
-    items, offers, auction_deals = await load_rows(session, since)
-    return build_progress(items, offers, auction_deals, now)
+    items, offers, auction_deals, decisions = await load_rows(session, since)
+    return build_progress(items, offers, auction_deals, now, decisions)
 
 
 async def load_goal_digest(session: AsyncSession, now: datetime | None = None) -> GoalDigest:
     now = now or datetime.now(UTC)
     since = week_of(now).previous().previous().start
-    items, offers, auction_deals = await load_rows(session, since)
-    return build_digest(items, offers, auction_deals, now)
+    items, offers, auction_deals, decisions = await load_rows(session, since)
+    return build_digest(items, offers, auction_deals, now, decisions)

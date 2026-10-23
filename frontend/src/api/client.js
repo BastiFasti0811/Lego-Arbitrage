@@ -175,6 +175,11 @@ export const api = {
         price_eur: deal.price,
       }),
     }),
+  // Deep-Link aus dem Telegram-Alert: /checker?offer=<id>
+  offerForChecker: (id) => request(`/scout/offers/${id}`),
+  // decision: "BOUGHT" | "REJECTED" | null (zuruecknehmen)
+  decideOffer: (id, decision) =>
+    request(`/scout/offers/${id}/decision`, { method: "POST", body: JSON.stringify({ decision }) }),
   listDismissed: () => request("/scout/dismissed"),
   restoreOffer: (id) => request(`/scout/dismissed/${id}`, { method: "DELETE" }),
 
