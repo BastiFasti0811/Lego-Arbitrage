@@ -122,3 +122,39 @@ def test_ordinary_values_with_colons_stay_untouched():
 
     event = {"event": "x", "at": "2026-10-23 19:29:11", "url": "https://example.org:8443/a"}
     assert redact_bot_tokens(None, None, dict(event)) == event
+
+
+TOKEN = "8656640958:AAFeLkDkfWetdML06hgp7BsrBU1N-WHg1NX"
+
+
+def test_token_inside_a_telegram_url_is_redacted():
+    # Review-Finding #51: mit \b davor rutschte /bot<TOKEN>/ durch.
+    from app.logging_setup import REDACTED, redact_text
+
+    text = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
+    assert redact_text(text) == f"https://api.telegram.org/bot{REDACTED}/getUpdates"
+
+
+def test_exception_objects_and_tracebacks_are_redacted(capsys):
+    import structlog
+
+    quiet_http_client_loggers()
+    log = structlog.get_logger()
+    log.warning("telegram.obj", error=ValueError(f"The token `{TOKEN}` was rejected"))
+    try:
+        raise RuntimeError(f"The token `{TOKEN}` was rejected")
+    except RuntimeError:
+        log.exception("telegram.tb")
+
+    out = capsys.readouterr().out
+    assert TOKEN not in out
+    assert out.count("<telegram-token>") >= 2
+
+
+def test_stdlib_records_are_redacted():
+    import logging
+
+    quiet_http_client_loggers()
+    factory = logging.getLogRecordFactory()
+    record = factory("telegram.ext", logging.WARNING, __file__, 1, "url %s", (f"/bot{TOKEN}/x",), None)
+    assert TOKEN not in record.getMessage()
