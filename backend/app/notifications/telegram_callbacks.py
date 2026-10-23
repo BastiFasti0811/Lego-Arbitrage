@@ -31,6 +31,7 @@ logger = structlog.get_logger()
 LONG_POLL_SECONDS = 25
 _IDLE_SECONDS = 60  # ohne Token: so oft nachsehen, ob einer eingetragen wurde
 _BROKEN_TOKEN_SECONDS = 600
+_TOKEN_RECHECK_SECONDS = 30
 _CONFLICT_SECONDS = 30
 _ERROR_SECONDS = 15
 
@@ -117,6 +118,20 @@ async def _swap_keyboard(bot: Bot, message, offer_id: int, decision: str | None)
             logger.info("telegram.callback_edit_failed", error=str(e))
 
 
+FAILURE_ANSWER = "Speichern fehlgeschlagen, bitte nochmal tippen."
+
+
+async def _answer_failure(bot: Bot, query) -> None:
+    """Der Offset ist schon weiter: ohne Antwort dreht der Knopf, und der Klick
+    waere still verloren."""
+    if query is None:
+        return
+    try:
+        await bot.answer_callback_query(query.id, text=FAILURE_ANSWER)
+    except Exception as e:
+        logger.info("telegram.callback_answer_failed", error=str(e))
+
+
 async def _poll_with(bot: Bot, token: str, offset: int | None) -> int | None:
     """Abholen, bis sich der Token ändert. Liefert den letzten Offset."""
     while True:
@@ -137,6 +152,7 @@ async def _poll_with(bot: Bot, token: str, offset: int | None) -> int | None:
                 await handle_callback(bot, update.callback_query, settings.get("telegram_chat_id"))
             except Exception as e:  # ein kaputter Klick darf die Schleife nicht beenden
                 logger.error("telegram.callback_failed", error=str(e), update_id=update.update_id)
+                await _answer_failure(bot, update.callback_query)
         if settings.get("telegram_bot_token") != token:
             return offset
 
@@ -144,12 +160,17 @@ async def _poll_with(bot: Bot, token: str, offset: int | None) -> int | None:
 async def poll_callbacks(stop: asyncio.Event) -> None:
     """Endlosschleife für den Lifespan der API; endet erst mit `stop`."""
     offset: int | None = None
+    offset_token: str | None = None
     logger.info("telegram.callback_polling_started")
     while not stop.is_set():
-        token = (await get_settings_map(["telegram_bot_token"])).get("telegram_bot_token")
+        token = await _current_token()
         if not token:
             await _sleep(stop, _IDLE_SECONDS)
             continue
+        if token != offset_token:
+            # Update-IDs gelten je Bot: ein Offset vom alten Token liesse den
+            # neuen Bot schweigen, bis seine IDs aufgeholt haben.
+            offset, offset_token = None, token
         try:
             async with Bot(token=token) as bot:
                 offset = await _poll_with(bot, token, offset)
@@ -158,7 +179,7 @@ async def poll_callbacks(stop: asyncio.Event) -> None:
         except (InvalidToken, Forbidden) as e:
             # Stand 21.10.: der Prod-Token liefert 401. Nicht minütlich anklopfen.
             logger.warning("telegram.callback_polling_token_rejected", error=str(e))
-            await _sleep(stop, _BROKEN_TOKEN_SECONDS)
+            await _sleep_until_token_changes(stop, token, _BROKEN_TOKEN_SECONDS)
         except Conflict:
             logger.warning("telegram.callback_polling_conflict")
             await _sleep(stop, _CONFLICT_SECONDS)
@@ -171,6 +192,20 @@ async def poll_callbacks(stop: asyncio.Event) -> None:
             logger.error("telegram.callback_polling_failed", error=str(e))
             await _sleep(stop, _ERROR_SECONDS)
     logger.info("telegram.callback_polling_stopped")
+
+
+async def _current_token() -> str | None:
+    return (await get_settings_map(["telegram_bot_token"])).get("telegram_bot_token")
+
+
+async def _sleep_until_token_changes(stop: asyncio.Event, token: str, seconds: float) -> None:
+    """Lange warten, aber einen neu eingetragenen Token binnen 30 s aufgreifen."""
+    waited = 0.0
+    while waited < seconds and not stop.is_set():
+        await _sleep(stop, _TOKEN_RECHECK_SECONDS)
+        waited += _TOKEN_RECHECK_SECONDS
+        if await _current_token() != token:
+            return
 
 
 def _seconds(value) -> float:

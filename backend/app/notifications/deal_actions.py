@@ -14,6 +14,7 @@ Die Klicks holt `telegram_callbacks.poll_callbacks` im API-Prozess ab.
 """
 
 from dataclasses import dataclass
+from urllib.parse import urlsplit, urlunsplit
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -33,10 +34,11 @@ def checker_link(base_url: str | None, offer_id: int) -> str | None:
     """Deep-Link in den Deal-Checker; None ohne brauchbare Basisadresse."""
     if not base_url:
         return None
-    base = base_url.strip().rstrip("/")
-    if not base.startswith(("https://", "http://")):
+    parts = urlsplit(base_url.strip())
+    if parts.scheme not in ("https", "http") or not parts.netloc:
         return None
-    return f"{base}/checker?offer={offer_id}"
+    # Query und Fragment der Basis wuerden den Parameter verschlucken.
+    return urlunsplit((parts.scheme, parts.netloc, f"{parts.path.rstrip('/')}/checker", f"offer={offer_id}", ""))
 
 
 def callback_data(offer_id: int, action: str) -> str:

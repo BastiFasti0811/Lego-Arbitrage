@@ -63,6 +63,7 @@ def test_without_offer_row_there_is_nothing_to_decide():
         ("http://victus/lego", "http://victus/lego/checker?offer=5"),
         ("https://lego.example.org/lego/", "https://lego.example.org/lego/checker?offer=5"),
         ("  http://100.64.1.2/lego  ", "http://100.64.1.2/lego/checker?offer=5"),
+        ("http://lego.example.org/lego?x=1#top", "http://lego.example.org/lego/checker?offer=5"),
         ("victus/lego", None),
         ("javascript:alert(1)", None),
         ("", None),
@@ -210,6 +211,9 @@ class _AsyncSession:
     async def commit(self):
         self._session.commit()
 
+    async def rollback(self):
+        self._session.rollback()
+
 
 @pytest.fixture
 def db():
@@ -283,6 +287,49 @@ async def test_switching_from_rejected_to_bought_releases_the_dismissal(db):
     assert stored.decision == "BOUGHT"
     assert stored.decided_at.replace(tzinfo=UTC) == later
     assert _dismissed(db) == []
+
+
+@pytest.mark.asyncio
+async def test_undo_keeps_a_dismissal_made_earlier_in_the_app(db):
+    # Review-Finding: erst ✕ im Feed, dann "Abgelehnt", dann "Rückgängig" gab
+    # das Inserat frei, obwohl die Abwahl nicht vom Alert stammte.
+    db.session.add(
+        DismissedOffer(
+            offer_identity=dismissal_key("KLEINANZEIGEN", URL),
+            platform="KLEINANZEIGEN",
+            offer_url=URL,
+            dismissed_at=NOW,
+        )
+    )
+    db.session.commit()
+
+    await offer_decisions.record_decision(db.adapter, db.offer_id, DecisionKind.REJECTED, NOW)
+    await offer_decisions.undo_decision(db.adapter, db.offer_id)
+
+    assert _decisions(db) == []
+    assert len(_dismissed(db)) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_insert_is_retried_as_update(db, monkeypatch):
+    # Telegram und App klicken gleichzeitig: der zweite verliert das INSERT.
+    from sqlalchemy.exc import IntegrityError
+
+    real = offer_decisions._record
+    calls = []
+
+    async def first_fails(*args):
+        calls.append(args[2])
+        if len(calls) == 1:
+            raise IntegrityError("INSERT", {}, Exception("unique"))
+        return await real(*args)
+
+    monkeypatch.setattr(offer_decisions, "_record", first_fails)
+
+    outcome = await offer_decisions.record_decision(db.adapter, db.offer_id, DecisionKind.BOUGHT, NOW)
+
+    assert outcome.decision == "BOUGHT"
+    assert len(calls) == 2
 
 
 @pytest.mark.asyncio
@@ -493,3 +540,52 @@ async def test_bot_tells_the_chat_its_id(text, answered):
     if answered:
         assert bot.sent[0]["chat_id"] == -100123
         assert "-100123" in bot.sent[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_click_still_gets_an_answer():
+    bot = _ClickBot()
+    await telegram_callbacks._answer_failure(bot, SimpleNamespace(id="q1"))
+    assert bot.answers == [telegram_callbacks.FAILURE_ANSWER]
+
+
+@pytest.mark.asyncio
+async def test_new_token_starts_with_a_fresh_offset(monkeypatch):
+    # Review-Finding: Update-IDs gelten je Bot. Der Offset des alten Tokens
+    # liesse den neuen Bot schweigen.
+    import asyncio
+
+    tokens = iter(["111:old", "222:new"])
+    seen = []
+    stop = asyncio.Event()
+
+    class _PollBot:
+        def __init__(self, token):
+            self.token = token
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    current = {"token": None}
+
+    async def fake_settings(keys):
+        return {"telegram_bot_token": current["token"], "telegram_chat_id": "42"}
+
+    async def fake_poll(bot, token, offset):
+        seen.append((token, offset))
+        current["token"] = next(tokens, None)
+        if current["token"] is None:
+            stop.set()
+        return 500  # Offset des alten Bots
+
+    current["token"] = next(tokens)
+    monkeypatch.setattr(telegram_callbacks, "get_settings_map", fake_settings)
+    monkeypatch.setattr(telegram_callbacks, "Bot", _PollBot)
+    monkeypatch.setattr(telegram_callbacks, "_poll_with", fake_poll)
+
+    await asyncio.wait_for(telegram_callbacks.poll_callbacks(stop), timeout=2)
+
+    assert seen == [("111:old", None), ("222:new", None)]

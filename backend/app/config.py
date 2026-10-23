@@ -117,7 +117,7 @@ class Settings(BaseSettings):
     # Klicks per getUpdates ab (Webhook bräuchte HTTPS von außen). Aus, wenn ein
     # anderer Dienst denselben Bot abfragt, sonst antwortet Telegram 409.
     telegram_callback_polling: bool = True
-    # Adresse, unter der das Handy die App erreicht, z. B. http://victus/lego.
+    # Adresse, unter der das Handy die App erreicht, z. B. http://victus.<tailnet>.ts.net/lego.
     # Ohne sie fehlt im Alert der Knopf "Im Checker öffnen".
     app_public_url: str | None = None
 

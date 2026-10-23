@@ -33,6 +33,7 @@ def upgrade():
         sa.Column("decision", sa.String(20), nullable=False),
         sa.Column("source", sa.String(20), nullable=False),
         sa.Column("decided_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("dismissed_here", sa.Boolean(), server_default=sa.false(), nullable=False),
         sa.ForeignKeyConstraint(["offer_id"], ["offers.id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("id"),
     )

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.offer_url import offer_identity
@@ -46,11 +47,12 @@ async def _stored(session: AsyncSession, offer: Offer) -> OfferDecision | None:
     return (await session.execute(query)).scalar_one_or_none()
 
 
-async def _dismiss(session: AsyncSession, offer: Offer, set_number: str, now: datetime) -> None:
+async def _dismiss(session: AsyncSession, offer: Offer, set_number: str, now: datetime) -> bool:
+    """Feed-Abwahl anlegen; True, wenn sie neu ist (also von hier stammt)."""
     key = dismissal_key(offer.platform, offer.offer_url)
     exists = (await session.execute(select(DismissedOffer.id).where(DismissedOffer.offer_identity == key))).first()
     if exists:
-        return
+        return False
     session.add(
         DismissedOffer(
             offer_identity=key,
@@ -62,6 +64,7 @@ async def _dismiss(session: AsyncSession, offer: Offer, set_number: str, now: da
             dismissed_at=now,
         )
     )
+    return True
 
 
 async def _restore(session: AsyncSession, offer: Offer) -> None:
@@ -77,7 +80,19 @@ async def record_decision(
     source: DecisionSource = DecisionSource.TELEGRAM,
 ) -> DecisionOutcome:
     """Entscheidung setzen oder ändern. Idempotent: derselbe Knopf zweimal ist
-    derselbe Zustand. Committet selbst."""
+    derselbe Zustand. Committet selbst.
+
+    Klicken Telegram und App gleichzeitig, verliert einer das INSERT am
+    Unique-Schluessel; der zweite Versuch findet dann die Zeile und aendert sie.
+    """
+    try:
+        return await _record(session, offer_id, decision, now, source)
+    except IntegrityError:
+        await session.rollback()
+        return await _record(session, offer_id, decision, now, source)
+
+
+async def _record(session, offer_id, decision, now, source) -> DecisionOutcome:
     loaded = await load_offer(session, offer_id)
     if loaded is None:
         return DecisionOutcome(found=False)
@@ -94,6 +109,7 @@ async def record_decision(
             source=source.value,
             decision=decision.value,
             decided_at=now,
+            dismissed_here=False,
         )
         session.add(stored)
     elif stored.decision != decision.value:
@@ -106,10 +122,12 @@ async def record_decision(
     stored.recommendation = offer.recommendation
 
     if decision == DecisionKind.REJECTED:
-        await _dismiss(session, offer, lego_set.set_number, now)
-    elif previous == DecisionKind.REJECTED.value:
+        if await _dismiss(session, offer, lego_set.set_number, now):
+            stored.dismissed_here = True
+    elif stored.dismissed_here:
         # Erst abgelehnt, dann doch gekauft: die Abwahl stammte von hier.
         await _restore(session, offer)
+        stored.dismissed_here = False
 
     await session.commit()
     return DecisionOutcome(found=True, decision=decision.value, previous=previous, set_number=lego_set.set_number)
@@ -126,7 +144,7 @@ async def undo_decision(session: AsyncSession, offer_id: int) -> DecisionOutcome
     previous = stored.decision if stored else None
     if stored is not None:
         await session.delete(stored)
-        if previous == DecisionKind.REJECTED.value:
+        if stored.dismissed_here:
             await _restore(session, offer)
         await session.commit()
     return DecisionOutcome(found=True, decision=None, previous=previous, set_number=lego_set.set_number)

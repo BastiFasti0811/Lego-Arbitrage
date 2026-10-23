@@ -3,7 +3,7 @@
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Index, String, Text, false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -43,6 +43,9 @@ class OfferDecision(Base):
     decision: Mapped[str] = mapped_column(String(20), nullable=False)
     source: Mapped[str] = mapped_column(String(20), nullable=False)
     decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Die Feed-Abwahl hat "Abgelehnt" selbst angelegt. Nur dann nimmt
+    # "Rueckgaengig" sie wieder weg; ein frueheres ✕ aus der App bleibt.
+    dismissed_here: Mapped[bool] = mapped_column(default=False, server_default=false(), nullable=False)
 
     def __repr__(self) -> str:
         return f"<OfferDecision {self.decision} {self.offer_identity}>"

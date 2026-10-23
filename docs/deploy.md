@@ -386,6 +386,8 @@ a webhook would need HTTPS reachable from outside. Consequences:
   `APP_PUBLIC_URL`), the address the phone reaches the app under. Without it
   the button is left out. If Telegram rejects the URL, the alert is sent again
   without it.
+  Use a host name with a dot or an IP; Telegram is likely to reject a bare
+  `http://victus/...` button.
 - Clicks from any chat other than `telegram_chat_id` are ignored.
 
 ### Pipeline Health

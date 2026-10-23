@@ -12,8 +12,8 @@ const FIELD_CONFIG = [
       { key: "telegram_bot_token", label: "Bot Token", type: "password" },
       { key: "telegram_chat_id", label: "Chat ID", type: "text" },
       { key: "telegram_alert_on_go_only", label: "Nur GO Alerts", type: "checkbox" },
-      // Basis fuer den Knopf "Im Checker" im Deal-Alert, z. B. http://victus/lego
-      { key: "app_public_url", label: "App-Adresse für Links (z. B. http://victus/lego)", type: "text" },
+      // Basis fuer den Knopf "Im Checker" im Deal-Alert, z. B. http://victus.<tailnet>.ts.net/lego
+      { key: "app_public_url", label: "App-Adresse für Links (z. B. http://victus.<tailnet>.ts.net/lego)", type: "text" },
     ],
   },
   {

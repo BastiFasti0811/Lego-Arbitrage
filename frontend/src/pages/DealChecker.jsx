@@ -62,7 +62,7 @@ export default function DealChecker() {
   // vorbefuellen, Analyse sofort rechnen. Kauf aus dem Modal meldet "Gekauft"
   // an dasselbe Angebot zurueck, damit der Wochen-Digest es zaehlt.
   const [searchParams] = useSearchParams();
-  const [alertOffer, setAlertOffer] = useState(null); // { id, setNumber }
+  const [alertOffer, setAlertOffer] = useState(null); // { id, setNumber, url }
   const handledOfferParam = useRef(null);
 
   // Smart input — accepts URL or set number
@@ -215,7 +215,7 @@ export default function DealChecker() {
       queryClient.invalidateQueries({ queryKey: ["portfolio"] });
       // Nur wenn wirklich das Set aus dem Alert gekauft wurde, nicht ein
       // spaeter von Hand eingegebenes. Fehlschlag kostet nur die Digest-Zeile.
-      if (alertOffer && variables?.set_number === alertOffer.setNumber) {
+      if (alertOffer && variables?.set_number === alertOffer.setNumber && variables?.buy_url === alertOffer.url) {
         api.decideOffer(alertOffer.id, "BOUGHT").catch(() => {});
       }
     },
@@ -246,7 +246,7 @@ export default function DealChecker() {
         setBoxDamage(Boolean(offer.box_damage));
         setSourceUrl(offer.offer_url);
         setSourcePlatform(offer.platform);
-        setAlertOffer({ id: offer.id, setNumber: offer.set_number });
+        setAlertOffer({ id: offer.id, setNumber: offer.set_number, url: offer.offer_url });
         const decided = { BOUGHT: " · schon als gekauft markiert", REJECTED: " · abgelehnt" }[offer.decision] || "";
         setParseMessage(`Aus dem Telegram-Alert: Set ${offer.set_number}, ${offer.price_eur} €${decided}`);
         analyze.mutate({
