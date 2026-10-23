@@ -94,3 +94,67 @@ def test_warnings_from_httpx_still_get_through(caplog, restore_levels):
     logging.getLogger("httpx").warning("verbindung abgebrochen")
 
     assert "verbindung abgebrochen" in caplog.text
+
+
+def test_bot_token_in_a_telegram_error_is_redacted(capsys):
+    # PTB meldet einen abgelehnten Token woertlich; seit PR #50 loggt die
+    # Abholschleife diese Meldung. Gesehen im Prod-Log am 23.10.2026.
+    import structlog
+
+    from app.logging_setup import REDACTED
+
+    quiet_http_client_loggers()
+    quiet_http_client_loggers()  # zweimal: der Prozessor darf nur einmal haengen
+
+    token = "8656640958:AAFeLkDkfWetdML06hgp7BsrBU1N-WHg1NX"
+    structlog.get_logger().warning("telegram.x", error=f"The token `{token}` was rejected by the server.")
+
+    out = capsys.readouterr().out
+    assert token not in out
+    assert REDACTED in out
+    from app.logging_setup import redact_bot_tokens
+
+    assert structlog.get_config()["processors"].count(redact_bot_tokens) == 1
+
+
+def test_ordinary_values_with_colons_stay_untouched():
+    from app.logging_setup import redact_bot_tokens
+
+    event = {"event": "x", "at": "2026-10-23 19:29:11", "url": "https://example.org:8443/a"}
+    assert redact_bot_tokens(None, None, dict(event)) == event
+
+
+TOKEN = "8656640958:AAFeLkDkfWetdML06hgp7BsrBU1N-WHg1NX"
+
+
+def test_token_inside_a_telegram_url_is_redacted():
+    # Review-Finding #51: mit \b davor rutschte /bot<TOKEN>/ durch.
+    from app.logging_setup import REDACTED, redact_text
+
+    text = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
+    assert redact_text(text) == f"https://api.telegram.org/bot{REDACTED}/getUpdates"
+
+
+def test_exception_objects_and_tracebacks_are_redacted(capsys):
+    import structlog
+
+    quiet_http_client_loggers()
+    log = structlog.get_logger()
+    log.warning("telegram.obj", error=ValueError(f"The token `{TOKEN}` was rejected"))
+    try:
+        raise RuntimeError(f"The token `{TOKEN}` was rejected")
+    except RuntimeError:
+        log.exception("telegram.tb")
+
+    out = capsys.readouterr().out
+    assert TOKEN not in out
+    assert out.count("<telegram-token>") >= 2
+
+
+def test_stdlib_records_are_redacted():
+    import logging
+
+    quiet_http_client_loggers()
+    factory = logging.getLogRecordFactory()
+    record = factory("telegram.ext", logging.WARNING, __file__, 1, "url %s", (f"/bot{TOKEN}/x",), None)
+    assert TOKEN not in record.getMessage()
