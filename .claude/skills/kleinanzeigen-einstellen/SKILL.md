@@ -53,16 +53,20 @@ Nach `done`/`draft-saved`/`fail` räumt das Backend den Export im Container auf;
    - **Beschreibung**: `#ad-description` ← `body`, Zeilenumbrüche bleiben erhalten (Zeichenzähler darunter prüfen).
    - **Versand**: `#ad-shipping-enabled-yes` ist voreingestellt, Versandmethoden aus dem Konto nicht ändern.
    - **Preis**: `#ad-price-amount` ← `price`. Preistyp: `#ad-price-type` öffnen, dann `#ad-price-type-menu-option-0` (Festpreis) oder `-1` (VB). Option `-2` („Zu verschenken“) nie.
-   - **Direkt kaufen** (`input[name=buyNow]`): Kleinanzeigen stellt „Ja“ vor. So lassen, bis Sebastian anders entscheidet.
+   - **Direkt kaufen** (`input[name=buyNow]`): Kleinanzeigen stellt „Ja“ vor. Auf „Nein“ stellen, bis Sebastian anders entscheidet: „Ja“ bindet den Käufer an den Festpreis (passt nicht zu VB) und verkauft ohne Rückfrage, auch wenn derselbe Artikel parallel bei eBay steht. Das Radio ist versteckt wie beim Zustand, also das Label zu `input[name=buyNow][value=false]` klicken. Gibt es dieses Radio nicht → `fail` mit „Direkt kaufen lässt sich nicht abschalten“.
    - **Nicht anfassen**: PLZ, Ort, Straße, Name (kommen aus dem Konto), die kostenpflichtigen Extras (`input[name=articles]`: Highlight, Hochschieben, Top-Anzeige, Galerie) und die Marketing-Einwilligung `#ad-marketing-consent`. Alle drei müssen am Ende leer bzw. unverändert sein.
-8. **Kontrolle**: Per `chrome_evaluate` nur lesen und gegen den Auftrag abgleichen: `#ad-title`, `#ad-description`, `#ad-price-amount`, Text von `#ad-price-type`, Anzahl Fotos, `input[name=articles]:checked` (muss 0 sein), `#ad-marketing-consent` (muss false sein). Dazu ein Screenshot. Weicht etwas ab → korrigieren oder `fail`.
+8. **Kontrolle**: Per `chrome_evaluate` nur lesen und gegen den Auftrag abgleichen: `#ad-title`, `#ad-description`, `#ad-price-amount`, Text von `#ad-price-type`, Anzahl Fotos, `input[name=articles]:checked` (muss 0 sein), `#ad-marketing-consent` (muss false sein), `input[name=buyNow]:checked` (Wert muss `false` sein). Dazu ein Screenshot. Weicht etwas ab → korrigieren oder `fail`.
 9. **Testlauf** (`dry_run: true`): Knopf „Entwurf speichern“, nie „Anzeige aufgeben“. Kleinanzeigen bestätigt mit dem Dialog „Entwurf gespeichert“. Dann `$KA draft-saved <job_id> --note "Entwurf gespeichert, nicht veröffentlicht"`, Tab verlassen (`about:blank`). Den Entwurf nicht löschen; Kleinanzeigen hält höchstens 5 Entwürfe je 60 Tage, Sebastian räumt sie selbst auf. Sind schon 5 da, nicht speichern, sondern `draft-saved` mit „Formular gefüllt, Entwurfsplätze voll“.
-10. **Echt** (`dry_run: false`): den Knopf „Anzeige aufgeben“ klicken. Auf die Bestätigungsseite warten, die Anzeigen-URL (`https://www.kleinanzeigen.de/s-anzeige/…`) ablesen, notfalls über „Meine Anzeigen“. Dann `$KA done <job_id> --url <url>`. Ohne URL kein `done`: dann `fail` mit „Veröffentlicht, URL nicht gefunden — in Meine Anzeigen prüfen“.
+10. **Echt** (`dry_run: false`): Vor dem Klick den Kostenhinweis über dem Knopf lesen. Steht dort ein Betrag über 0 € (Gebühr, kostenpflichtige Kategorie, Extra) → nicht klicken, `fail` mit dem Wortlaut. Sonst den Knopf „Anzeige aufgeben“ klicken. Danach zeigt Kleinanzeigen oft Angebote (Hochschieben, Top-Anzeige, Paket kaufen): nichts davon anklicken, keine Bezahlseite öffnen, nur die URL ablesen. Auf die Bestätigungsseite warten, die Anzeigen-URL (`https://www.kleinanzeigen.de/s-anzeige/…`) ablesen, notfalls über „Meine Anzeigen“. Dann `$KA done <job_id> --url <url>`. Ohne URL kein `done`: dann `fail` mit „Veröffentlicht, URL nicht gefunden — in Meine Anzeigen prüfen“.
 11. Host-Fotoordner löschen, Ergebnis kurz an Sebastian melden (Titel, Preis, URL oder Grund).
 
 ## Wenn etwas hängen bleibt
 
-Ein Auftrag, der länger als 2 Stunden `IN_PROGRESS` steht, wird beim nächsten `next` als FAILED markiert („Ohne Rückmeldung abgebrochen — in „Meine Anzeigen“ prüfen …“). Er wird nicht wiederholt, weil eine halb veröffentlichte Anzeige sonst doppelt online ginge. Sebastian prüft „Meine Anzeigen“ und trägt die URL von Hand ein oder legt einen neuen Auftrag an.
+Ein Auftrag, der länger als 2 Stunden `IN_PROGRESS` steht, wird beim nächsten `next` oder beim nächsten neuen Auftrag für dasselbe Listing als FAILED markiert („Ohne Rückmeldung abgebrochen — in „Meine Anzeigen“ prüfen …“). Er wird nicht wiederholt, weil eine halb veröffentlichte Anzeige sonst doppelt online ginge. Sebastian prüft „Meine Anzeigen“ und trägt die URL von Hand ein oder legt einen neuen Auftrag an.
+
+Scheitert `next` schon am Foto-Export (Datei fehlt, Bild kaputt), ist der Auftrag FAILED, zählt aber nicht als Versuch für das Tageslimit: Der Browser wurde nie geöffnet.
+
+Läuft ein anderer Durchgang schon (`next` meldet „Ein anderer Durchgang hat gerade einen Auftrag gestartet“), nichts tun: Die Datenbank lässt immer nur einen Auftrag `IN_PROGRESS` zu.
 
 ## Später
 

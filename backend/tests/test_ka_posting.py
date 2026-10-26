@@ -4,7 +4,9 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from PIL import Image
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import AppSetting, Base
@@ -123,10 +125,19 @@ class _AsyncSessionAdapter:
     async def delete(self, obj):
         self._session.delete(obj)
 
+    async def flush(self):
+        self._session.flush()
+
 
 @pytest.fixture
 def db():
     engine = create_engine("sqlite://")
+
+    @event.listens_for(engine, "connect")
+    def _foreign_keys_on(dbapi_connection, _record):
+        # wie Postgres: ON DELETE SET NULL greift nur mit eingeschalteten FKs
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
     Base.metadata.create_all(engine)
     with Session(engine, expire_on_commit=False) as sync_session:
         yield _AsyncSessionAdapter(sync_session)
@@ -524,3 +535,210 @@ async def test_autopost_setting_accepts_only_true_or_false(db):
     with pytest.raises(HTTPException) as exc:
         await update_settings([SettingUpdate(key="ka_autopost_without_approval", value="ja")], session=db)
     assert exc.value.status_code == 400
+
+
+# ── Review PR #52 ────────────────────────────────────────────────────
+
+
+async def _approved(db, *, set_number="75192", dry_run=False):
+    listing, item = _draft(db, set_number=set_number)
+    job = await ka_posting.request_posting(db, listing, item, dry_run=dry_run, now=NOW)
+    if job.status == PostingJobStatus.REQUESTED.value:
+        ka_posting.approve(job, NOW)
+    await db.commit()
+    return listing, item, job
+
+
+async def test_database_allows_only_one_running_job(db):
+    _, _, first = await _approved(db, dry_run=True)
+    _, _, second = await _approved(db, set_number="50000", dry_run=True)
+    first.status = PostingJobStatus.IN_PROGRESS.value
+    await db.commit()
+
+    second.status = PostingJobStatus.IN_PROGRESS.value
+    with pytest.raises(IntegrityError):
+        await db.commit()
+    await db.rollback()
+
+
+def test_claim_locks_rows_and_skips_locked_ones_on_postgres():
+    # SQLite kennt kein FOR UPDATE; in Prod (Postgres) ueberspringt ein zweiter
+    # `next` den Auftrag, den der erste gerade holt.
+    query = ka_posting._job_query().with_for_update(skip_locked=True, of=ListingPostingJob)
+    sql = str(query.compile(dialect=postgresql.dialect()))
+    assert "FOR UPDATE OF listing_posting_jobs SKIP LOCKED" in sql
+
+
+async def test_cli_next_reports_a_parallel_run_instead_of_starting_a_second_job(db, tmp_path, monkeypatch):
+    _, _, mine = await _approved(db, dry_run=True)
+    _, _, other = await _approved(db, set_number="50000", dry_run=True)
+    other.status = PostingJobStatus.IN_PROGRESS.value  # der andere Durchgang war schneller
+    other.started_at = NOW
+    await db.commit()
+
+    async def racing_claim(session, now):
+        # wie ein `next`, der vor dem Commit des anderen gelesen hat
+        ka_posting.mark_started(mine, now)
+        return ka_posting.ClaimResult(mine)
+
+    monkeypatch.setattr(ka_posting, "claim_next", racing_claim)
+    with pytest.raises(PostingError, match="anderer Durchgang"):
+        await cli.cmd_next(db, NOW, tmp_path, tmp_path / "export")
+    status = (await db.execute(select(ListingPostingJob.status).where(ListingPostingJob.id == mine.id))).scalar_one()
+    assert status == PostingJobStatus.APPROVED.value
+
+
+async def test_cli_next_commits_claim_before_exporting_photos(db, tmp_path, monkeypatch):
+    listing, item, job = await _approved(db, dry_run=True)
+    storage = tmp_path / "inventory_photos"
+    _write_photo(storage / str(item.id) / "p0.jpg")
+    events = []
+    original_commit, original_export = db.commit, ka_posting.export_photos
+
+    async def commit():
+        events.append("commit")
+        await original_commit()
+
+    def export(*args):
+        events.append("export")
+        return original_export(*args)
+
+    monkeypatch.setattr(db, "commit", commit)
+    monkeypatch.setattr(ka_posting, "export_photos", export)
+    output = await cli.cmd_next(db, NOW, storage, tmp_path / "export")
+    assert output["job"]["job_id"] == job.id
+    assert events == ["commit", "export"]
+
+
+async def test_missing_photo_file_fails_job_without_counting_as_attempt(db, tmp_path):
+    listing, item, job = await _approved(db)
+
+    with pytest.raises(PostingError, match="keine Fotodatei|Keine Fotodatei"):
+        await cli.cmd_next(db, NOW, tmp_path / "leer", tmp_path / "export")
+
+    assert job.status == PostingJobStatus.FAILED.value
+    assert job.started_at is None
+    assert await ka_posting.real_starts_today(db, NOW) == []
+    assert not cli.export_dir(job.id, tmp_path / "export").exists()
+
+
+async def test_auto_approval_is_withdrawn_when_switch_is_turned_off(db):
+    setting = AppSetting(key="ka_autopost_without_approval", value="true", category="kleinanzeigen")
+    db.add(setting)
+    for index in range(3):
+        old_listing, _ = _draft(db, set_number=f"1000{index}")
+        _posted_job(db, old_listing, started_at=NOW - timedelta(days=2 + index))
+    listing, item = _draft(db)
+    job = await ka_posting.request_posting(db, listing, item, dry_run=False, now=NOW)
+    await db.commit()
+    assert job.approved_by == "AUTO"
+
+    setting.value = "false"  # Sebastian schaltet die Freigabepflicht wieder ein
+    await db.commit()
+    claim = await ka_posting.claim_next(db, NOW)
+
+    assert claim.job is None
+    assert claim.requeued == [job.id]
+    assert job.status == PostingJobStatus.REQUESTED.value
+    assert job.approved_by is None
+
+
+async def test_stale_job_does_not_block_a_new_request(db):
+    listing, item, job = await _approved(db, dry_run=True)
+    await ka_posting.claim_next(db, NOW)
+    await db.commit()
+
+    later = NOW + timedelta(hours=3)
+    new_job = await ka_posting.request_posting(db, listing, item, dry_run=True, now=later)
+    await db.commit()
+
+    assert job.status == PostingJobStatus.FAILED.value
+    assert "Meine Anzeigen" in job.error
+    assert new_job.status == PostingJobStatus.APPROVED.value
+
+
+async def test_deleting_a_listing_keeps_job_history_for_the_daily_limit(db):
+    from app.api.routes.listings import delete_listing
+
+    posted_listing, posted_item = _draft(db, set_number="10000")
+    posted = _posted_job(db, posted_listing, started_at=NOW - timedelta(hours=1))
+    waiting_listing, waiting_item, waiting = await _approved(db, set_number="20000")
+
+    await delete_listing(posted_item.id, posted_listing.id, session=db)
+    await delete_listing(waiting_item.id, waiting_listing.id, session=db)
+    db._session.expire_all()
+
+    assert posted.listing_id is None
+    assert posted.status == PostingJobStatus.POSTED.value
+    assert waiting.status == PostingJobStatus.CANCELLED.value
+    assert len(await ka_posting.real_starts_today(db, NOW)) == 1
+    assert await ka_posting.posted_count(db) == 1
+
+
+async def test_claim_cancels_job_whose_listing_is_gone(db):
+    listing, item, job = await _approved(db)
+    job.listing_id = None  # wie nach ON DELETE SET NULL ohne Abbruch
+    job.listing = None
+    await db.commit()
+
+    claim = await ka_posting.claim_next(db, NOW)
+    assert claim.cancelled == [job.id]
+    assert "gelöscht" in job.error
+
+
+async def test_draft_text_and_price_are_locked_while_a_job_is_open(db):
+    from fastapi import HTTPException
+
+    from app.api.routes.listings import ListingUpdate, update_listing
+
+    listing, item, job = await _approved(db)
+
+    with pytest.raises(HTTPException) as exc:
+        await update_listing(item.id, listing.id, ListingUpdate(current_price=599.0), session=db)
+    assert exc.value.status_code == 409
+    # Unveraenderte Werte (Formular schickt alles mit) und Nebenfelder gehen durch.
+    await update_listing(item.id, listing.id, ListingUpdate(title=listing.title, check_interval_days=7), session=db)
+
+    ka_posting.cancel(job, NOW)
+    await db.commit()
+    response = await update_listing(item.id, listing.id, ListingUpdate(current_price=599.0), session=db)
+    assert response.current_price == 599.0
+
+
+async def test_ai_text_refresh_is_locked_while_a_job_is_open(db, monkeypatch):
+    from fastapi import HTTPException
+
+    from app.api.routes.listings import refresh_listing_text
+
+    def _no_ai():
+        raise AssertionError("Die KI darf gar nicht erst gefragt werden")
+
+    monkeypatch.setattr("app.services.listing_prepare.get_provider", _no_ai)
+    listing, item, _job = await _approved(db)
+
+    with pytest.raises(HTTPException) as exc:
+        await refresh_listing_text(item_id=item.id, listing_id=listing.id, session=db)
+    assert exc.value.status_code == 409
+
+
+async def test_posted_listing_gets_berlin_calendar_date(db):
+    listing, item, job = await _approved(db)
+    late = datetime(2026, 10, 26, 23, 30, tzinfo=UTC)  # in Berlin schon der 27.
+    await ka_posting.claim_next(db, late)
+    ka_posting.mark_posted(job, item, KA_URL, late)
+    assert listing.listed_at == date(2026, 10, 27)
+
+
+def test_transparent_png_gets_white_background(db, tmp_path):
+    listing, item = _draft(db, photos=0)
+    storage = tmp_path / "inventory_photos"
+    source = storage / str(item.id) / "t.png"
+    source.parent.mkdir(parents=True)
+    Image.new("RGBA", (100, 100), (0, 0, 0, 0)).save(source)
+    db.add(InventoryPhoto(item_id=item.id, filename="t.png", sort_order=0))
+    db._session.flush()
+    db._session.refresh(item)
+
+    [path] = ka_posting.export_photos(item, storage, tmp_path / "export" / "job_9")
+    with Image.open(path) as img:
+        assert min(img.getpixel((50, 50))) > 240

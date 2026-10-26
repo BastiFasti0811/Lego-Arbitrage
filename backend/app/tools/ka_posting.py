@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 from app.models.base import async_session
@@ -86,18 +87,34 @@ async def cmd_request(session, now: datetime, listing_id: int, dry_run: bool) ->
 
 async def cmd_next(session, now: datetime, storage_root: Path, export_root: Path) -> dict:
     claim = await ka_posting.claim_next(session, now)
+    try:
+        # Sofort committen, nicht erst nach dem Foto-Export: Solange der Claim
+        # offen ist, koennte ein zweiter `next` denselben Auftrag holen.
+        await session.commit()
+    except IntegrityError as exc:
+        # uq_listing_posting_jobs_running: ein anderer Durchgang hat gerade
+        # einen Auftrag gestartet.
+        await session.rollback()
+        raise PostingError("Ein anderer Durchgang hat gerade einen Auftrag gestartet — erst den abschließen") from exc
+    extra = {"cancelled": claim.cancelled, "requeued": claim.requeued}
     if claim.job is None:
-        await session.commit()  # abgebrochene oder haengengebliebene Auftraege festhalten
-        return {"job": None, "reason": claim.reason, "cancelled": claim.cancelled}
+        return {"job": None, "reason": claim.reason, **extra}
     job = claim.job
     item = job.listing.item
-    photos = ka_posting.export_photos(item, storage_root, export_dir(job.id, export_root))
+    target = export_dir(job.id, export_root)
+    try:
+        photos = ka_posting.export_photos(item, storage_root, target)
+    except Exception as exc:  # jeder Exportfehler beendet den Auftrag sauber
+        photos = []
+        error = f"Fotos ließen sich nicht exportieren: {exc}"
+    else:
+        error = "Keine Fotodatei gefunden"
     if not photos:
-        ka_posting.mark_failed(job, now, "Keine Fotodatei gefunden")
+        ka_posting.abort_before_browser(job, now, error)
         await session.commit()
-        raise PostingError(f"Auftrag {job.id}: keine Fotodatei gefunden")
-    await session.commit()
-    return {"job": ka_posting.build_payload(job, item, photos), "cancelled": claim.cancelled}
+        _cleanup(job.id, export_root)
+        raise PostingError(f"Auftrag {job.id}: {error}")
+    return {"job": ka_posting.build_payload(job, item, photos), **extra}
 
 
 def _cleanup(job_id: int, export_root: Path) -> None:

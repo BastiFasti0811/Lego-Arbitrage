@@ -219,8 +219,11 @@ def mark_posted(job: ListingPostingJob, item: InventoryItem, url: str, now: date
     _require_status(job, PostingJobStatus.IN_PROGRESS)
     if job.dry_run:
         raise PostingError("Ein Testlauf veröffentlicht nicht — `draft-saved` statt `done`")
+    if job.listing is None:
+        raise PostingError(f"Auftrag {job.id}: der Entwurf ist gelöscht — URL von Hand eintragen")
     try:
-        activate_draft(job.listing, item, url=url)
+        # Einstelldatum nach Berliner Kalender, nicht nach der UTC-Uhr des Containers.
+        activate_draft(job.listing, item, url=url, listed_at=now.astimezone(BERLIN).date())
     except ListingPrepareError as exc:
         raise PostingError(exc.detail) from exc
     job.status = PostingJobStatus.POSTED.value
@@ -241,6 +244,30 @@ def mark_failed(job: ListingPostingJob, now: datetime, error: str) -> None:
     job.status = PostingJobStatus.FAILED.value
     job.finished_at = now
     job.error = (error or "").strip() or "ohne Angabe"
+
+
+def abort_before_browser(job: ListingPostingJob, now: datetime, error: str) -> None:
+    """Gescheitert, bevor der Agent die Seite angefasst hat (z.B. Fotos fehlen).
+
+    Ohne Startzeit zaehlt der Versuch nicht gegen Tageslimit und Abstand: auf
+    Kleinanzeigen ist nichts passiert."""
+    mark_failed(job, now, error)
+    job.started_at = None
+
+
+def is_stale(job: ListingPostingJob, now: datetime) -> bool:
+    return (
+        job.status == PostingJobStatus.IN_PROGRESS.value
+        and job.started_at is not None
+        and now - as_utc(job.started_at) >= STALE_IN_PROGRESS
+    )
+
+
+def fail_stale(job: ListingPostingJob, now: datetime) -> None:
+    # Ob die Anzeige trotzdem online ging, weiss hier keiner -- darum FAILED
+    # mit Pruefhinweis, nie stillschweigend neu.
+    mark_failed(job, now, STALE_ERROR)
+    logger.warning("ka_posting.stale", job_id=job.id, listing_id=job.listing_id)
 
 
 # ── Datenbank ───────────────────────────────────────────────────────
@@ -302,7 +329,12 @@ async def request_posting(
     """Auftrag anlegen. Ohne Freigabe startet nur ein Testlauf oder, nach den
     ersten drei Inseraten, ein Auftrag bei eingeschaltetem Autopost."""
     check_listing_postable(listing, item)
-    if await open_job_for(session, listing.id) is not None:
+    existing = await open_job_for(session, listing.id)
+    if existing is not None and is_stale(existing, now):
+        # Haengengebliebener Lauf: nicht bis zum naechsten `next` blockieren.
+        fail_stale(existing, now)
+        await session.flush()  # erst schliessen, dann neu anlegen (Unique-Index)
+    elif existing is not None:
         raise PostingError("Für diesen Entwurf läuft schon ein Einstell-Auftrag")
 
     approval = needs_approval(
@@ -339,38 +371,60 @@ class ClaimResult:
     job: ListingPostingJob | None
     reason: str | None = None
     cancelled: list[int] = field(default_factory=list)
+    # Auto-Freigaben, die nicht mehr gelten (Schalter aus): warten wieder auf Sebastian.
+    requeued: list[int] = field(default_factory=list)
 
 
 async def claim_next(session: AsyncSession, now: datetime) -> ClaimResult:
     """Den aeltesten freigegebenen Auftrag holen und auf IN_PROGRESS setzen.
 
     Prueft vorher die Leitplanken. Auftraege, deren Entwurf inzwischen weg ist
-    (von Hand eingestellt, verworfen, Posten verkauft), werden abgebrochen."""
+    (von Hand eingestellt, verworfen, geloescht, Posten verkauft), werden
+    abgebrochen.
+
+    Gleichzeitige Aufrufe: Die Zeilen werden mit FOR UPDATE SKIP LOCKED geholt,
+    und der Unique-Index `uq_listing_posting_jobs_running` laesst nur einen
+    IN_PROGRESS-Auftrag zu. Der Aufrufer committet sofort und behandelt einen
+    IntegrityError als "anderer Durchgang war schneller"."""
     running = await session.execute(
         select(ListingPostingJob).where(ListingPostingJob.status == PostingJobStatus.IN_PROGRESS.value)
     )
     for job in running.scalars():
-        if job.started_at is not None and now - as_utc(job.started_at) < STALE_IN_PROGRESS:
+        if not is_stale(job, now):
             return ClaimResult(None, f"Auftrag {job.id} läuft noch — erst abschließen (`done`/`draft-saved`/`fail`)")
-        # Haengengeblieben. Ob die Anzeige trotzdem online ging, weiss hier
-        # keiner -- darum FAILED mit Pruefhinweis, nie stillschweigend neu.
-        mark_failed(job, now, STALE_ERROR)
-        logger.warning("ka_posting.stale", job_id=job.id, listing_id=job.listing_id)
+        fail_stale(job, now)
 
     result = await session.execute(
         _job_query()
         .where(ListingPostingJob.status == PostingJobStatus.APPROVED.value)
         .order_by(ListingPostingJob.approved_at, ListingPostingJob.id)
+        .with_for_update(skip_locked=True, of=ListingPostingJob)
     )
     cancelled: list[int] = []
+    requeued: list[int] = []
     starts = await real_starts_today(session, now)
+    autopost = await autopost_enabled(session)
+    posted = await posted_count(session)
     for job in result.scalars():
         listing = job.listing
         try:
+            if listing is None:
+                raise PostingError("der Entwurf ist gelöscht")
             check_listing_postable(listing, listing.item)
         except PostingError as exc:
             cancel(job, now, reason=f"Abgebrochen vor dem Start: {exc.detail}")
             cancelled.append(job.id)
+            continue
+        if job.approved_by == ApprovalSource.AUTO.value and needs_approval(
+            dry_run=job.dry_run, autopost_enabled=autopost, posted_count=posted
+        ):
+            # Sebastian hat die Freigabepflicht wieder eingeschaltet, nachdem
+            # der Auftrag automatisch freigegeben wurde: zurueck in die Freigabe.
+            job.status = PostingJobStatus.REQUESTED.value
+            job.approved_by = None
+            job.approved_at = None
+            requeued.append(job.id)
+            logger.info("ka_posting.requeued_for_approval", job_id=job.id, listing_id=job.listing_id)
             continue
         if not job.dry_run:
             block = pacing_block(starts, now)
@@ -379,7 +433,7 @@ async def claim_next(session: AsyncSession, now: datetime) -> ClaimResult:
                 continue
         mark_started(job, now)
         logger.info("ka_posting.started", job_id=job.id, listing_id=job.listing_id, dry_run=job.dry_run)
-        return ClaimResult(job, None, cancelled)
+        return ClaimResult(job, None, cancelled, requeued)
 
     block = pacing_block(starts, now)
     has_waiting = await session.execute(
@@ -388,8 +442,8 @@ async def claim_next(session: AsyncSession, now: datetime) -> ClaimResult:
         .where(ListingPostingJob.status == PostingJobStatus.APPROVED.value)
     )
     if int(has_waiting.scalar_one()) and block:
-        return ClaimResult(None, block, cancelled)
-    return ClaimResult(None, "Kein freigegebener Auftrag", cancelled)
+        return ClaimResult(None, block, cancelled, requeued)
+    return ClaimResult(None, "Kein freigegebener Auftrag", cancelled, requeued)
 
 
 # ── Daten fuer den Agenten ──────────────────────────────────────────
@@ -397,6 +451,16 @@ async def claim_next(session: AsyncSession, now: datetime) -> ClaimResult:
 
 def ordered_photos(item: InventoryItem) -> list:
     return sorted(item.photos, key=lambda p: (p.sort_order or 0, p.id or 0))
+
+
+def _flatten(img: Image.Image) -> Image.Image:
+    """JPEG kennt keine Transparenz: transparente Flaechen weiss statt schwarz."""
+    if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+        rgba = img.convert("RGBA")
+        background = Image.new("RGB", rgba.size, (255, 255, 255))
+        background.paste(rgba, mask=rgba.getchannel("A"))
+        return background
+    return img.convert("RGB")
 
 
 def export_photos(item: InventoryItem, storage_root: Path, target_dir: Path) -> list[Path]:
@@ -416,7 +480,7 @@ def export_photos(item: InventoryItem, storage_root: Path, target_dir: Path) -> 
             logger.warning("ka_posting.photo_missing", item_id=item.id, photo=photo.filename)
             continue
         with Image.open(source) as img:
-            img = ImageOps.exif_transpose(img).convert("RGB")
+            img = _flatten(ImageOps.exif_transpose(img))
             img.thumbnail((PHOTO_MAX_DIMENSION, PHOTO_MAX_DIMENSION))
             target = target_dir / f"{len(written) + 1:02d}.jpg"
             img.save(target, "JPEG", quality=PHOTO_JPEG_QUALITY, optimize=True)

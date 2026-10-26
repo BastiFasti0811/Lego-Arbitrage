@@ -18,7 +18,7 @@ from app.ai import AIProviderError
 from app.models import get_session
 from app.models.inventory import InventoryItem, InventoryStatus
 from app.models.listing import OPEN_LISTING_STATUSES, Listing, ListingStatus
-from app.models.listing_posting_job import ListingPostingJob, PostingJobStatus
+from app.models.listing_posting_job import OPEN_POSTING_STATUSES, ListingPostingJob, PostingJobStatus
 from app.services.listing_check import days_online, item_label
 from app.services.listing_prepare import (
     ListingPrepareError,
@@ -245,6 +245,7 @@ async def refresh_listing_text(item_id: int, listing_id: int, session: AsyncSess
         price = listing.current_price
     if price is None:
         raise HTTPException(status_code=400, detail="Kein Preis ermittelbar — bitte Preis angeben")
+    await _reject_if_posting_job_open(listing, session)
 
     try:
         text = await write_text(item, platform=listing.platform, price=price, price_type=listing.price_type)
@@ -358,6 +359,32 @@ async def activate_listing(
     return to_listing_response(listing)
 
 
+async def _reject_if_posting_job_open(listing: Listing, session: AsyncSession) -> None:
+    """Freigegeben ist genau dieser Text zu genau diesem Preis. Wer ihn aendert,
+    bricht den Einstell-Auftrag ab und legt ihn neu an."""
+    if listing.status != ListingStatus.DRAFT.value:
+        return
+    open_job = await session.execute(
+        select(ListingPostingJob.id).where(
+            ListingPostingJob.listing_id == listing.id,
+            ListingPostingJob.status.in_(OPEN_POSTING_STATUSES),
+        )
+    )
+    if open_job.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Für diesen Entwurf läuft ein Einstell-Auftrag — erst abbrechen, dann ändern",
+        )
+
+
+def _changes_posted_fields(listing: Listing, data: ListingUpdate) -> bool:
+    """Aendert der PATCH etwas, das der Einstell-Agent ins Formular schreibt?"""
+    return any(
+        getattr(data, field) is not None and getattr(data, field) != getattr(listing, field)
+        for field in ("title", "body", "current_price", "price_type")
+    )
+
+
 @router.patch("/{item_id}/listings/{listing_id}", response_model=ListingResponse)
 async def update_listing(
     item_id: int, listing_id: int, data: ListingUpdate, session: AsyncSession = Depends(get_session)
@@ -385,6 +412,9 @@ async def update_listing(
         if data.status not in allowed or listing.status not in allowed:
             raise HTTPException(status_code=400, detail="Nur Wechsel zwischen ACTIVE und PAUSED erlaubt")
         listing.status = data.status
+
+    if _changes_posted_fields(listing, data):
+        await _reject_if_posting_job_open(listing, session)
 
     if data.min_price is not None and data.min_price != listing.min_price:
         # Neue Schmerzgrenze: der einmalige Hinweis darf wieder kommen.
@@ -425,17 +455,24 @@ async def end_listing(item_id: int, listing_id: int, session: AsyncSession = Dep
 async def delete_listing(item_id: int, listing_id: int, session: AsyncSession = Depends(get_session)):
     """Fuer Fehleingaben — loescht die Zeile samt Preis-Historie endgueltig."""
     listing = await _get_listing(item_id, listing_id, session)
-    if listing.status == ListingStatus.DRAFT.value:
-        running = await session.execute(
-            select(ListingPostingJob.id).where(
-                ListingPostingJob.listing_id == listing.id,
-                ListingPostingJob.status == PostingJobStatus.IN_PROGRESS.value,
-            )
+    open_jobs = await session.execute(
+        select(ListingPostingJob).where(
+            ListingPostingJob.listing_id == listing.id,
+            ListingPostingJob.status.in_(OPEN_POSTING_STATUSES),
         )
-        if running.scalar_one_or_none() is not None:
-            # Der Agent fuellt gerade das Formular; ohne Zeile koennte er die
-            # fertige Anzeige nirgends mehr eintragen.
-            raise HTTPException(status_code=409, detail="Der Agent stellt diesen Entwurf gerade ein")
+    )
+    open_jobs = list(open_jobs.scalars())
+    if any(job.status == PostingJobStatus.IN_PROGRESS.value for job in open_jobs):
+        # Der Agent fuellt gerade das Formular; ohne Zeile koennte er die
+        # fertige Anzeige nirgends mehr eintragen.
+        raise HTTPException(status_code=409, detail="Der Agent stellt diesen Entwurf gerade ein")
+    # Wartende Auftraege enden mit dem Listing. Die Zeilen bleiben als Historie
+    # (listing_id wird NULL) und zaehlen weiter fuers Tageslimit.
+    now = datetime.now(UTC)
+    for job in open_jobs:
+        job.status = PostingJobStatus.CANCELLED.value
+        job.finished_at = now
+        job.error = "Listing gelöscht"
     await session.delete(listing)
     await session.commit()
     return {"status": "deleted", "id": listing_id}

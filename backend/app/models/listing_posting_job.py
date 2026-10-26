@@ -46,6 +46,7 @@ OPEN_POSTING_STATUSES: tuple[str, ...] = (
 )
 
 _OPEN_JOB_SQL = text("status IN ('REQUESTED','APPROVED','IN_PROGRESS')")
+_RUNNING_JOB_SQL = text("status = 'IN_PROGRESS'")
 
 
 class ListingPostingJob(Base):
@@ -60,10 +61,25 @@ class ListingPostingJob(Base):
             sqlite_where=_OPEN_JOB_SQL,
             postgresql_where=_OPEN_JOB_SQL,
         ),
+        # Hoechstens ein laufender Auftrag ueberhaupt: zwei `next`-Durchgaenge
+        # zur selben Zeit (Autopilot und Hand) duerfen nicht zwei Anzeigen
+        # gleichzeitig einstellen. Der zweite Commit scheitert an diesem Index.
+        Index(
+            "uq_listing_posting_jobs_running",
+            "status",
+            unique=True,
+            sqlite_where=_RUNNING_JOB_SQL,
+            postgresql_where=_RUNNING_JOB_SQL,
+        ),
         Index("ix_listing_posting_jobs_status", "status"),
     )
 
-    listing_id: Mapped[int] = mapped_column(ForeignKey("listings.id", ondelete="CASCADE"), index=True)
+    # SET NULL statt CASCADE: Wird ein Listing geloescht, bleibt der Auftrag als
+    # Historie stehen. Sonst sinken Tageszaehler und Zahl der eingestellten
+    # Inserate, und das Tageslimit liesse sich durch Loeschen umgehen.
+    listing_id: Mapped[int | None] = mapped_column(
+        ForeignKey("listings.id", ondelete="SET NULL"), index=True, nullable=True
+    )
     action: Mapped[str] = mapped_column(String(20), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     # Testlauf: Formular fuellen, nicht veroeffentlichen.
@@ -78,7 +94,7 @@ class ListingPostingJob(Base):
     result_url: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
 
-    listing: Mapped["Listing"] = relationship()
+    listing: Mapped["Listing | None"] = relationship()
 
     def __repr__(self) -> str:
         return f"<ListingPostingJob listing={self.listing_id} {self.action} {self.status}>"

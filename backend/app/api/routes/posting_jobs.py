@@ -34,7 +34,7 @@ class PostingJobCreate(BaseModel):
 
 class PostingJobResponse(BaseModel):
     id: int
-    listing_id: int
+    listing_id: int | None  # NULL, wenn das Listing geloescht wurde (Historie bleibt)
     action: str
     status: str
     dry_run: bool
