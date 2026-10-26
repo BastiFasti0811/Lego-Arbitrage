@@ -18,13 +18,14 @@ from app.ai import AIProviderError
 from app.models import get_session
 from app.models.inventory import InventoryItem, InventoryStatus
 from app.models.listing import OPEN_LISTING_STATUSES, Listing, ListingStatus
+from app.models.listing_posting_job import ListingPostingJob, PostingJobStatus
 from app.services.listing_check import days_online, item_label
 from app.services.listing_prepare import (
     ListingPrepareError,
+    activate_draft,
     apply_text,
     draft_price,
     prepare_listing_draft,
-    validate_listing_url,
     write_text,
 )
 from app.services.listing_rules import (
@@ -339,29 +340,18 @@ async def activate_listing(
     if listing.status != ListingStatus.DRAFT.value:
         raise HTTPException(status_code=400, detail="Nur ein Entwurf laesst sich aktiv schalten")
     item = await _get_item(item_id, session)
-    if item.status == InventoryStatus.SOLD.value:
-        raise HTTPException(status_code=400, detail="Verkaufte Artikel lassen sich nicht neu einstellen")
-    _reject_unconfirmed_draft(item)
-
-    url = data.url.strip()
-    url_error = validate_listing_url(url, listing.platform)
-    if url_error:
-        raise HTTPException(status_code=400, detail=url_error)
-    price = data.current_price if data.current_price is not None else listing.current_price
-    if price is None:
-        raise HTTPException(status_code=400, detail="Der Entwurf hat keinen Preis — bitte Preis angeben")
-    min_price = data.min_price if data.min_price is not None else default_min_price(price)
-    error = validate_activation(listing.platform, price, min_price)
-    if error:
-        raise HTTPException(status_code=400, detail=error)
-
-    listed_at = data.listed_at or date.today()
-    listing.status = ListingStatus.ACTIVE.value
-    listing.url = url
-    listing.current_price = price
-    listing.min_price = min_price
-    listing.listed_at = listed_at
-    listing.next_check_at = compute_next_check(listed_at, listing.check_interval_days)
+    try:
+        activate_draft(
+            listing,
+            item,
+            url=data.url,
+            price=data.current_price,
+            min_price=data.min_price,
+            listed_at=data.listed_at,
+        )
+    except ListingPrepareError as exc:
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
+    price = listing.current_price
     await session.commit()
     await session.refresh(listing)
     logger.info("listing.activated", item_id=item_id, platform=listing.platform, price=price, via="url")
@@ -435,6 +425,17 @@ async def end_listing(item_id: int, listing_id: int, session: AsyncSession = Dep
 async def delete_listing(item_id: int, listing_id: int, session: AsyncSession = Depends(get_session)):
     """Fuer Fehleingaben — loescht die Zeile samt Preis-Historie endgueltig."""
     listing = await _get_listing(item_id, listing_id, session)
+    if listing.status == ListingStatus.DRAFT.value:
+        running = await session.execute(
+            select(ListingPostingJob.id).where(
+                ListingPostingJob.listing_id == listing.id,
+                ListingPostingJob.status == PostingJobStatus.IN_PROGRESS.value,
+            )
+        )
+        if running.scalar_one_or_none() is not None:
+            # Der Agent fuellt gerade das Formular; ohne Zeile koennte er die
+            # fertige Anzeige nirgends mehr eintragen.
+            raise HTTPException(status_code=409, detail="Der Agent stellt diesen Entwurf gerade ein")
     await session.delete(listing)
     await session.commit()
     return {"status": "deleted", "id": listing_id}

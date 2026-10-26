@@ -18,6 +18,7 @@ from app.api.routes import (
     goals,
     inventory,
     listings,
+    posting_jobs,
     remote_scan,
     scout,
     sets,
@@ -146,6 +147,8 @@ app.include_router(inventory.router, prefix="/api/inventory", tags=["Inventory"]
 app.include_router(goals.router, prefix="/api/goals", tags=["Goals"])
 app.include_router(listings.router, prefix="/api/inventory", tags=["Listings"])
 app.include_router(listings.overview_router, prefix="/api/listings", tags=["Listings"])
+app.include_router(posting_jobs.router, prefix="/api/inventory", tags=["Listings"])
+app.include_router(posting_jobs.jobs_router, prefix="/api/listings/posting-jobs", tags=["Listings"])
 app.include_router(settings_routes.router, prefix="/api/settings", tags=["Settings"])
 app.include_router(system.router, prefix="/api/system", tags=["System"])
 app.include_router(remote_scan.router, prefix="/api/remote-scan", tags=["Remote Scan"])

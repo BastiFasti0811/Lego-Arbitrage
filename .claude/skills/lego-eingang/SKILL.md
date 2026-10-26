@@ -76,5 +76,5 @@ ssh lego-prod 'docker exec lego-api-prod rm -rf /tmp/eingang; rm -rf /tmp/eingan
 ## Grenzen
 
 - Keine Marktpreis-Recherche in diesem Durchgang. Lego bekommt den Marktwert vom Bewertungslauf, bei Nicht-Lego bleibt der Preis leer, bis Sebastian einen nennt.
-- Anzeigen werden nie selbst eingestellt (ADR 0002). Entwürfe landen in der App, eingestellt wird von Hand.
+- Dieser Skill stellt keine Anzeigen ein. Entwürfe landen in der App; Kleinanzeigen-Entwürfe stellt danach der Skill `kleinanzeigen-einstellen` nach Freigabe ein (Nachtrag ADR 0002), eBay bleibt Handarbeit.
 - Der Import ist wiederholbar: Der Marker `[<mark> <key>]` in der Notiz verhindert Dubletten. Bei einem Abbruch denselben Aufruf erneut starten.

@@ -230,6 +230,13 @@ export const api = {
     request(`/inventory/${itemId}/listings/${listingId}`, { method: "PATCH", body: JSON.stringify(data) }),
   endListing: (itemId, listingId) => request(`/inventory/${itemId}/listings/${listingId}/end`, { method: "POST" }),
   deleteListing: (itemId, listingId) => request(`/inventory/${itemId}/listings/${listingId}`, { method: "DELETE" }),
+  // Kleinanzeigen per Browser (Nachtrag ADR 0002): Auftrag, Freigabe, Abbruch. Kein Loeschen.
+  requestPosting: (itemId, listingId, dryRun) =>
+    request(`/inventory/${itemId}/listings/${listingId}/posting-jobs`, { method: "POST", body: JSON.stringify({ dry_run: !!dryRun }) }),
+  listPostingJobs: (itemId, listingId) => request(`/inventory/${itemId}/listings/${listingId}/posting-jobs`),
+  postingOverview: () => request("/listings/posting-jobs"),
+  approvePosting: (jobId) => request(`/listings/posting-jobs/${jobId}/approve`, { method: "POST" }),
+  cancelPosting: (jobId) => request(`/listings/posting-jobs/${jobId}/cancel`, { method: "POST" }),
   // Tages-Check (PR 3): faellige Anpassungen und die drei Antworten auf einen Vorschlag.
   dueAdjustments: () => request("/listings/due"),
   acceptSuggestion: (itemId, listingId) =>
