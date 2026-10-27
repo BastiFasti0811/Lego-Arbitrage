@@ -1,8 +1,9 @@
 """Eigene Anzeigen (Listings) je Artikel und Plattform — siehe CONTEXT.md.
 
 Nicht verwechseln mit `offers`: Das sind fremde Angebote der Arbitrage-
-Pipeline. Ein Listing ist unsere eigene Anzeige, manuell eingestellt
-(ADR 0002 — das System postet nie selbst).
+Pipeline. Ein Listing ist unsere eigene Anzeige. eBay wird von Hand
+eingestellt (ADR 0002); Kleinanzeigen laut Nachtrag auch per Browser,
+siehe `listing_posting_job.py`.
 """
 
 from datetime import date, datetime

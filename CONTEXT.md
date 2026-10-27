@@ -19,6 +19,9 @@ _Avoid_: Inserat, Anzeige (im Code), Angebot
 **Inserat vorbereiten** (`POST /inventory/{id}/listings/prepare`):
 Der einzige Textweg zum Listing: legt den Entwurf mit KI-Text und Preisvorschlag an oder nimmt den vorhandenen. Fällt die KI aus, steht ein Vorlagentext mit Warnung drin. Nach dem Einstellen von Hand genügt die Anzeigen-URL (`…/activate`), dann ist das Listing ACTIVE mit Datum. Als „inseriert" zählt ein Artikel, sobald eines seiner Listings je ein Einstell-Datum hatte.
 
+**Einstell-Auftrag** (`listing_posting_jobs`):
+Der Auftrag, einen Kleinanzeigen-Entwurf per Browser einzustellen (Nachtrag ADR 0002). Durchläuft REQUESTED (wartet auf Freigabe) → APPROVED → IN_PROGRESS → POSTED, als Testlauf DRAFT_SAVED (Formular gefüllt, nicht veröffentlicht). Je Entwurf höchstens ein offener Auftrag. Den Browser fährt der Skill `kleinanzeigen-einstellen`; Löschen ist keine Aktion.
+
 **Montags-Paket** (`app.tasks.listing_pack`):
 Montags 08:00 bereitet das System fünf nicht inserierte Lego-Artikel als Kleinanzeigen-Entwurf vor (Fotos zuerst, dann höchster Preisvorschlag) und schickt Fotos, Titel und Text per Telegram. Eingestellt wird weiter von Hand (ADR 0002).
 

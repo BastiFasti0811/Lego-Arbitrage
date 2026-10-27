@@ -706,7 +706,7 @@ async def test_refresh_text_uses_current_price_for_active_listing(monkeypatch):
 async def test_refresh_text_falls_back_to_market_price_for_draft_listing(monkeypatch):
     listing = _listing(status=ListingStatus.DRAFT.value, current_price=None, min_price=None)
     item = _item(current_market_price=99.0)
-    session = _FakeSession(fetch_results=[listing, item])
+    session = _FakeSession(fetch_results=[listing, item, None])
     fake = _FakeProvider(text=ListingText(title="Neu", body="Neuer Text", platform_category="Kategorie"))
     monkeypatch.setattr("app.services.listing_prepare.get_provider", lambda: fake)
 
@@ -950,7 +950,8 @@ async def test_patch_price_on_draft_listing_sets_price_without_price_change(monk
     # Ein Entwurf hat keinen alten Preis (current_price None); apply_price_change
     # schrieb dann eine ListingPriceChange mit old_price=None -> NOT NULL -> 500.
     listing = _listing(status=ListingStatus.DRAFT.value, current_price=None, min_price=None)
-    session = _FakeSession(fetch_result=listing)
+    # Zweite Abfrage: kein offener Einstell-Auftrag fuer den Entwurf.
+    session = _FakeSession(fetch_results=[listing, None])
 
     response = await update_listing(item_id=1, listing_id=1, data=ListingUpdate(current_price=60.0), session=session)
 
@@ -1004,7 +1005,7 @@ async def test_refresh_text_uses_draft_price_suggestion(monkeypatch):
     """Ein vorbereiteter Entwurf traegt seinen Preis; der neue Text nennt denselben."""
     listing = _listing(status=ListingStatus.DRAFT.value, current_price=42.0, min_price=None)
     item = _item(current_market_price=99.0)
-    session = _FakeSession(fetch_results=[listing, item])
+    session = _FakeSession(fetch_results=[listing, item, None])
     fake = _FakeProvider(text=ListingText(title="T", body="B", platform_category="K"))
     monkeypatch.setattr("app.services.listing_prepare.get_provider", lambda: fake)
 

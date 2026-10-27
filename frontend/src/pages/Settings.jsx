@@ -44,6 +44,17 @@ const FIELD_CONFIG = [
       { key: "bricklink_max_results_per_url", label: "Max Ergebnisse pro URL", type: "number" },
     ],
   },
+  {
+    category: "kleinanzeigen",
+    title: "Kleinanzeigen per Browser",
+    description:
+      "Ein Agent stellt Entwürfe in deinem eingeloggten Chrome ein (Nachtrag ADR 0002). Höchstens 3 neue " +
+      "Anzeigen am Tag, 20 Minuten Abstand. Die ersten 3 brauchen immer deine Freigabe; der Schalter greift erst danach.",
+    enabled: true,
+    fields: [
+      { key: "ka_autopost_without_approval", label: "Ohne Freigabe je Anzeige einstellen", type: "checkbox" },
+    ],
+  },
 ];
 
 function isTruthy(value) {

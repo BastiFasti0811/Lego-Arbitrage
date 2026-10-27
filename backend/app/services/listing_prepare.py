@@ -6,13 +6,14 @@ legt `prepare_listing_draft` immer eine DRAFT-Zeile an (oder nimmt die schon
 vorhandene) und traegt Text und Preisvorschlag ein. Die feste Vorlage lebt nur
 noch als Rueckfall, wenn die KI ausfaellt — dann mit sichtbarer Warnung.
 
-ADR 0002 bleibt: hier wird nichts eingestellt, nur vorbereitet.
+Hier wird nichts eingestellt, nur vorbereitet. Das Einstellen per Browser
+(Nachtrag ADR 0002, nur Kleinanzeigen) laeuft ueber `app/services/ka_posting.py`.
 Kein Import aus den Routen-Modulen, sonst Zirkularimport.
 """
 
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from urllib.parse import urlparse
 
@@ -24,7 +25,12 @@ from app.domain.market_freshness import is_market_price_stale
 from app.engine.market_consensus import PriceBasis
 from app.models.inventory import InventoryItem, InventoryItemType, InventoryStatus
 from app.models.listing import OPEN_LISTING_STATUSES, Listing, ListingPlatform, ListingStatus, PriceType
-from app.services.listing_rules import default_price_type
+from app.services.listing_rules import (
+    compute_next_check,
+    default_min_price,
+    default_price_type,
+    validate_activation,
+)
 
 logger = structlog.get_logger()
 
@@ -270,3 +276,42 @@ def validate_listing_url(url: str, platform: str) -> str | None:
     if not any(host == domain or host.endswith(f".{domain}") for domain in allowed):
         return f"Die Adresse gehört nicht zu {platform.title()} ({host})"
     return None
+
+
+def activate_draft(
+    listing: Listing,
+    item: InventoryItem,
+    *,
+    url: str,
+    price: float | None = None,
+    min_price: float | None = None,
+    listed_at: date | None = None,
+) -> None:
+    """Entwurf -> aktiv, sobald die Anzeige steht. Committet nicht.
+
+    Gemeinsamer Weg fuer "Adresse einfuegen" in der App und fuer den
+    Einstell-Agenten: Preis kommt vom Entwurf (ausser er wird mitgegeben),
+    Datum ist heute, Schmerzgrenze 70 %."""
+    if listing.status != ListingStatus.DRAFT.value:
+        raise ListingPrepareError("Nur ein Entwurf laesst sich aktiv schalten")
+    check_item_can_be_listed(item)
+
+    url = url.strip()
+    url_error = validate_listing_url(url, listing.platform)
+    if url_error:
+        raise ListingPrepareError(url_error)
+    resolved_price = price if price is not None else listing.current_price
+    if resolved_price is None:
+        raise ListingPrepareError("Der Entwurf hat keinen Preis — bitte Preis angeben")
+    resolved_min = min_price if min_price is not None else default_min_price(resolved_price)
+    error = validate_activation(listing.platform, resolved_price, resolved_min)
+    if error:
+        raise ListingPrepareError(error)
+
+    resolved_date = listed_at or date.today()
+    listing.status = ListingStatus.ACTIVE.value
+    listing.url = url
+    listing.current_price = resolved_price
+    listing.min_price = resolved_min
+    listing.listed_at = resolved_date
+    listing.next_check_at = compute_next_check(resolved_date, listing.check_interval_days)

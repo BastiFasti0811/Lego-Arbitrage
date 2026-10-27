@@ -11,6 +11,7 @@ from app.models.heartbeat import TaskHeartbeat
 from app.models.inventory import InventoryItem, InventoryItemType, InventoryStatus
 from app.models.inventory_photo import InventoryPhoto
 from app.models.listing import Listing, ListingPlatform, ListingPriceChange, ListingStatus, PriceType
+from app.models.listing_posting_job import ListingPostingJob, PostingAction, PostingJobStatus
 from app.models.offer import Offer, OfferCondition, OfferPlatform, OfferStatus
 from app.models.offer_decision import DecisionKind, DecisionSource, OfferDecision
 from app.models.price import PriceRecord, PriceSource
@@ -60,6 +61,9 @@ __all__ = [
     "ListingPriceChange",
     "ListingStatus",
     "PriceType",
+    "ListingPostingJob",
+    "PostingAction",
+    "PostingJobStatus",
     "AppSetting",
     "ValuationRun",
     "ValuationRunItem",

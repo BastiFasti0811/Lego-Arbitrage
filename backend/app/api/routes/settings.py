@@ -168,6 +168,17 @@ DEFAULT_SETTINGS = [
         "is_secret": False,
         "value": "20",
     },
+    {
+        "key": "ka_autopost_without_approval",
+        "category": "kleinanzeigen",
+        "label": "Ohne Freigabe einstellen",
+        "description": (
+            "true = der Agent stellt freigegebene Kleinanzeigen-Entwürfe ohne Klick je Anzeige ein. "
+            "Greift erst nach den ersten drei eingestellten Anzeigen; Tageslimit (3) und Pausen bleiben."
+        ),
+        "is_secret": False,
+        "value": "false",
+    },
 ]
 DEFAULT_SETTINGS_BY_KEY = {setting["key"]: setting for setting in DEFAULT_SETTINGS}
 
@@ -217,6 +228,8 @@ async def update_settings(updates: list[SettingUpdate], session: AsyncSession = 
             and len(update.value.strip()) < 24
         ):
             raise HTTPException(status_code=400, detail="Heimrechner-Token: mindestens 24 Zeichen")
+        if update.key == "ka_autopost_without_approval" and update.value not in {"true", "false"}:
+            raise HTTPException(status_code=400, detail="Ohne Freigabe einstellen: true oder false")
         default = DEFAULT_SETTINGS_BY_KEY.get(update.key)
         if default is None:
             raise HTTPException(status_code=400, detail=f"Unbekannter Setting-Key: {update.key}")

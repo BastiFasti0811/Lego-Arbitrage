@@ -81,6 +81,107 @@ function ActivateForm({ itemId, platform, onDone }) {
   );
 }
 
+const POSTING_STATUS_TEXT = {
+  REQUESTED: "Wartet auf deine Freigabe",
+  APPROVED: "Freigegeben — der Agent stellt ihn beim nächsten Lauf ein",
+  IN_PROGRESS: "Agent füllt gerade das Formular",
+  POSTED: "Eingestellt",
+  DRAFT_SAVED: "Testlauf fertig: Formular gefüllt, nicht veröffentlicht",
+  FAILED: "Fehlgeschlagen",
+  CANCELLED: "Abgebrochen",
+};
+const OPEN_POSTING = new Set(["REQUESTED", "APPROVED", "IN_PROGRESS"]);
+
+// Nachtrag ADR 0002: Ein Agent stellt den Entwurf in Sebastians eingeloggtem
+// Chrome ein. Hier nur Auftrag, Freigabe, Abbruch — Loeschen gibt es nicht.
+function AutoPostPanel({ item, listing, onDone }) {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const queryKey = ["posting-jobs", listing.id];
+  const { data: jobs = [] } = useQuery({
+    queryKey,
+    queryFn: () => api.listPostingJobs(item.id, listing.id),
+    refetchInterval: (query) => (query.state.data?.some((job) => OPEN_POSTING.has(job.status)) ? 30000 : false),
+  });
+  const latest = jobs[0];
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey });
+    onDone();
+  };
+  const onError = (err) => toast.error(err.message);
+  const requestJob = useMutation({
+    mutationFn: (dryRun) => api.requestPosting(item.id, listing.id, dryRun),
+    onSuccess: (job) => {
+      toast.success(job.status === "REQUESTED" ? "Auftrag angelegt — bitte freigeben" : "Auftrag angelegt");
+      refresh();
+    },
+    onError,
+  });
+  const approve = useMutation({
+    mutationFn: (jobId) => api.approvePosting(jobId),
+    onSuccess: () => {
+      toast.success("Freigegeben");
+      refresh();
+    },
+    onError,
+  });
+  const cancel = useMutation({
+    mutationFn: (jobId) => api.cancelPosting(jobId),
+    onSuccess: () => {
+      toast.info("Auftrag abgebrochen");
+      refresh();
+    },
+    onError,
+  });
+  const busy = requestJob.isPending || approve.isPending || cancel.isPending;
+  const open = latest && OPEN_POSTING.has(latest.status);
+
+  return (
+    <div className="rounded-lg border border-border p-3 space-y-2">
+      <p className="text-xs text-text-secondary">
+        Automatisch einstellen (Chrome auf victus, höchstens 3 am Tag). Die ersten 3 Anzeigen gehen nur mit deiner Freigabe raus.
+      </p>
+      {latest && (
+        <p className="text-xs text-text-primary">
+          {latest.dry_run ? "Testlauf: " : ""}
+          {POSTING_STATUS_TEXT[latest.status] || latest.status}
+          {latest.error ? ` — ${latest.error}` : ""}
+          {latest.result_url && (
+            <>
+              {" · "}
+              <a href={latest.result_url} target="_blank" rel="noreferrer" className="underline">Anzeige {"↗"}</a>
+            </>
+          )}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        {!open && (
+          <>
+            <button type="button" disabled={busy} onClick={() => requestJob.mutate(false)} className={`${SMALL_BUTTON} disabled:opacity-50`}>
+              Automatisch einstellen
+            </button>
+            <button type="button" disabled={busy} onClick={() => requestJob.mutate(true)} className={`${SMALL_BUTTON} disabled:opacity-50`}>
+              Testlauf (nicht veröffentlichen)
+            </button>
+          </>
+        )}
+        {open && latest.status === "REQUESTED" && (
+          <button type="button" disabled={busy} onClick={() => approve.mutate(latest.id)}
+            className="text-xs px-3 py-1.5 rounded-lg font-bold bg-lego-yellow text-black hover:bg-lego-yellow/90 disabled:opacity-50">
+            Diese Anzeige freigeben
+          </button>
+        )}
+        {open && latest.status !== "IN_PROGRESS" && (
+          <button type="button" disabled={busy} onClick={() => cancel.mutate(latest.id)}
+            className="text-xs px-2 py-1 rounded text-no-go hover:underline disabled:opacity-50">
+            Auftrag abbrechen
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function DraftPanel({ item, listing, onDone }) {
   const toast = useToast();
   const [url, setUrl] = useState("");
@@ -165,6 +266,7 @@ function DraftPanel({ item, listing, onDone }) {
           </button>
         </div>
       </div>
+      {listing.platform === "KLEINANZEIGEN" && <AutoPostPanel item={item} listing={listing} onDone={onDone} />}
       <form
         className="space-y-2"
         onSubmit={(e) => {

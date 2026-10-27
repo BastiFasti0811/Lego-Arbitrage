@@ -18,13 +18,14 @@ from app.ai import AIProviderError
 from app.models import get_session
 from app.models.inventory import InventoryItem, InventoryStatus
 from app.models.listing import OPEN_LISTING_STATUSES, Listing, ListingStatus
+from app.models.listing_posting_job import OPEN_POSTING_STATUSES, ListingPostingJob, PostingJobStatus
 from app.services.listing_check import days_online, item_label
 from app.services.listing_prepare import (
     ListingPrepareError,
+    activate_draft,
     apply_text,
     draft_price,
     prepare_listing_draft,
-    validate_listing_url,
     write_text,
 )
 from app.services.listing_rules import (
@@ -244,6 +245,7 @@ async def refresh_listing_text(item_id: int, listing_id: int, session: AsyncSess
         price = listing.current_price
     if price is None:
         raise HTTPException(status_code=400, detail="Kein Preis ermittelbar — bitte Preis angeben")
+    await _reject_if_posting_job_open(listing, session)
 
     try:
         text = await write_text(item, platform=listing.platform, price=price, price_type=listing.price_type)
@@ -339,33 +341,48 @@ async def activate_listing(
     if listing.status != ListingStatus.DRAFT.value:
         raise HTTPException(status_code=400, detail="Nur ein Entwurf laesst sich aktiv schalten")
     item = await _get_item(item_id, session)
-    if item.status == InventoryStatus.SOLD.value:
-        raise HTTPException(status_code=400, detail="Verkaufte Artikel lassen sich nicht neu einstellen")
-    _reject_unconfirmed_draft(item)
-
-    url = data.url.strip()
-    url_error = validate_listing_url(url, listing.platform)
-    if url_error:
-        raise HTTPException(status_code=400, detail=url_error)
-    price = data.current_price if data.current_price is not None else listing.current_price
-    if price is None:
-        raise HTTPException(status_code=400, detail="Der Entwurf hat keinen Preis — bitte Preis angeben")
-    min_price = data.min_price if data.min_price is not None else default_min_price(price)
-    error = validate_activation(listing.platform, price, min_price)
-    if error:
-        raise HTTPException(status_code=400, detail=error)
-
-    listed_at = data.listed_at or date.today()
-    listing.status = ListingStatus.ACTIVE.value
-    listing.url = url
-    listing.current_price = price
-    listing.min_price = min_price
-    listing.listed_at = listed_at
-    listing.next_check_at = compute_next_check(listed_at, listing.check_interval_days)
+    try:
+        activate_draft(
+            listing,
+            item,
+            url=data.url,
+            price=data.current_price,
+            min_price=data.min_price,
+            listed_at=data.listed_at,
+        )
+    except ListingPrepareError as exc:
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
+    price = listing.current_price
     await session.commit()
     await session.refresh(listing)
     logger.info("listing.activated", item_id=item_id, platform=listing.platform, price=price, via="url")
     return to_listing_response(listing)
+
+
+async def _reject_if_posting_job_open(listing: Listing, session: AsyncSession) -> None:
+    """Freigegeben ist genau dieser Text zu genau diesem Preis. Wer ihn aendert,
+    bricht den Einstell-Auftrag ab und legt ihn neu an."""
+    if listing.status != ListingStatus.DRAFT.value:
+        return
+    open_job = await session.execute(
+        select(ListingPostingJob.id).where(
+            ListingPostingJob.listing_id == listing.id,
+            ListingPostingJob.status.in_(OPEN_POSTING_STATUSES),
+        )
+    )
+    if open_job.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Für diesen Entwurf läuft ein Einstell-Auftrag — erst abbrechen, dann ändern",
+        )
+
+
+def _changes_posted_fields(listing: Listing, data: ListingUpdate) -> bool:
+    """Aendert der PATCH etwas, das der Einstell-Agent ins Formular schreibt?"""
+    return any(
+        getattr(data, field) is not None and getattr(data, field) != getattr(listing, field)
+        for field in ("title", "body", "current_price", "price_type")
+    )
 
 
 @router.patch("/{item_id}/listings/{listing_id}", response_model=ListingResponse)
@@ -395,6 +412,9 @@ async def update_listing(
         if data.status not in allowed or listing.status not in allowed:
             raise HTTPException(status_code=400, detail="Nur Wechsel zwischen ACTIVE und PAUSED erlaubt")
         listing.status = data.status
+
+    if _changes_posted_fields(listing, data):
+        await _reject_if_posting_job_open(listing, session)
 
     if data.min_price is not None and data.min_price != listing.min_price:
         # Neue Schmerzgrenze: der einmalige Hinweis darf wieder kommen.
@@ -435,6 +455,24 @@ async def end_listing(item_id: int, listing_id: int, session: AsyncSession = Dep
 async def delete_listing(item_id: int, listing_id: int, session: AsyncSession = Depends(get_session)):
     """Fuer Fehleingaben — loescht die Zeile samt Preis-Historie endgueltig."""
     listing = await _get_listing(item_id, listing_id, session)
+    open_jobs = await session.execute(
+        select(ListingPostingJob).where(
+            ListingPostingJob.listing_id == listing.id,
+            ListingPostingJob.status.in_(OPEN_POSTING_STATUSES),
+        )
+    )
+    open_jobs = list(open_jobs.scalars())
+    if any(job.status == PostingJobStatus.IN_PROGRESS.value for job in open_jobs):
+        # Der Agent fuellt gerade das Formular; ohne Zeile koennte er die
+        # fertige Anzeige nirgends mehr eintragen.
+        raise HTTPException(status_code=409, detail="Der Agent stellt diesen Entwurf gerade ein")
+    # Wartende Auftraege enden mit dem Listing. Die Zeilen bleiben als Historie
+    # (listing_id wird NULL) und zaehlen weiter fuers Tageslimit.
+    now = datetime.now(UTC)
+    for job in open_jobs:
+        job.status = PostingJobStatus.CANCELLED.value
+        job.finished_at = now
+        job.error = "Listing gelöscht"
     await session.delete(listing)
     await session.commit()
     return {"status": "deleted", "id": listing_id}
