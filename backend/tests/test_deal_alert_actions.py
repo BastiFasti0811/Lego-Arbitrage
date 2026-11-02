@@ -353,7 +353,7 @@ class _ClickBot:
         self.edits.append(kwargs)
 
 
-def _query(data, chat_id=42, username=None):
+def _query(data, chat_id=42, username=None, chat_type="private", user_id=None):
     markup = InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("🔗 Angebot öffnen", url=URL)],
@@ -361,9 +361,10 @@ def _query(data, chat_id=42, username=None):
         ]
     )
     message = SimpleNamespace(
-        chat=SimpleNamespace(id=chat_id, username=username), message_id=5, reply_markup=markup
+        chat=SimpleNamespace(id=chat_id, username=username, type=chat_type), message_id=5, reply_markup=markup
     )
-    return SimpleNamespace(id="q1", data=data, message=message)
+    user = SimpleNamespace(id=chat_id if user_id is None else user_id)
+    return SimpleNamespace(id="q1", data=data, message=message, from_user=user)
 
 
 @pytest.fixture
@@ -414,6 +415,47 @@ async def test_click_from_another_chat_changes_nothing(recorded):
     assert recorded == []
     assert text == telegram_callbacks.FOREIGN_CHAT_ANSWER
     assert bot.edits == []
+
+
+@pytest.mark.asyncio
+async def test_click_by_another_member_of_a_group_chat_changes_nothing(recorded):
+    # Gruppe als Alert-Chat: Chat-ID negativ, Klick von einem Mitglied.
+    bot = _ClickBot()
+    query = _query("dec:17:b", chat_id=-100123, chat_type="supergroup", user_id=666)
+
+    text = await telegram_callbacks.handle_callback(bot, query, "-100123")
+
+    assert recorded == []
+    assert text == telegram_callbacks.FOREIGN_CHAT_ANSWER
+    assert bot.edits == []
+
+
+@pytest.mark.asyncio
+async def test_click_without_sender_changes_nothing(recorded):
+    query = _query("dec:17:b")
+    query.from_user = None
+
+    text = await telegram_callbacks.handle_callback(_ClickBot(), query, "42")
+
+    assert recorded == []
+    assert text == telegram_callbacks.FOREIGN_CHAT_ANSWER
+
+
+@pytest.mark.parametrize(
+    ("chat_type", "chat_id", "user_id", "ok"),
+    [
+        ("private", 42, 42, True),
+        ("private", 42, 7, True),  # Telegram liefert im Privat-Chat nur den Inhaber
+        (None, 42, 42, True),  # aelteres Update ohne type: User-ID = Chat-ID genuegt
+        ("group", -5, 42, False),
+        ("supergroup", -100123, 42, False),
+        ("channel", -100999, 42, False),
+    ],
+)
+def test_clicked_by_chat_owner(chat_type, chat_id, user_id, ok):
+    chat = SimpleNamespace(id=chat_id, type=chat_type)
+    query = SimpleNamespace(from_user=SimpleNamespace(id=user_id))
+    assert telegram_callbacks.clicked_by_chat_owner(query, chat) is ok
 
 
 @pytest.mark.asyncio
