@@ -53,6 +53,13 @@ curl -sI http://localhost/lego/ | grep -iE 'x-frame|content-security|x-content-t
 The `curl` must list all four headers. Agents and `scripts/deploy-prod.sh` do
 not touch the live Caddyfile; it also serves the SmartPrepMeal routes.
 
+Caddy has no route for the API docs (`/lego/docs`, `/lego/openapi.json`):
+the API answers them only with a session cookie, and a public route was
+attack surface without a use. Read the schema on victus with
+`docker exec lego-api-prod curl -fsS http://127.0.0.1:8000/openapi.json`.
+When the live Caddyfile is updated, drop its two `handle /lego/docs*` and
+`handle /lego/openapi.json` blocks as well.
+
 A full CSP (`default-src 'self'` and friends) is a later step. It needs a
 browser test against the prod build first: the frontend loads Google Fonts,
 shows photo previews from `blob:` URLs and uses inline styles.
