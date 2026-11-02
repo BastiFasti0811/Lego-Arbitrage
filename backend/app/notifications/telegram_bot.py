@@ -21,7 +21,14 @@ logger = structlog.get_logger()
 
 
 def _format_deal_message(analysis: AnalysisResult) -> str:
-    """Format analysis result as Telegram message."""
+    """Format analysis result as Telegram HTML message.
+
+    HTML statt Markdown: set_name stammt bei Amazon-Funden aus dem fremden
+    Seitentitel. Ein `_` oder `*` darin zerlegte das Markdown (400, Alert
+    weg), `[...](...)` haette einen fremden Link eingeschleust. Alles, was
+    nicht aus diesem Modul stammt, geht durch html.escape.
+    """
+    esc = html.escape
 
     # Recommendation emoji
     rec_emoji = {
@@ -40,10 +47,10 @@ def _format_deal_message(analysis: AnalysisResult) -> str:
     }.get(analysis.risk.color, "⚪")
 
     msg = (
-        f"🧱 *LEGO {analysis.set_number}*\n"
-        f"_{analysis.set_name}_ ({analysis.release_year})\n"
+        f"🧱 <b>LEGO {esc(str(analysis.set_number))}</b>\n"
+        f"<i>{esc(str(analysis.set_name))}</i> ({esc(str(analysis.release_year))})\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📊 *Marktdaten*\n"
+        f"📊 <b>Marktdaten</b>\n"
     )
 
     if analysis.uvp:
@@ -51,36 +58,36 @@ def _format_deal_message(analysis: AnalysisResult) -> str:
     msg += (
         f"Marktpreis: {analysis.market_consensus.consensus_price:.0f}€ "
         f"({analysis.market_consensus.num_sources} Quellen)\n"
-        f"Angebot: *{analysis.offer_price:.0f}€*\n"
+        f"Angebot: <b>{analysis.offer_price:.0f}€</b>\n"
     )
     if analysis.discount_vs_uvp:
         msg += f"Rabatt vs UVP: {analysis.discount_vs_uvp:.0f}%\n"
 
     msg += (
-        f"\n💰 *ROI-Kalkulation*\n"
+        f"\n💰 <b>ROI-Kalkulation</b>\n"
         f"Einkauf Total: {analysis.roi.total_purchase_cost:.0f}€\n"
         f"Verkauf Netto: {analysis.roi.net_revenue:.0f}€\n"
-        f"*Gewinn: {analysis.roi.net_profit:+.0f}€*\n"
-        f"*ROI: {analysis.roi.roi_percent:.1f}%* "
+        f"<b>Gewinn: {analysis.roi.net_profit:+.0f}€</b>\n"
+        f"<b>ROI: {analysis.roi.roi_percent:.1f}%</b> "
         f"(Jahres-ROI: {analysis.roi.annualized_roi:.1f}%)\n"
     )
 
     msg += (
-        f"\n⚠️ *Risiko*\n"
-        f"Set-Alter: {analysis.set_age}J → {analysis.category}\n"
-        f"Risk-Score: {risk_emoji} {analysis.risk.total}/10 ({analysis.risk.rating})\n"
+        f"\n⚠️ <b>Risiko</b>\n"
+        f"Set-Alter: {esc(str(analysis.set_age))}J → {esc(str(analysis.category))}\n"
+        f"Risk-Score: {risk_emoji} {esc(str(analysis.risk.total))}/10 ({esc(str(analysis.risk.rating))})\n"
     )
 
     msg += (
-        f"\n🎯 *Empfehlung: {rec_emoji}*\n"
-        f"{analysis.reason}\n"
+        f"\n🎯 <b>Empfehlung: {rec_emoji}</b>\n"
+        f"{esc(str(analysis.reason))}\n"
     )
 
     for suggestion in analysis.suggestions[:2]:
-        msg += f"💡 {suggestion}\n"
+        msg += f"💡 {esc(str(suggestion))}\n"
 
     if analysis.market_consensus.warnings:
-        msg += "\n⚠️ " + " | ".join(analysis.market_consensus.warnings[:2])
+        msg += "\n⚠️ " + esc(" | ".join(str(w) for w in analysis.market_consensus.warnings[:2]))
 
     return msg
 
@@ -121,7 +128,7 @@ async def send_deal_alert(
             await bot.send_message(
                 chat_id=chat_id,
                 text=message,
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=ParseMode.HTML,
                 reply_markup=deal_keyboard(offer_id, offer_url, checker_url),
             )
         except BadRequest as e:
@@ -133,7 +140,7 @@ async def send_deal_alert(
             await bot.send_message(
                 chat_id=chat_id,
                 text=message,
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=ParseMode.HTML,
                 reply_markup=deal_keyboard(offer_id, offer_url, None),
             )
 

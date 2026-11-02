@@ -631,3 +631,36 @@ async def test_new_token_starts_with_a_fresh_offset(monkeypatch):
     await asyncio.wait_for(telegram_callbacks.poll_callbacks(stop), timeout=2)
 
     assert seen == [("111:old", None), ("222:new", None)]
+
+
+# ── Deal-Alert als HTML (fremde Amazon-Titel) ─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_alert_is_html_and_escapes_foreign_titles(monkeypatch):
+    bot = _FakeBot()
+    _patch_send(monkeypatch, bot)
+    analysis = _analysis()
+    analysis.set_name = "Technic_Ferrari *SP3* [klick](https://evil.example) <b>&"
+    analysis.reason = "Preis < Markt & <script>"
+    analysis.suggestions = ["Tipp <i>"]
+    analysis.market_consensus.warnings = ["Quelle <x>"]
+
+    assert await telegram_bot.send_deal_alert(analysis, offer_url=URL, offer_id=17) is True
+
+    sent = bot.sent[0]
+    assert sent["parse_mode"] == "HTML"
+    text = sent["text"]
+    assert "<i>Technic_Ferrari *SP3* [klick](https://evil.example) &lt;b&gt;&amp;</i>" in text
+    assert "Preis &lt; Markt &amp; &lt;script&gt;" in text
+    assert "Tipp &lt;i&gt;" in text
+    assert "Quelle &lt;x&gt;" in text
+    assert "<b>LEGO 42143</b>" in text
+    assert "*" not in text.replace("*SP3*", "")
+
+
+def test_alert_text_has_only_the_tags_it_sets():
+    import re
+
+    text = telegram_bot._format_deal_message(_analysis())
+    assert set(re.findall(r"</?([a-z]+)>", text)) == {"b", "i"}
