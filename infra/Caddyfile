@@ -1,6 +1,19 @@
 :80 {
     encode gzip zstd
 
+    # Security headers for everything under /lego/ (API, health, frontend).
+    # `defer` applies them after the upstream answered, so an upstream header
+    # of the same name cannot override them. Only frame-ancestors for now: a
+    # full CSP needs a browser test against the prod build first (Google Fonts,
+    # blob: image previews, inline styles), see docs/deploy.md#security-headers.
+    header /lego/* {
+        defer
+        X-Frame-Options "DENY"
+        Content-Security-Policy "frame-ancestors 'none'"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
     redir /lego /lego/
 
     handle /lego/api/* {

@@ -26,6 +26,37 @@ point at it any more.
 - Local development can continue to use the existing `docker-compose.yml`
   with the local `nginx` proxy.
 
+### Security Headers
+
+[infra/Caddyfile](../infra/Caddyfile) sets four response headers on every
+path under `/lego/` (frontend, API, health), with `defer` so an upstream
+cannot override them:
+
+| Header | Value |
+| --- | --- |
+| `X-Frame-Options` | `DENY` |
+| `Content-Security-Policy` | `frame-ancestors 'none'` |
+| `X-Content-Type-Options` | `nosniff` |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+
+The repo file is the reference, not the running config. Changes to it reach
+prod only when Sebastian copies the `header /lego/* { ... }` block (and any
+route change) into the live file `/opt/SmartPrepMeal/Caddyfile` and reloads
+the shared Caddy:
+
+```bash
+docker exec smartprepmeal-caddy-1 caddy validate --config /etc/caddy/Caddyfile
+docker exec smartprepmeal-caddy-1 caddy reload --config /etc/caddy/Caddyfile
+curl -sI http://localhost/lego/ | grep -iE 'x-frame|content-security|x-content-type|referrer'
+```
+
+The `curl` must list all four headers. Agents and `scripts/deploy-prod.sh` do
+not touch the live Caddyfile; it also serves the SmartPrepMeal routes.
+
+A full CSP (`default-src 'self'` and friends) is a later step. It needs a
+browser test against the prod build first: the frontend loads Google Fonts,
+shows photo previews from `blob:` URLs and uses inline styles.
+
 ## First-Time Server Setup
 
 1. Clone the repository into a stable app directory, for example
