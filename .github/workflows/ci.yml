@@ -87,11 +87,12 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Lint and build frontend
+      - name: Lint, test and build frontend
         working-directory: frontend
         run: |
           npm ci
           npm run lint
+          npm test
           npm run build
 
       - name: Verify backend

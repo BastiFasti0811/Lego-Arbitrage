@@ -72,7 +72,9 @@ export default function App() {
                 </AuthGuard>
               }
             >
-              <Route index element={<LiveFeed />} />
+              {/* Startseite ist das Inventar (Verkaufs-Cockpit); der Feed bleibt als Tab. */}
+              <Route index element={<Navigate to="/inventar" replace />} />
+              <Route path="feed" element={<LiveFeed />} />
               <Route path="auctions" element={<AuctionWatch />} />
               <Route path="checker" element={<DealChecker />} />
               <Route path="inventar" element={<Inventar />} />

@@ -3,10 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
 
 const tabs = [
-  { to: "/", label: "Feed", icon: "\u{1F4E1}" },
+  { to: "/inventar", label: "Inventar", icon: "\u{1F4E6}" },
+  { to: "/feed", label: "Feed", icon: "\u{1F4E1}" },
   { to: "/auctions", label: "Auktionen", icon: "\u{1F528}" },
   { to: "/checker", label: "Check", icon: "\u{1F50D}" },
-  { to: "/inventar", label: "Inventar", icon: "\u{1F4E6}" },
   { to: "/anpassungen", label: "Anpassungen", short: "Preise", icon: "\u{1F3F7}\u{FE0F}", badge: "dueAdjustments" },
   { to: "/history", label: "Verkäufe", icon: "\u{1F4CA}" },
 ];
@@ -47,7 +47,6 @@ export default function TabNav({ mobile = false }) {
           <NavLink
             key={tab.to}
             to={tab.to}
-            end={tab.to === "/"}
             className={({ isActive }) =>
               `relative flex flex-col items-center gap-0.5 px-2 py-1 text-xs transition-colors ${
                 isActive
@@ -75,7 +74,6 @@ export default function TabNav({ mobile = false }) {
         <NavLink
           key={tab.to}
           to={tab.to}
-          end={tab.to === "/"}
           className={({ isActive }) =>
             `px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
               isActive

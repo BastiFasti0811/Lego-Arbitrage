@@ -10,6 +10,12 @@ export default defineConfig(({ mode }) => {
   return {
     base: normalizedBase,
     plugins: [react(), tailwindcss()],
+    // Vitest + Testing Library (npm test); Tests liegen neben dem Code als *.test.jsx.
+    test: {
+      environment: "jsdom",
+      setupFiles: ["./src/test/setup.js"],
+      css: false,
+    },
     server: {
       port: 3000,
       proxy: {
