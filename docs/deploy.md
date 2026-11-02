@@ -195,6 +195,13 @@ docker call when the checkout is not on `main` (override with
 `DEPLOY_BRANCH`), because `git pull --ff-only` on another branch would deploy
 that branch. On success it prints the deployed commit.
 
+It also aborts when `git status --porcelain` lists anything (uncommitted
+edits or untracked files): the backend build copies the whole directory, so a
+stray file would ship in the image while `/health` reports a clean commit.
+Fix the change through GitHub instead. In an emergency
+`ALLOW_DIRTY_DEPLOY=1 bash scripts/deploy-prod.sh` deploys anyway; `/health`
+then reports `<sha>-dirty`, and the next clean deploy removes the suffix.
+
 The script first takes a non-blocking lock on
 `/tmp/lego-arbitrage-deploy.lock` (path overridable via `LOCK_FILE`), so a
 manual run cannot interleave with a CI deploy — the second run aborts

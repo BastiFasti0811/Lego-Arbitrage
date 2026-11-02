@@ -53,6 +53,10 @@ make_sandbox() {
   # ROLLBACK_FAIL=1 the stubbed scripts/rollback-prod.sh.
   FULL_CHECK_FAIL=0
   ROLLBACK_FAIL=0
+  # GIT_DIRTY is what `git status --porcelain` prints (empty = clean tree),
+  # ALLOW_DIRTY_DEPLOY the script's emergency override.
+  GIT_DIRTY=""
+  ALLOW_DIRTY_DEPLOY=0
 
   cat > "${SANDBOX}/repo/scripts/health-check-prod.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -74,6 +78,9 @@ STUB
 printf 'git %s\n' "$*" >> "${CALL_LOG}"
 if [[ "$*" == "branch --show-current" ]]; then
   printf '%s\n' "${GIT_BRANCH-main}"
+fi
+if [[ "$*" == "status --porcelain" && -n "${GIT_DIRTY:-}" ]]; then
+  printf '%s\n' "${GIT_DIRTY}"
 fi
 if [[ "$*" == "rev-parse HEAD" ]]; then
   if grep -q '^git pull' "${CALL_LOG}"; then
@@ -137,7 +144,7 @@ run_deploy() { # usage: run_deploy [migration_fail] [build_fail] [flock_busy] [g
     export GIT_BRANCH="${git_branch}"
     export LOCK_FILE="${SANDBOX}/deploy.lock"
     export STUB_SHA PREV_STUB_SHA HEALTH_VERSION HEALTH_FAIL
-    export FULL_CHECK_FAIL ROLLBACK_FAIL
+    export FULL_CHECK_FAIL ROLLBACK_FAIL GIT_DIRTY ALLOW_DIRTY_DEPLOY
     export HEALTH_ATTEMPTS=3 HEALTH_INTERVAL=0
     bash scripts/deploy-prod.sh "$@"
   ) > "${SANDBOX}/stdout.log" 2> "${SANDBOX}/stderr.log" || DEPLOY_RC=$?
@@ -410,6 +417,61 @@ make_sandbox t13b
 run_deploy
 if grep -qi "env backups" "${SANDBOX}/stderr.log"; then
   fail "no backup present, but a backup warning was printed"
+fi
+
+# --- Test 14: dirty checkout aborts before pull and build -------------------
+
+CURRENT_TEST="failure: uncommitted or untracked files abort the deploy"
+make_sandbox t14
+GIT_DIRTY=$' M backend/app/main.py\n?? backend/hotfix.py'
+run_deploy
+
+if [[ "${DEPLOY_RC}" -eq 0 ]]; then
+  fail "expected non-zero exit for a dirty checkout"
+fi
+assert_called "git status --porcelain"
+assert_not_called "${PULL_CALL}"
+assert_not_called "docker "
+if ! grep -q "uncommitted or untracked" "${SANDBOX}/stderr.log"; then
+  fail "expected a dirty-checkout message on stderr"
+fi
+if ! grep -Fq "backend/hotfix.py" "${SANDBOX}/stderr.log"; then
+  fail "expected the dirty files to be listed on stderr"
+fi
+
+CURRENT_TEST="clean checkout: dirty check runs before the pull"
+make_sandbox t14b
+run_deploy
+assert_order "git status --porcelain" "${PULL_CALL}"
+if [[ "${DEPLOY_RC}" -ne 0 ]]; then
+  fail "expected exit 0 for a clean checkout, got ${DEPLOY_RC}"
+fi
+
+# --- Test 15: ALLOW_DIRTY_DEPLOY=1 deploys with a "-dirty" version ---------
+
+CURRENT_TEST="override: ALLOW_DIRTY_DEPLOY=1 tags the version -dirty"
+make_sandbox t15
+GIT_DIRTY=" M backend/app/main.py"
+ALLOW_DIRTY_DEPLOY=1
+HEALTH_VERSION="${STUB_SHA}-dirty"
+run_deploy
+
+if [[ "${DEPLOY_RC}" -ne 0 ]]; then
+  fail "expected exit 0 with the override, got ${DEPLOY_RC} (stderr: $(cat "${SANDBOX}/stderr.log"))"
+fi
+assert_called "build-env GIT_SHA=${STUB_SHA}-dirty"
+assert_called "health-check-prod --expect-sha ${STUB_SHA} --wait"
+if ! grep -q "dirty checkout" "${SANDBOX}/stderr.log"; then
+  fail "expected a dirty-deploy warning on stderr"
+fi
+
+CURRENT_TEST="override: a clean version does not satisfy a dirty deploy"
+make_sandbox t15b
+GIT_DIRTY=" M backend/app/main.py"
+ALLOW_DIRTY_DEPLOY=1
+run_deploy
+if [[ "${DEPLOY_RC}" -eq 0 ]]; then
+  fail "/health must report the -dirty version, the clean SHA alone means the old image"
 fi
 
 # --- Result -----------------------------------------------------------------
