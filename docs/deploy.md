@@ -680,6 +680,21 @@ Setup (once, from the prod checkout, after the deploy that brought the scripts):
    without a job and sends nothing; the button "Catawiki jetzt scannen" in the
    watchlist triggers a real job within 10 minutes.
 
+Runner token: at least 24 characters (`MIN_TOKEN_LENGTH` in
+`backend/app/services/remote_scan.py`; the settings API rejects shorter
+values, and a shorter stored value opens nothing). Generate it with
+`openssl rand -hex 32` or let the installer do it. Every 401 on
+`/api/remote-scan/runner/*` logs `remote_scan.runner_token_rejected` in
+`lego-api-prod` with `reason` (`missing`, `mismatch`, `token_not_configured`,
+`configured_token_too_short`), path and client address (the Caddy container
+for requests through Caddy, `127.0.0.1` for the runner inside the api
+container), never the token. A run of `mismatch` lines means someone guesses:
+set a new token in the app and on the runner.
+
+```bash
+docker logs lego-api-prod --since 24h 2>&1 | grep runner_token_rejected
+```
+
 Alarm: the hourly pipeline watchdog (`check_pipeline_health`) reports
 `catawiki_home_runner` when the runner has not polled for more than 1 h
 (token and URLs set), and `catawiki_scan` when no scan arrived within 26 h

@@ -1,12 +1,13 @@
 """Catawiki-Scan ueber den Heimrechner (siehe app/services/remote_scan.py)."""
 
 import structlog
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import get_session
 from app.runtime_settings import get_settings_map
 from app.services.remote_scan import (
+    MIN_TOKEN_LENGTH,
     TOKEN_KEY,
     JobRejectedError,
     RemoteScanResults,
@@ -22,10 +23,29 @@ logger = structlog.get_logger()
 EVALUATE_TASK = "app.tasks.catawiki_scan.evaluate_remote_scan"
 
 
-async def require_runner_token(authorization: str | None = Header(default=None)) -> None:
+def _rejection_reason(provided: str, expected: str) -> str:
+    """Grund fuer das Log, ohne einen der beiden Werte preiszugeben."""
+    if not expected:
+        return "token_not_configured"
+    if len(expected) < MIN_TOKEN_LENGTH:
+        return "configured_token_too_short"
+    if not provided:
+        return "missing"
+    return "mismatch"
+
+
+async def require_runner_token(request: Request, authorization: str | None = Header(default=None)) -> None:
     provided = (authorization or "").removeprefix("Bearer ").strip()
-    expected = (await get_settings_map([TOKEN_KEY])).get(TOKEN_KEY)
-    if not verify_runner_token(provided, (expected or "").strip()):
+    expected = ((await get_settings_map([TOKEN_KEY])).get(TOKEN_KEY) or "").strip()
+    if not verify_runner_token(provided, expected):
+        # Haeufen sich "mismatch"-Zeilen, raet jemand das Token: rotieren
+        # (docs/deploy.md#catawiki-home-scanner). Kein Token-Wert im Log.
+        logger.warning(
+            "remote_scan.runner_token_rejected",
+            reason=_rejection_reason(provided, expected),
+            path=request.url.path,
+            client=request.client.host if request.client else None,
+        )
         raise HTTPException(status_code=401, detail="Heimrechner-Token fehlt oder ist falsch")
 
 
