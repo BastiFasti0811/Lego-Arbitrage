@@ -31,11 +31,19 @@ QUIETED_LOGGERS = ("httpx", "httpcore")
 # "bot" (Wortzeichen an Wortzeichen). Nur eine fuehrende Ziffer schliesst aus.
 _BOT_TOKEN = re.compile(r"(?<![0-9])\d{5,}:[A-Za-z0-9_-]{30,}")
 REDACTED = "<telegram-token>"
+# eBay-OAuth-Tokens (Access und Refresh) beginnen mit "v^1.1#". Sie werden nie
+# absichtlich geloggt; das hier faengt sie ab, falls ein Fehlertext sie enthaelt.
+_EBAY_TOKEN = re.compile(r"v\^1\.1#[^\s\"',]+")
+EBAY_REDACTED = "<ebay-token>"
 _PLAIN = (int, float, bool, type(None))
 
 
 def redact_text(text: str) -> str:
-    return _BOT_TOKEN.sub(REDACTED, text) if ":" in text else text
+    if ":" in text:
+        text = _BOT_TOKEN.sub(REDACTED, text)
+    if "v^1.1#" in text:
+        text = _EBAY_TOKEN.sub(EBAY_REDACTED, text)
+    return text
 
 
 def _redact_value(value):

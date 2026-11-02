@@ -6,6 +6,7 @@ bettet ListingResponse in seine InventoryResponse ein.
 """
 
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
@@ -15,10 +16,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import AIProviderError
+from app.config import settings
 from app.models import get_session
 from app.models.inventory import InventoryItem, InventoryStatus
 from app.models.listing import OPEN_LISTING_STATUSES, Listing, ListingStatus
 from app.models.listing_posting_job import OPEN_POSTING_STATUSES, ListingPostingJob, PostingJobStatus
+from app.services import ebay_listing
+from app.services.ebay_api import EbayClient, EbayConfig, EbayError, EbayNotConfiguredError, is_configured
 from app.services.listing_check import days_online, item_label
 from app.services.listing_prepare import (
     ListingPrepareError,
@@ -114,6 +118,8 @@ class ListingResponse(BaseModel):
     at_floor: bool
     price_changes: list[PriceChangeResponse]
     created_at: datetime
+    # eBay-Artikelnummer, wenn die App das Listing ueber die Sell API eingestellt hat.
+    ebay_listing_id: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -154,6 +160,7 @@ def to_listing_response(listing: Listing) -> ListingResponse:
         at_floor=at_floor,
         price_changes=[PriceChangeResponse.model_validate(change) for change in listing.price_changes],
         created_at=listing.created_at,
+        ebay_listing_id=getattr(listing, "ebay_listing_id", None),
     )
 
 
@@ -182,6 +189,36 @@ async def _get_listing(item_id: int, listing_id: int, session: AsyncSession) -> 
 def _reject_unconfirmed_draft(item: InventoryItem) -> None:
     if item.status == InventoryStatus.DRAFT.value:
         raise HTTPException(status_code=400, detail="Entwurf zuerst bestaetigen")
+
+
+# ── eBay Sell API (Nachtrag ADR 0002 vom 02.11.2026) ──────────────────
+
+PHOTO_STORAGE_ROOT = Path(settings.media_root) / "inventory_photos"
+
+
+def ebay_client() -> EbayClient:
+    """Eigene Funktion, damit Tests sie ersetzen koennen."""
+    return EbayClient(EbayConfig.from_settings())
+
+
+def _ebay_http_error(exc: EbayError) -> HTTPException:
+    # Nicht eingerichtet: 409 (Zustand der App). eBay lehnt ab: 502 mit eBays Text.
+    return HTTPException(status_code=409 if isinstance(exc, EbayNotConfiguredError) else 502, detail=exc.detail)
+
+
+async def _push_ebay_price(listing: Listing, new_price: float, session: AsyncSession) -> None:
+    """Preisaenderung eines per API eingestellten eBay-Angebots zuerst zu eBay
+    schicken; lehnt eBay ab, bleibt der Preis in der App unveraendert."""
+    if not ebay_listing.is_api_listing(listing) or listing.status != ListingStatus.ACTIVE.value:
+        return
+    if new_price == listing.current_price:
+        return
+    item = await _get_item(listing.item_id, session)
+    try:
+        async with ebay_client() as client:
+            await ebay_listing.push_price(listing, item, new_price, client)
+    except EbayError as exc:
+        raise _ebay_http_error(exc) from exc
 
 
 @router.get("/{item_id}/listings", response_model=list[ListingResponse])
@@ -411,6 +448,8 @@ async def update_listing(
         allowed = {ListingStatus.ACTIVE.value, ListingStatus.PAUSED.value}
         if data.status not in allowed or listing.status not in allowed:
             raise HTTPException(status_code=400, detail="Nur Wechsel zwischen ACTIVE und PAUSED erlaubt")
+        if data.status != listing.status and ebay_listing.is_api_listing(listing):
+            raise HTTPException(status_code=400, detail="eBay-Festpreisangebote lassen sich nicht pausieren — beenden")
         listing.status = data.status
 
     if _changes_posted_fields(listing, data):
@@ -430,6 +469,7 @@ async def update_listing(
         # und kein Check-Termin -- beides beginnt erst mit der Aktivierung.
         listing.current_price = data.current_price
     elif data.current_price is not None:
+        await _push_ebay_price(listing, data.current_price, session)
         change = apply_price_change(listing, data.current_price, datetime.now(UTC))
         if change is not None:
             session.add(change)
@@ -445,6 +485,13 @@ async def end_listing(item_id: int, listing_id: int, session: AsyncSession = Dep
     listing = await _get_listing(item_id, listing_id, session)
     if listing.status not in OPEN_LISTING_STATUSES:
         raise HTTPException(status_code=400, detail="Listing ist bereits beendet")
+    if ebay_listing.is_api_listing(listing) and listing.status != ListingStatus.DRAFT.value:
+        # Per API eingestellt: das Angebot auf eBay zuerst zurueckziehen.
+        try:
+            async with ebay_client() as client:
+                await ebay_listing.end_listing(listing, client)
+        except EbayError as exc:
+            raise _ebay_http_error(exc) from exc
     listing.status = ListingStatus.ENDED.value
     await session.commit()
     await session.refresh(listing)
@@ -455,6 +502,8 @@ async def end_listing(item_id: int, listing_id: int, session: AsyncSession = Dep
 async def delete_listing(item_id: int, listing_id: int, session: AsyncSession = Depends(get_session)):
     """Fuer Fehleingaben — loescht die Zeile samt Preis-Historie endgueltig."""
     listing = await _get_listing(item_id, listing_id, session)
+    if listing.ebay_offer_id and listing.status in (ListingStatus.ACTIVE.value, ListingStatus.PAUSED.value):
+        raise HTTPException(status_code=409, detail="Läuft auf eBay — erst beenden, dann löschen")
     open_jobs = await session.execute(
         select(ListingPostingJob).where(
             ListingPostingJob.listing_id == listing.id,
@@ -499,6 +548,7 @@ async def accept_suggestion(item_id: int, listing_id: int, session: AsyncSession
     if listing.min_price is not None and new_price < listing.min_price:
         raise HTTPException(status_code=400, detail="Vorschlag liegt unter der Schmerzgrenze")
     old_price = listing.current_price
+    await _push_ebay_price(listing, new_price, session)
     change = apply_price_change(listing, new_price, datetime.now(UTC))
     if change is not None:
         session.add(change)
@@ -593,3 +643,43 @@ async def due_adjustments(session: AsyncSession = Depends(get_session)):
         )
     )
     return build_due_overview(result.scalars().all(), datetime.now(UTC))
+
+
+@router.post("/{item_id}/listings/{listing_id}/ebay/publish", response_model=ListingResponse)
+async def publish_on_ebay(item_id: int, listing_id: int, session: AsyncSession = Depends(get_session)):
+    """eBay-Entwurf ueber die Sell API als Festpreisangebot einstellen.
+
+    Nur auf ausdruecklichen Klick; es gibt keinen automatischen Aufruf. Scheitert
+    eBay nach dem Anlegen des Angebots, bleiben SKU und Angebots-ID gespeichert,
+    damit der naechste Versuch dasselbe Angebot nimmt."""
+    listing = await _get_listing(item_id, listing_id, session)
+    item = await _get_item(item_id, session)
+    try:
+        async with ebay_client() as client:
+            url = await ebay_listing.publish_listing(listing, item, client, photo_root=PHOTO_STORAGE_ROOT)
+    except EbayError as exc:
+        if listing.ebay_sku or listing.ebay_offer_id:
+            await session.commit()
+        raise _ebay_http_error(exc) from exc
+    await session.commit()
+    await session.refresh(listing)
+    logger.info(
+        "listing.activated",
+        item_id=item_id,
+        platform=listing.platform,
+        price=listing.current_price,
+        via="ebay_api",
+        url=url,
+    )
+    return to_listing_response(listing)
+
+
+class EbayStatusResponse(BaseModel):
+    configured: bool
+    environment: str
+
+
+@overview_router.get("/ebay/status", response_model=EbayStatusResponse)
+async def ebay_status():
+    """Ob die eBay-Anbindung eingerichtet ist (ohne Secrets preiszugeben)."""
+    return EbayStatusResponse(configured=is_configured(), environment=settings.ebay_environment)

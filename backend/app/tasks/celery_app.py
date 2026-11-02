@@ -44,6 +44,7 @@ celery_app = Celery(
         "app.tasks.listing_pack",
         "app.tasks.goal_digest",
         "app.tasks.listing_check",
+        "app.tasks.ebay_sync",
     ],
 )
 
@@ -140,6 +141,13 @@ celery_app.conf.beat_schedule = {
         "task": "app.tasks.update_inventory.update_inventory_valuations",
         "schedule": crontab(minute=30, hour="*/6"),
         "options": {"queue": "analysis"},
+    },
+    # eBay-Verkaufsabgleich: auf eBay Verkauftes ins Inventar, anderswo Verkauftes
+    # auf eBay beenden (Nachtrag ADR 0002). Ohne eBay-Zugangsdaten ein No-op.
+    "ebay-sync-sales": {
+        "task": "app.tasks.ebay_sync.sync_ebay_sales_task",
+        "schedule": crontab(minute="7,37"),
+        "options": {"queue": "notifications"},
     },
     # Pipeline-health watchdog every hour (alerts on stale/failing tasks)
     "pipeline-health-check": {

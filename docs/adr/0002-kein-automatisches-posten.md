@@ -15,3 +15,18 @@ Sebastian hat am 25.10.2026 entschieden, dass Agenten Kleinanzeigen-Inserate „
 - **Testlauf:** Formular füllen und bei Kleinanzeigen als Entwurf speichern, nicht veröffentlichen. Braucht keine Freigabe, zählt nicht gegen das Tageslimit. Den Entwurf löscht Sebastian selbst.
 
 Umsetzung: Das Backend hält Auftrag, Freigabe und Leitplanken (`listing_posting_jobs`, `app/services/ka_posting.py`) und erzwingt sie im Code. Den Browser fährt ein Agent über den Skill `kleinanzeigen-einstellen` und die Befehle in `app/tools/ka_posting.py`; er bekommt einen Auftrag nur, wenn Freigabe und Tempo passen. Preis ändern (Preistreppe) und Neu-Einstellen kommen später als eigene Aktionen dazu, mit denselben Grenzen.
+
+## Nachtrag 2026-11-02: eBay per Sell API
+
+Sebastian hat am 25.10.2026 entschieden, eBay über die API anzubinden, „alles wie es am einfachsten ist“. Für eBay ist der erste Satz oben damit ebenfalls aufgehoben; der zweite Absatz („lohnt den OAuth-Aufwand nicht“) gilt nicht mehr. Kleinanzeigen regelt der Nachtrag vom 26.10.2026.
+
+- **Weg:** offizielle Sell API (Inventory, Account, Fulfillment, Media), OAuth Authorization-Code-Flow für Sebastians privates eBay-Konto. Kein Browser, kein Scraping.
+- **Zugangsdaten:** Client-ID, Client-Secret und Refresh-Token stehen nur in der Server-`.env` (`backend/.env`, 0600). Nicht in `app_settings`, nicht im Repo, nicht in Tickets oder Notizen. Den Refresh-Token schreibt `python -m app.tools.ebay_setup exchange` direkt in die Datei, ohne ihn anzuzeigen.
+- **Einstellen nur auf Klick:** „Auf eBay einstellen“ im Entwurf oder `ebay_setup publish <id>`. Es gibt keinen Zeitplan, der Inserate anlegt. Das Tempo-Limit von Kleinanzeigen braucht es hier nicht, weil die API kein Konto-Risiko durch Automation trägt.
+- **Beenden ja, Löschen nein:** „Beenden“ zieht das Angebot zurück (`withdrawOffer`), das Listing bleibt als Historie. Ein eBay-Konto oder Inventar-Artikel wird nicht gelöscht.
+- **Rückweg automatisch:** Der Verkaufsabgleich liest Bestellungen (nur lesend) und markiert Verkauftes im Inventar. Kleinanzeigen-Anzeigen desselben Postens werden gemeldet, nicht gelöscht; wartende Einstell-Aufträge werden abgebrochen.
+- **Reihenfolge:** erst Sandbox, Produktion erst nach Sebastians Consent mit dem echten Konto.
+- **Weiter verboten:** Kaufen und Bieten. Die Anbindung hat dafür weder Scope noch Aufruf.
+
+Umsetzung: `app/services/ebay_api.py` (Client), `app/services/ebay_listing.py` (Ablauf, Abgleich), `app/tasks/ebay_sync.py`, `app/tools/ebay_setup.py`; Einrichtung in `docs/ebay.md`.
+

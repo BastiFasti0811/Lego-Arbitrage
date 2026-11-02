@@ -38,8 +38,14 @@ CREATE TABLE app_settings (
 """
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("migration_d4e8a12f9c30", MIGRATION)
+# Spaetere Migrationen, die `listings` erweitern; laufen im Fixture nach PR 1.
+LATER_LISTING_MIGRATIONS = [
+    Path(__file__).resolve().parents[1] / "alembic" / "versions" / "b7d2e9f4a1c6_listing_ebay_ids.py",
+]
+
+
+def _load_migration(path: Path = MIGRATION):
+    spec = importlib.util.spec_from_file_location(f"migration_{path.stem}", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -66,6 +72,10 @@ def migrated():
         module = _load_migration()
         module.op = Operations(context)
         module.upgrade()
+        for later in LATER_LISTING_MIGRATIONS:
+            extra = _load_migration(later)
+            extra.op = Operations(context)
+            extra.upgrade()
         yield conn
 
 
