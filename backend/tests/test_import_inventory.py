@@ -397,6 +397,11 @@ async def test_active_listing_activates_an_open_draft(tmp_path, db):
             id="kategorie-zu-lang",
         ),
         pytest.param({"listings": [{"platform": "EBAY", "status": "DRAFT", "title": "T" * 130}]}, id="titel-zu-lang"),
+        pytest.param(
+            {"listings": [{"platform": "EBAY", "status": "ACTIVE", "price": 10, "url": "javascript:alert(1)"}]},
+            id="listing-url-ohne-http",
+        ),
+        pytest.param({"buy_url": "javascript:alert(1)"}, id="original-link-ohne-http"),
     ],
 )
 async def test_bad_manifest_values_abort_before_writing(tmp_path, db, item):
