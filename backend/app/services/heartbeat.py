@@ -45,6 +45,7 @@ MONITORED_TASKS: dict[str, int] = {
     "app.tasks.listing_pack.send_listing_pack_task": 194,         # weekly Monday 08:00
     "app.tasks.goal_digest.send_goal_digest_task": 194,           # weekly Monday 07:50
     "app.tasks.listing_check.run_listing_check_task": 26,         # daily 08:05
+    "app.tasks.ebay_sync.sync_ebay_sales_task": 3,                # every 30min (no-op ohne eBay-Zugang)
 }
 
 # Die Tasks, die Angebote in die DB schreiben. Der Live Feed meldet ihren

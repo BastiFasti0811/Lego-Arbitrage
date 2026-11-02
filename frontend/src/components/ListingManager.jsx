@@ -182,6 +182,33 @@ function AutoPostPanel({ item, listing, onDone }) {
   );
 }
 
+function EbayApiPanel({ item, listing, onDone }) {
+  const toast = useToast();
+  const { data: status } = useQuery({ queryKey: ["ebay-status"], queryFn: api.ebayStatus, staleTime: 5 * 60 * 1000 });
+  const publish = useMutation({
+    mutationFn: () => api.publishOnEbay(item.id, listing.id),
+    onSuccess: () => {
+      toast.success("Auf eBay eingestellt");
+      onDone();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+  if (!status?.configured) return null;
+  const sandbox = status.environment !== "production";
+  return (
+    <div className="rounded-lg border border-border p-3 space-y-2">
+      <p className="text-xs text-text-secondary">
+        Über die eBay-API als Festpreisangebot einstellen: Titel, Text, Preis und Fotos aus diesem Entwurf.
+        {sandbox && " Sandbox — nichts geht live."}
+      </p>
+      <button type="button" disabled={publish.isPending} onClick={() => publish.mutate()}
+        className="text-xs px-3 py-1.5 rounded-lg font-bold bg-lego-yellow text-black hover:bg-lego-yellow/90 disabled:opacity-50">
+        {publish.isPending ? "eBay arbeitet …" : sandbox ? "In der eBay-Sandbox einstellen" : "Auf eBay einstellen"}
+      </button>
+    </div>
+  );
+}
+
 function DraftPanel({ item, listing, onDone }) {
   const toast = useToast();
   const [url, setUrl] = useState("");
@@ -267,6 +294,7 @@ function DraftPanel({ item, listing, onDone }) {
         </div>
       </div>
       {listing.platform === "KLEINANZEIGEN" && <AutoPostPanel item={item} listing={listing} onDone={onDone} />}
+      {listing.platform === "EBAY" && <EbayApiPanel item={item} listing={listing} onDone={onDone} />}
       <form
         className="space-y-2"
         onSubmit={(e) => {

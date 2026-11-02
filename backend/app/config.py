@@ -56,6 +56,35 @@ class Settings(BaseSettings):
     ebay_outlier_threshold: float = 0.30  # ±30% from median
     ebay_min_sold_items: int = 5  # Minimum sold items for reliable data
 
+    # ── eBay Sell API (eigene Inserate, Nachtrag ADR 0002 vom 02.11.2026) ──
+    # Alles NUR aus backend/.env (0600), nie aus app_settings, Repo oder Tickets.
+    # Ablauf und Einrichtung: docs/ebay.md. Ohne Client-ID, Secret und
+    # Refresh-Token ist die Anbindung aus; die App zeigt dann keinen Knopf.
+    ebay_environment: str = Field(default="sandbox", pattern=r"^(sandbox|production)$")
+    ebay_client_id: str | None = None
+    ebay_client_secret: str | None = None
+    # RuName ("eBay Redirect URL name") aus dem Developer-Portal, kein Secret.
+    ebay_runame: str | None = None
+    ebay_refresh_token: str | None = None
+    ebay_marketplace_id: str = "EBAY_DE"
+    # Lagerort fuer die Inventory API (Pflicht fuer publishOffer). Nur PLZ und
+    # Ort, keine Strasse: eBay zeigt den Artikelstandort oeffentlich an.
+    ebay_location_key: str = "lego-arbitrage"
+    ebay_location_postal_code: str | None = None
+    ebay_location_city: str | None = None
+    # Geschaeftsrichtlinien. Leer = beim Einstellen per Name suchen
+    # (`ebay_policy_name`), angelegt von `python -m app.tools.ebay_setup policies`.
+    ebay_fulfillment_policy_id: str | None = None
+    ebay_payment_policy_id: str | None = None
+    ebay_return_policy_id: str | None = None
+    ebay_policy_name: str = "Lego-Arbitrage"
+    # Versand in der angelegten Versand-Richtlinie (DHL Paket, Inland).
+    ebay_shipping_cost: float = 6.99
+    # eBay-Kategorie "LEGO Komplettsets & Packs" (gleiche ID auf .de und .com).
+    ebay_lego_category_id: str = "19006"
+    # Verkaufsabgleich: wie weit getOrders beim ersten Lauf zurueckschaut.
+    ebay_order_lookback_days: int = 30
+
     # ── Market Analysis ──────────────────────────────────
     # Source weights for market consensus price
     weight_ebay_sold: float = 0.40

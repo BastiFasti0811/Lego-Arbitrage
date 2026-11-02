@@ -19,6 +19,9 @@ _Avoid_: Inserat, Anzeige (im Code), Angebot
 **Inserat vorbereiten** (`POST /inventory/{id}/listings/prepare`):
 Der einzige Textweg zum Listing: legt den Entwurf mit KI-Text und Preisvorschlag an oder nimmt den vorhandenen. Fällt die KI aus, steht ein Vorlagentext mit Warnung drin. Nach dem Einstellen von Hand genügt die Anzeigen-URL (`…/activate`), dann ist das Listing ACTIVE mit Datum. Als „inseriert" zählt ein Artikel, sobald eines seiner Listings je ein Einstell-Datum hatte.
 
+**eBay-Angebot (API)** (`listings.ebay_sku`, `ebay_offer_id`, `ebay_listing_id`):
+Ein eBay-Listing, das die App über die Sell API eingestellt hat (Nachtrag ADR 0002 vom 02.11.2026, docs/ebay.md). Entsteht nur auf Klick „Auf eBay einstellen" im Entwurf, als Festpreisangebot. Übernommene Preisvorschläge gehen sofort an eBay; „Beenden" zieht das Angebot zurück. Der Verkaufsabgleich (alle 30 min) markiert auf eBay Verkauftes im Inventar und meldet offene Anzeigen anderer Kanäle; ist ein Posten anderswo verkauft, endet sein eBay-Angebot. Von Hand eingestellte eBay-Anzeigen haben keine SKU und bleiben außen vor.
+
 **Einstell-Auftrag** (`listing_posting_jobs`):
 Der Auftrag, einen Kleinanzeigen-Entwurf per Browser einzustellen (Nachtrag ADR 0002). Durchläuft REQUESTED (wartet auf Freigabe) → APPROVED → IN_PROGRESS → POSTED, als Testlauf DRAFT_SAVED (Formular gefüllt, nicht veröffentlicht). Je Entwurf höchstens ein offener Auftrag. Den Browser fährt der Skill `kleinanzeigen-einstellen`; Löschen ist keine Aktion.
 

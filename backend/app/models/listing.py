@@ -1,9 +1,9 @@
 """Eigene Anzeigen (Listings) je Artikel und Plattform — siehe CONTEXT.md.
 
 Nicht verwechseln mit `offers`: Das sind fremde Angebote der Arbitrage-
-Pipeline. Ein Listing ist unsere eigene Anzeige. eBay wird von Hand
-eingestellt (ADR 0002); Kleinanzeigen laut Nachtrag auch per Browser,
-siehe `listing_posting_job.py`.
+Pipeline. Ein Listing ist unsere eigene Anzeige. Kleinanzeigen laut Nachtrag
+zu ADR 0002 auch per Browser (`listing_posting_job.py`), eBay seit dem Nachtrag
+vom 02.11.2026 ueber die Sell API (`app/services/ebay_listing.py`).
 """
 
 from datetime import date, datetime
@@ -56,6 +56,9 @@ class Listing(Base):
             sqlite_where=_OPEN_STATUS_SQL,
             postgresql_where=_OPEN_STATUS_SQL,
         ),
+        # Eine SKU gehoert genau einem Listing; der Verkaufsabgleich ordnet
+        # eBay-Bestellungen ueber sie zu.
+        Index("uq_listings_ebay_sku", "ebay_sku", unique=True),
     )
 
     item_id: Mapped[int] = mapped_column(ForeignKey("inventory_items.id", ondelete="CASCADE"), nullable=False)
@@ -72,6 +75,13 @@ class Listing(Base):
     listed_at: Mapped[date | None] = mapped_column(Date)
     current_price: Mapped[float | None] = mapped_column(Float)
     url: Mapped[str | None] = mapped_column(Text)
+
+    # eBay Sell API: SKU (Inventory-Item), Angebot und Artikelnummer. Nur bei
+    # Listings, die die App selbst auf eBay eingestellt hat; von Hand
+    # eingestellte eBay-Anzeigen bleiben NULL.
+    ebay_sku: Mapped[str | None] = mapped_column(String(50))
+    ebay_offer_id: Mapped[str | None] = mapped_column(String(40))
+    ebay_listing_id: Mapped[str | None] = mapped_column(String(40))
 
     # Anpassungsregel (Tages-Check nutzt sie ab PR 3)
     check_interval_days: Mapped[int] = mapped_column(Integer, nullable=False, server_default="14")

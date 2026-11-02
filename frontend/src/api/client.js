@@ -237,6 +237,9 @@ export const api = {
   postingOverview: () => request("/listings/posting-jobs"),
   approvePosting: (jobId) => request(`/listings/posting-jobs/${jobId}/approve`, { method: "POST" }),
   cancelPosting: (jobId) => request(`/listings/posting-jobs/${jobId}/cancel`, { method: "POST" }),
+  // eBay Sell API (Nachtrag ADR 0002): Status ohne Secrets, Einstellen auf Klick
+  ebayStatus: () => request("/listings/ebay/status"),
+  publishOnEbay: (itemId, listingId) => request(`/inventory/${itemId}/listings/${listingId}/ebay/publish`, { method: "POST" }),
   // Tages-Check (PR 3): faellige Anpassungen und die drei Antworten auf einen Vorschlag.
   dueAdjustments: () => request("/listings/due"),
   acceptSuggestion: (itemId, listingId) =>
