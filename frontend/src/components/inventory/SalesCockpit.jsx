@@ -4,7 +4,7 @@ import { formatMoney, PHOTO_ICON } from "./inventoryFormat";
 // fotografiert und eingestellt wird und was heute schon lief.
 // Quelle: GET /api/inventory/cockpit (app.services.sales_cockpit).
 
-function CockpitNumber({ label, value, hint, onClick, actionLabel }) {
+function CockpitNumber({ label, value, hint, onClick, title }) {
   const body = (
     <>
       <span className="text-text-muted text-xs block">{label}</span>
@@ -17,7 +17,7 @@ function CockpitNumber({ label, value, hint, onClick, actionLabel }) {
     <button
       type="button"
       onClick={onClick}
-      aria-label={actionLabel}
+      title={title}
       className="min-w-[8rem] text-left rounded-lg px-2 py-1 -mx-2 -my-1 hover:bg-bg-hover transition-colors"
     >
       {body}
@@ -27,6 +27,8 @@ function CockpitNumber({ label, value, hint, onClick, actionLabel }) {
 
 function postingHint(today) {
   const parts = [`wartend ${today.waiting_approval}`];
+  // Das Tageslimit zaehlt Versuche, nicht nur Erfolge.
+  if (today.started > today.posted) parts.push(`${today.started}/${today.max_per_day} Versuche`);
   if (today.queued > 0) parts.push(`${today.queued} freigegeben`);
   if (today.failed > 0) parts.push(`${today.failed} fehlgeschlagen`);
   return parts.join(" · ");
@@ -35,14 +37,16 @@ function postingHint(today) {
 function NextCandidates({ candidates, withoutPhoto, onPrepare, preparingId }) {
   return (
     <div className="mt-4 pt-3 border-t border-border/50">
-      <h2 className="text-text-muted text-xs uppercase tracking-wider mb-2">Nächste 3 zum Inserieren</h2>
+      <h2 id="next-candidates-heading" className="text-text-muted text-xs uppercase tracking-wider mb-2">
+        Nächste {candidates.length || ""} zum Inserieren
+      </h2>
       {candidates.length === 0 ? (
         <p className="text-text-secondary text-sm">
           Kein Lego-Posten mit Foto ohne Entwurf.
           {withoutPhoto > 0 && ` Als Nächstes fotografieren: ${withoutPhoto} ohne Foto.`}
         </p>
       ) : (
-        <ol className="space-y-2" aria-label="Nächste 3 zum Inserieren">
+        <ol className="space-y-2" aria-labelledby="next-candidates-heading">
           {candidates.map((candidate) => (
             <li key={candidate.item_id} className="flex flex-wrap items-center gap-x-3 gap-y-1">
               <span className="text-lego-yellow font-[family-name:var(--font-mono)] text-sm font-semibold">
@@ -84,17 +88,17 @@ export default function SalesCockpit({ cockpit, onShowWithoutPhoto, onShowReady,
           value={`${cockpit.lego_without_photo}/${cockpit.lego_holding}`}
           hint="Lego, als Nächstes fotografieren"
           onClick={onShowWithoutPhoto}
-          actionLabel={`Lego ohne Foto zeigen (${cockpit.lego_without_photo})`}
+          title="Lego ohne Foto in der Liste zeigen"
         />
         <CockpitNumber
           label="Entwürfe bereit"
           value={cockpit.drafts_ready}
           hint="mit Foto und Preis"
           onClick={onShowReady}
-          actionLabel={`Entwürfe bereit zum Einstellen zeigen (${cockpit.drafts_ready})`}
+          title="Entwürfe bereit zum Einstellen in der Liste zeigen"
         />
         <CockpitNumber
-          label="Einstell-Aufträge heute"
+          label="heute eingestellt"
           value={`${today.posted}/${today.max_per_day}`}
           hint={postingHint(today)}
         />

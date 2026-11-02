@@ -41,8 +41,8 @@ describe("SalesCockpit", () => {
       <SalesCockpit cockpit={cockpit()} onShowWithoutPhoto={onShowWithoutPhoto} onShowReady={onShowReady} onPrepare={() => {}} />,
     );
 
-    await userEvent.click(screen.getByRole("button", { name: /Lego ohne Foto zeigen/ }));
-    await userEvent.click(screen.getByRole("button", { name: /Entwürfe bereit zum Einstellen zeigen/ }));
+    await userEvent.click(screen.getByRole("button", { name: /^ohne Foto/ }));
+    await userEvent.click(screen.getByRole("button", { name: /^Entwürfe bereit/ }));
 
     expect(onShowWithoutPhoto).toHaveBeenCalledTimes(1);
     expect(onShowReady).toHaveBeenCalledTimes(1);
@@ -52,7 +52,7 @@ describe("SalesCockpit", () => {
     const onPrepare = vi.fn();
     render(<SalesCockpit cockpit={cockpit()} onPrepare={onPrepare} />);
 
-    const list = screen.getByRole("list", { name: "Nächste 3 zum Inserieren" });
+    const list = screen.getByRole("list", { name: /zum Inserieren/ });
     expect(within(list).getAllByRole("listitem")).toHaveLength(2);
     expect(within(list).getByText("Schaufelradbagger")).toBeInTheDocument();
 
@@ -71,6 +71,19 @@ describe("SalesCockpit", () => {
     );
     expect(screen.getByText("wartend 0 · 1 freigegeben · 1 fehlgeschlagen")).toBeInTheDocument();
     expect(screen.getByText(/Tageslimit erreicht/)).toBeInTheDocument();
+  });
+
+  it("nennt die Versuche, wenn das Tageslimit mehr zaehlt als Erfolge", () => {
+    render(
+      <SalesCockpit
+        cockpit={cockpit({
+          posting_today: { posted: 1, started: 3, max_per_day: 3, waiting_approval: 0, queued: 0, failed: 2, block: "Tageslimit erreicht (3 Inserate) — morgen weiter" },
+        })}
+        onPrepare={() => {}}
+      />,
+    );
+    expect(screen.getByText("1/3")).toBeInTheDocument();
+    expect(screen.getByText("wartend 0 · 3/3 Versuche · 2 fehlgeschlagen")).toBeInTheDocument();
   });
 
   it("verweist ohne Kandidaten aufs Fotografieren", () => {

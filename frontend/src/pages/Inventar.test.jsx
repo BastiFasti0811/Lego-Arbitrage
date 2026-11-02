@@ -95,11 +95,30 @@ describe("Inventar-Seite", () => {
 
   it("setzt per Klick auf 'ohne Foto' im Kopf die Filter Lego + ohne Foto", async () => {
     renderPage();
-    await userEvent.click(await screen.findByRole("button", { name: /Lego ohne Foto zeigen/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /^ohne Foto/ }));
 
     await waitFor(() => expect(visibleNames()).toEqual(["Kran"]));
     expect(screen.getByLabelText("Typ")).toHaveValue("LEGO");
     expect(screen.getByLabelText("Foto")).toHaveValue("without");
+  });
+
+  it("setzt beim Sprung aus dem Cockpit alle anderen Filter zurueck", async () => {
+    renderPage();
+    await screen.findByText("Schaufelradbagger", { selector: "h3" });
+    await userEvent.selectOptions(screen.getByLabelText("Typ"), "LEGO");
+    await userEvent.selectOptions(screen.getByLabelText("Inserat"), "listed");
+    await userEvent.type(screen.getByLabelText("Suche"), "bagger");
+
+    await userEvent.click(screen.getByRole("button", { name: /^Entwürfe bereit/ }));
+
+    await waitFor(() => expect(visibleNames()).toEqual(["Piratenschiff"]));
+    expect(screen.getByLabelText("Typ")).toHaveValue("");
+    expect(screen.getByLabelText("Inserat")).toHaveValue("ready");
+    expect(screen.getByLabelText("Suche")).toHaveValue("");
+
+    await userEvent.click(screen.getByRole("button", { name: /^ohne Foto/ }));
+    await waitFor(() => expect(visibleNames()).toEqual(["Kran"]));
+    expect(screen.getByLabelText("Inserat")).toHaveValue("");
   });
 
   it("'Naechste 3' aendert sich nach 'Inserat vorbereiten'", async () => {
@@ -108,7 +127,7 @@ describe("Inventar-Seite", () => {
       warning: null,
     });
     renderPage();
-    const list = await screen.findByRole("list", { name: "Nächste 3 zum Inserieren" });
+    const list = await screen.findByRole("list", { name: /zum Inserieren/ });
     expect(within(list).getByText("Schaufelradbagger")).toBeInTheDocument();
 
     // Nach dem Vorbereiten hat der Bagger einen Entwurf: das Backend nimmt ihn heraus.

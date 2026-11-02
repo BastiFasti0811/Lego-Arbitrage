@@ -132,6 +132,7 @@ export default function Inventar() {
     mutationFn: (id) => api.splitInventory(id, 1),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["inventory"] });
+      queryClient.invalidateQueries({ queryKey: ["portfolio", "cockpit"] });
     },
   });
 
@@ -139,6 +140,7 @@ export default function Inventar() {
     mutationFn: (id) => api.revalueItem(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["inventory"] });
+      queryClient.invalidateQueries({ queryKey: ["portfolio", "cockpit"] });
     },
   });
 
@@ -333,6 +335,16 @@ export default function Inventar() {
   const visibleItems = filterInventory(items, { listingFilter, photoFilter, search });
   const filtersActive = listingFilter !== "" || photoFilter !== "" || search.trim() !== "";
 
+  // Sprung aus dem Cockpit: alle Filter neu setzen, sonst zeigt die Liste
+  // weniger Posten als die Kachel zaehlt (Review #54).
+  const showOnly = ({ type = "", photo = "", listing = "" }) => {
+    setTypeFilter(type);
+    setGroupFilter("");
+    setListingFilter(listing);
+    setPhotoFilter(photo);
+    setSearch("");
+  };
+
   // "Naechste 3": derselbe Weg wie "Verkaufen > Inserat vorbereiten" am Posten.
   // Danach faellt der Posten aus der Liste (er hat jetzt einen Entwurf).
   const prepareCandidate = async (candidate) => {
@@ -343,6 +355,7 @@ export default function Inventar() {
         queryClient.invalidateQueries({ queryKey: ["portfolio"] });
         const item = (items || []).find((x) => x.id === candidate.item_id);
         if (item) setListingItem(item);
+        else toast.info("Entwurf liegt unter „Bereit zum Einstellen“ — der Posten ist gerade herausgefiltert");
       }
     } finally {
       setPreparingId(null);
@@ -357,8 +370,8 @@ export default function Inventar() {
         cockpit={cockpit}
         onPhotoFirst={() => setPhotoFirstModal(true)}
         onAdd={openAddModal}
-        onShowWithoutPhoto={() => { setTypeFilter("LEGO"); setPhotoFilter("without"); }}
-        onShowReady={() => { setListingFilter("ready"); setPhotoFilter(""); }}
+        onShowWithoutPhoto={() => showOnly({ type: "LEGO", photo: "without" })}
+        onShowReady={() => showOnly({ listing: "ready" })}
         onPrepareCandidate={prepareCandidate}
         preparingId={preparingId}
       />
@@ -475,6 +488,7 @@ export default function Inventar() {
             setPhotoFirstModal(false);
             queryClient.invalidateQueries({ queryKey: ["inventory"] });
             queryClient.invalidateQueries({ queryKey: ["productGroups"] });
+            queryClient.invalidateQueries({ queryKey: ["portfolio", "cockpit"] });
           }}
         />
       )}
