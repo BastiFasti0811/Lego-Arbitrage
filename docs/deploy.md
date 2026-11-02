@@ -201,6 +201,8 @@ stray file would ship in the image while `/health` reports a clean commit.
 Fix the change through GitHub instead. In an emergency
 `ALLOW_DIRTY_DEPLOY=1 bash scripts/deploy-prod.sh` deploys anyway; `/health`
 then reports `<sha>-dirty`, and the next clean deploy removes the suffix.
+`--auto-rollback` does not work after such a deploy when tracked files are
+modified: `scripts/rollback-prod.sh` refuses a dirty tree.
 
 The script first takes a non-blocking lock on
 `/tmp/lego-arbitrage-deploy.lock` (path overridable via `LOCK_FILE`), so a

@@ -5,8 +5,9 @@ Server nie ab, sie landen nur als `<a href>` im Browser. React 19 blockt
 `javascript:` bereits; die Pruefung hier sorgt dafuer, dass gar nichts
 ausser http(s) gespeichert wird (auch kein `data:` oder `vbscript:`).
 
-Leere Werte bleiben unveraendert: die Routen behandeln "" und None schon
-heute (Listing-URL leeren, Inventar-Feld leeren).
+None bleibt None, nur aus Leerzeichen bestehende Werte werden zu "": die
+Routen behandeln "" und None schon heute (Listing-URL leeren, Inventar-Feld
+leeren).
 """
 
 from typing import Annotated
@@ -23,7 +24,7 @@ def check_link_url(value: str | None) -> str | None:
         return None
     stripped = value.strip()
     if not stripped:
-        return value
+        return ""
     if any(ord(ch) < 0x20 or ch == "\x7f" or ch.isspace() for ch in stripped):
         raise ValueError("Link darf keine Leer- oder Steuerzeichen enthalten")
     parts = urlsplit(stripped)

@@ -78,11 +78,15 @@ DIRTY_SUFFIX=""
 if [[ -n "${DIRTY_FILES}" ]]; then
   if [[ "${ALLOW_DIRTY_DEPLOY}" != "1" ]]; then
     echo "Checkout has uncommitted or untracked files. Aborting deploy:" >&2
-    printf '%s\n' "${DIRTY_FILES}" | head -n 20 >&2
+    # here-string, no pipe: a long list must not end the script with SIGPIPE.
+    head -n 20 <<< "${DIRTY_FILES}" >&2
     echo "Commit and push the change through GitHub, or remove the files (docs/deploy.md#deploy)." >&2
     exit 1
   fi
   echo "Warning: deploying a dirty checkout (ALLOW_DIRTY_DEPLOY=1); version gets the suffix -dirty." >&2
+  if [[ "${AUTO_ROLLBACK}" == "1" ]] && ! git diff --quiet HEAD; then
+    echo "Warning: --auto-rollback cannot run with tracked changes (rollback-prod.sh refuses a dirty tree)." >&2
+  fi
   DIRTY_SUFFIX="-dirty"
 fi
 

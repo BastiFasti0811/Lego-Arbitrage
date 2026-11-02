@@ -50,9 +50,9 @@ def test_other_schemes_and_broken_links_fail(url):
         check_link_url(url)
 
 
-@pytest.mark.parametrize("value", [None, "", "   "])
-def test_empty_values_keep_their_meaning(value):
-    assert check_link_url(value) == value
+@pytest.mark.parametrize(("value", "expected"), [(None, None), ("", ""), ("   ", "")])
+def test_empty_values_keep_their_meaning(value, expected):
+    assert check_link_url(value) == expected
 
 
 def _add(**overrides) -> InventoryAdd:

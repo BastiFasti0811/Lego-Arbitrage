@@ -82,6 +82,9 @@ fi
 if [[ "$*" == "status --porcelain" && -n "${GIT_DIRTY:-}" ]]; then
   printf '%s\n' "${GIT_DIRTY}"
 fi
+if [[ "$*" == "status --porcelain" && -n "${GIT_DIRTY_FILE:-}" ]]; then
+  cat "${GIT_DIRTY_FILE}"
+fi
 if [[ "$*" == "rev-parse HEAD" ]]; then
   if grep -q '^git pull' "${CALL_LOG}"; then
     printf '%s\n' "${STUB_SHA}"
@@ -437,6 +440,23 @@ if ! grep -q "uncommitted or untracked" "${SANDBOX}/stderr.log"; then
 fi
 if ! grep -Fq "backend/hotfix.py" "${SANDBOX}/stderr.log"; then
   fail "expected the dirty files to be listed on stderr"
+fi
+
+CURRENT_TEST="failure: a long dirty list still prints the hint (no SIGPIPE)"
+make_sandbox t14c
+# Larger than a pipe buffer; a file, because one env var is capped at 128 KiB.
+export GIT_DIRTY_FILE="${SANDBOX}/dirty.txt"
+seq -f '?? junk/file-%g.txt' 1 50000 > "${GIT_DIRTY_FILE}"
+run_deploy
+unset GIT_DIRTY_FILE
+if [[ "${DEPLOY_RC}" -ne 1 ]]; then
+  fail "expected exit 1 for a long dirty list, got ${DEPLOY_RC}"
+fi
+if ! grep -q "Commit and push the change" "${SANDBOX}/stderr.log"; then
+  fail "expected the hint after the truncated list"
+fi
+if [[ "$(grep -c '^?? junk/' "${SANDBOX}/stderr.log")" -ne 20 ]]; then
+  fail "expected exactly 20 listed files"
 fi
 
 CURRENT_TEST="clean checkout: dirty check runs before the pull"
