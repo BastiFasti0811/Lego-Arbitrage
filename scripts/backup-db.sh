@@ -134,6 +134,20 @@ fi
 
 mkdir -p "${BACKUP_DIR}"
 
+# umask 077 only covers files created from now on. The directory itself and
+# anything older (dumps from before the umask, cron.log created by the cron
+# redirect, manual/ copies) lose group/other access on every run. A file that
+# belongs to someone else only produces a warning: the backup still runs.
+STEP="permissions"
+if ! chmod 700 "${BACKUP_DIR}"; then
+  echo "WARNING: could not set ${BACKUP_DIR} to 0700." >&2
+fi
+if ! find "${BACKUP_DIR}" -mindepth 1 \
+    \( -type d -perm /077 -exec chmod 700 {} + \) -o \
+    \( -type f -perm /077 -exec chmod 600 {} + \); then
+  echo "WARNING: could not tighten every file below ${BACKUP_DIR} (check owners)." >&2
+fi
+
 # A manual run (e.g. before a migration) and the nightly cron must not
 # interleave their rotation and off-site mirror.
 STEP="lock"

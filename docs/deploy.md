@@ -466,7 +466,9 @@ disk as everything else on victus. The local archives alone do not survive a
 disk loss; the off-site copies do. The restic job is part of the NixOS host
 configuration, runs as root and is not managed from this repo; it encrypts
 with its own password. Archives are written with mode 0600: the dump contains
-`app_settings` (bot token, API keys).
+`app_settings` (bot token, API keys). Every run also sets the backup
+directory to 0700 and tightens older entries below it (files 0600, folders
+0700), which covers dumps from before the umask, `cron.log` and `manual/`.
 
 ```bash
 # One-off backup (dump + photo archive, verified, rotated, mirrored if BACKUP_REMOTE is set)
