@@ -223,6 +223,102 @@ async def test_a_page_without_a_result_still_costs_budget(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_stored_listings_get_no_second_detail_request(monkeypatch):
+    # Die 2h-Lane sieht dieselben Anzeigen zwoelfmal am Tag. Eine gespeicherte
+    # Anzeige hatte ihre Detailseite schon; nur neue kosten einen Request.
+    monkeypatch.setattr(scrape_daily.settings, "scraper_detail_max_per_set", 10)
+    scraper = _RecordingScraper()
+    offers = _many_offers(3)
+    known = {offers[0].offer_url, offers[2].offer_url}
+
+    enriched = await scrape_daily._enrich_offer_details(scraper, _lego_set(), offers, skip_urls=known)
+
+    assert enriched == 1
+    assert scraper.requested == [offers[1].offer_url]
+
+
+@pytest.mark.asyncio
+async def test_known_urls_are_compared_in_canonical_form():
+    # Alte Zeilen tragen noch Tracking-Parameter; ScrapedOffer kanonisiert die
+    # frischen URLs. Ohne Angleichung gaelte jede Altzeile als neue Anzeige.
+    class _Rows:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [
+                "https://www.kleinanzeigen.de/s-anzeige/lego-eisvogel-10331/3553719041-23-7858?utm_source=x",
+                "https://kleinanzeigen.de/s-anzeige/lego-icons-eisvogel-10331/3553675876-23-1905",
+            ]
+
+    class _Session:
+        async def execute(self, _statement):
+            return _Rows()
+
+    known = await scrape_daily._known_offer_urls(_Session(), _lego_set(), "KLEINANZEIGEN")
+
+    assert known == {
+        "https://www.kleinanzeigen.de/s-anzeige/lego-eisvogel-10331/3553719041-23-7858",
+        "https://www.kleinanzeigen.de/s-anzeige/lego-icons-eisvogel-10331/3553675876-23-1905",
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_lane_reads_detail_pages_only_for_new_listings(monkeypatch):
+    stored = "https://www.kleinanzeigen.de/s-anzeige/lego-eisvogel-10331/3553719041-23-7858"
+    new = "https://www.kleinanzeigen.de/s-anzeige/lego-10331-icons-eisvogel/3558366004-23-1556"
+
+    class _Scraper(_RecordingScraper):
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def get_offers(self, _set_number):
+            return [_offer("Lego Eisvogel 10331", 25.0, stored), _offer("LEGO 10331 Icons Eisvogel", 18.0, new)]
+
+    scraper = _Scraper()
+
+    class _WatchResult:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [_lego_set()]
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def execute(self, _statement):
+            return _WatchResult()
+
+        async def commit(self):
+            return None
+
+    async def _known(_session, _lego_set, platform):
+        assert platform == "KLEINANZEIGEN"
+        return {stored}
+
+    async def _upsert(_session, _lego_set, offers, _now):
+        return len(offers)
+
+    monkeypatch.setattr(scrape_daily, "async_session", _Session)
+    monkeypatch.setattr(scrape_daily, "KleinanzeigenScraper", lambda: scraper)
+    monkeypatch.setattr(scrape_daily, "_known_offer_urls", _known)
+    monkeypatch.setattr(scrape_daily, "_upsert_offers", _upsert)
+
+    result = await scrape_daily._scrape_kleinanzeigen_async()
+
+    assert scraper.requested == [new]
+    assert result["offers"] == 2 and result["aborted"] is False
+
+
+@pytest.mark.asyncio
 async def test_offers_without_a_price_still_get_enriched(monkeypatch):
     # Ein fehlender Preis darf nicht durch die Sortierung ans Ende rutschen und
     # unter den Tisch fallen — er ist unbekannt, nicht teuer.

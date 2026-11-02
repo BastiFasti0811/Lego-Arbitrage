@@ -1,9 +1,12 @@
 """Kleinanzeigen.de scraper — private offers, often cheaper than retail."""
 
+import json
+import re
+from dataclasses import dataclass
 
 import httpx
 import structlog
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from app.domain.condition import classify_listing_condition
 from app.scrapers.base import (
@@ -19,9 +22,178 @@ logger = structlog.get_logger()
 
 BASE_URL = "https://www.kleinanzeigen.de"
 
+# Kleinanzeigen liefert je nach User-Agent zwei verschiedene Seiten: Desktop
+# (Astro mit Tailwind-Klassen, 25 Treffer je Suche) und Mobil (BEM-Klassen
+# "adlist--item", 8 Treffer, andere Treffermenge). Auch die Detailseite
+# unterscheidet sich: mobil fehlt die Detailliste mit "Zustand". Der
+# Zufalls-UA aus BaseScraper ist zu rund 70 % ein Mobilgeraet
+# (fake-useragent 2.2, gemessen am 02.11.2026). Ein fester Desktop-Chrome
+# macht beide Seiten vorhersagbar. Der Wert altert mit jedem Chrome-Release.
+KLEINANZEIGEN_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/154.0.0.0 Safari/537.36"
+)
+
+# So viele Treffer je Suchseite werden hoechstens zu Angeboten.
+MAX_OFFERS_PER_SEARCH = 20
 
 # Shared German price parser — '850 €', '1.200 € VB', '129,99 €'.
 _parse_ka_price = parse_de_price
+
+# Das vollstaendige Preisfeld einer Trefferkarte: "18 €", "1.200 € VB",
+# "129,99 €", "VB", "Zu verschenken". Verglichen wird der ganze Text eines
+# Elements, damit "Versand für 6 €" aus der Beschreibung nie als Preis gilt.
+_PRICE_FIELD_RE = re.compile(
+    r"(?:(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{2})?\s*€(?:\s*VB)?|VB|Zu verschenken)",
+    re.IGNORECASE,
+)
+# Eine Preissenkung zeigt den alten Preis durchgestrichen hinter dem neuen.
+_STRUCK_TAGS = frozenset({"s", "del", "strike"})
+_STRUCK_CLASS = "line-through"
+_SKIPPED_TAGS = frozenset({"script", "style", "svg"})
+# Ueberschrift oder Titel-Container: der Bild-Link davor traegt nur die Fotozahl.
+_TITLE_LINK_SELECTOR = (
+    "h1 a[href], h2 a[href], h3 a[href], h4 a[href], [class*=title] a[href], a[class*=title][href]"
+)
+_NO_RESULTS_RE = re.compile(r"keine Ergebnisse", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class SearchHit:
+    """Eine Trefferkarte der Suchseite, so wie sie dasteht."""
+
+    title: str
+    url: str
+    price_text: str | None
+    location: str | None
+
+
+@dataclass(frozen=True)
+class SearchPage:
+    hits: list[SearchHit]
+    cards: int  # Elemente mit data-adid, auch die ohne lesbaren Titel
+    no_results: bool  # die Seite sagt ausdruecklich "keine Ergebnisse"
+
+
+def _clean_text(element: Tag) -> str:
+    # split() faellt auch auf geschuetzte Leerzeichen ("18\xa0€").
+    return " ".join(element.get_text(" ", strip=True).split())
+
+
+def _owning_card(element: Tag) -> Tag | None:
+    """Die naechste Trefferkarte (data-adid) ueber dem Element, es selbst eingeschlossen."""
+    node = element
+    while isinstance(node, Tag):
+        if node.has_attr("data-adid"):
+            return node
+        node = node.parent
+    return None
+
+
+def _own(card: Tag, selector: str) -> list[Tag]:
+    """Elemente der Karte, die nicht zu einer eingeschachtelten Karte gehoeren.
+
+    Die Mobilseite kuerzt Beschreibungen mitten im Tag ("<br ..."). Der Parser
+    schliesst dann den Container nicht mehr, und alle folgenden Karten landen
+    IN dieser Karte. Ohne die Pruefung bekaeme sie deren Preise und Titel.
+    """
+    return [element for element in card.select(selector) if _owning_card(element) is card]
+
+
+def _is_struck(element: Tag, card: Tag) -> bool:
+    node = element
+    while isinstance(node, Tag):
+        if node.name in _STRUCK_TAGS or _STRUCK_CLASS in (node.get("class") or []):
+            return True
+        if node is card:
+            return False
+        node = node.parent
+    return False
+
+
+def _title_link(card: Tag) -> Tag | None:
+    for link in _own(card, _TITLE_LINK_SELECTOR):
+        if _clean_text(link):
+            return link
+    return None
+
+
+def _ld_title(card: Tag) -> str | None:
+    """Rueckfall: das Bild-JSON-LD der Karte nennt den Anzeigentitel."""
+    for script in _own(card, 'script[type="application/ld+json"]'):
+        try:
+            data = json.loads(script.string or "")
+        except ValueError:
+            continue
+        if isinstance(data, dict):
+            title = data.get("title") or data.get("name")
+            if isinstance(title, str) and title.strip():
+                return " ".join(title.split())
+    return None
+
+
+def _ad_url(card: Tag, title_link: Tag | None) -> str:
+    candidates = [card.get("data-href"), title_link.get("href") if title_link else None]
+    candidates += [link.get("href") for link in _own(card, "a[href*='/s-anzeige/']")]
+    for href in candidates:
+        if isinstance(href, str) and "/s-anzeige/" in href:
+            href = href.strip()
+            return href if href.startswith("http") else f"{BASE_URL}{href}"
+    # Ohne Anzeigenlink gibt es keinen stabilen Upsert-Key; der Upsert
+    # ueberspringt leere URLs.
+    return ""
+
+
+def _price_text(card: Tag) -> str | None:
+    for element in card.find_all(True):
+        if element.name in _SKIPPED_TAGS or _owning_card(element) is not card:
+            continue
+        text = _clean_text(element)
+        if text and _PRICE_FIELD_RE.fullmatch(text) and not _is_struck(element, card):
+            return text
+    return None
+
+
+def _location(card: Tag) -> str | None:
+    for element in _own(card, "[class*=location]"):
+        text = _clean_text(element)
+        if text:
+            return text
+    # Desktop: Ort steht neben dem Icon <svg data-title="locationOutline">.
+    for icon in _own(card, "svg[data-title]"):
+        if "location" in (icon.get("data-title") or "").lower() and isinstance(icon.parent, Tag):
+            text = _clean_text(icon.parent)
+            if text:
+                return text
+    return None
+
+
+def parse_search_page(html: str) -> SearchPage:
+    """Trefferkarten einer Suchseite lesen, unabhaengig vom Layout.
+
+    Anker sind Attribute, die beide Layouts tragen (data-adid, data-href) und
+    die Bedeutung der Elemente (Ueberschrift, vollstaendiges Preisfeld), nicht
+    Klassennamen: an "aditem" hing der alte Parser, und als Kleinanzeigen das
+    Layout umbaute, meldete der Scan zwei Monate lang 0 Angebote bei 0 Fehlern.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    cards = soup.select("[data-adid]")
+    hits = []
+    for card in cards:
+        link = _title_link(card)
+        title = _clean_text(link) if link else _ld_title(card)
+        if not title:
+            continue
+        hits.append(
+            SearchHit(
+                title=title,
+                url=_ad_url(card, link),
+                price_text=_price_text(card),
+                location=_location(card),
+            )
+        )
+    no_results = not cards and bool(_NO_RESULTS_RE.search(soup.get_text(" ", strip=True)))
+    return SearchPage(hits=hits, cards=len(cards), no_results=no_results)
 
 
 class KleinanzeigenScraper(BaseScraper):
@@ -33,9 +205,13 @@ class KleinanzeigenScraper(BaseScraper):
     - Higher fraud risk → check seller profile
     - VB (Verhandlungsbasis) = negotiable price
 
-    IMPORTANT: Kleinanzeigen has Captcha and bot detection.
-    Production use requires Playwright with stealth mode.
+    Plain httpx with a fixed desktop user agent. Search and detail pages came
+    through from the prod host without captcha on 02.11.2026; a block shows up
+    as 403/429 and is raised to the caller.
     """
+
+    # BaseScraper._fetch nimmt sonst je Abruf einen Zufalls-UA (meist mobil).
+    user_agent_override = KLEINANZEIGEN_USER_AGENT
 
     async def fetch_offer_details(self, offer_url: str) -> OfferDetails | None:
         """Read condition and description from a single listing's page.
@@ -91,6 +267,20 @@ class KleinanzeigenScraper(BaseScraper):
         query = f"LEGO+{set_number}"
         return f"{BASE_URL}/s-{query}/k0"
 
+    async def _search(self, set_number: str) -> SearchPage:
+        html = await self._fetch(self._build_search_url(set_number))
+        page = parse_search_page(html)
+        if not page.hits and not page.no_results:
+            # HTTP 200, aber nichts lesbar: Layout-Drift oder eine Seite, die
+            # keine Trefferliste ist. Genau das lief zwei Monate ohne Logzeile.
+            logger.warning(
+                "kleinanzeigen.search_unreadable",
+                set_number=set_number,
+                cards=page.cards,
+                length=len(html),
+            )
+        return page
+
     async def get_set_info(self, set_number: str) -> ScrapedSetInfo | None:
         """Kleinanzeigen doesn't have structured set data."""
         return ScrapedSetInfo(set_number=set_number)
@@ -98,46 +288,16 @@ class KleinanzeigenScraper(BaseScraper):
     async def get_price(self, set_number: str) -> ScrapedPrice | None:
         """Get average asking price from Kleinanzeigen listings."""
         try:
-            html = await self._fetch(self._build_search_url(set_number))
-            soup = BeautifulSoup(html, "lxml")
+            page = await self._search(set_number)
 
             prices = []
-            items = soup.select(
-                "[class*=aditem], "
-                "[data-testid*=ad-listitem], "
-                ".ad-listitem, "
-                "article[class*=ad]"
-            )
-
-            for item in items:
-                # Price
-                price_el = item.select_one(
-                    "[class*=price], "
-                    "[data-testid*=price], "
-                    ".aditem-main--middle--price, "
-                    "p[class*=price]"
-                )
-                if not price_el:
-                    continue
-
-                price_text = price_el.get_text(strip=True)
-
+            for hit in page.hits:
                 # Skip "Zu verschenken" (free) and "VB" only listings
-                if "verschenken" in price_text.lower():
+                if not hit.price_text or "verschenken" in hit.price_text.lower():
                     continue
-
-                price = _parse_ka_price(price_text)
-                if price and 5.0 < price < 10000.0:
-                    # Check if title contains our set number
-                    title_el = item.select_one(
-                        "a[class*=title], "
-                        "[class*=title], "
-                        "h2, h3"
-                    )
-                    if title_el:
-                        title = title_el.get_text(strip=True)
-                        if set_number in title or "lego" in title.lower():
-                            prices.append(price)
+                price = _parse_ka_price(hit.price_text)
+                if price and 5.0 < price < 10000.0 and (set_number in hit.title or "lego" in hit.title.lower()):
+                    prices.append(price)
 
             if not prices:
                 logger.warning("kleinanzeigen.no_prices", set_number=set_number)
@@ -167,75 +327,34 @@ class KleinanzeigenScraper(BaseScraper):
         """Get active Kleinanzeigen offers."""
         offers = []
         try:
-            html = await self._fetch(self._build_search_url(set_number))
-            soup = BeautifulSoup(html, "lxml")
+            page = await self._search(set_number)
 
-            items = soup.select(
-                "[class*=aditem], "
-                "[data-testid*=ad-listitem], "
-                ".ad-listitem, "
-                "article[class*=ad]"
-            )
-
-            for item in items[:20]:
-                try:
-                    # Title
-                    title_el = item.select_one(
-                        "a[class*=title], [class*=title], h2, h3"
-                    )
-                    if not title_el:
-                        continue
-                    title = title_el.get_text(strip=True)
-                    if set_number not in title and "lego" not in title.lower():
-                        continue
-
-                    # Price
-                    price_el = item.select_one(
-                        "[class*=price], [data-testid*=price], p[class*=price]"
-                    )
-                    if not price_el:
-                        continue
-                    price_text = price_el.get_text(strip=True)
-                    if "verschenken" in price_text.lower():
-                        continue
-                    price = _parse_ka_price(price_text)
-                    if not price or price < 5.0:
-                        continue
-
-                    # Link
-                    link_el = item.select_one("a[href*='/s-anzeige/'], a[href*='/anzeige/']")
-                    if not link_el:
-                        link_el = title_el if title_el.name == "a" else title_el.find_parent("a")
-                    href = link_el.get("href", "") if link_el else ""
-                    # Leerer Link ergäbe die Host-Konstante als Upsert-Key — lieber
-                    # leer lassen, der Upsert überspringt Offers ohne URL.
-                    offer_url = href if href.startswith("http") else (f"{BASE_URL}{href}" if href else "")
-
-                    # Location
-                    location_el = item.select_one(
-                        "[class*=location], [class*=aditem-main--top]"
-                    )
-                    location = location_el.get_text(strip=True) if location_el else None
-
-                    # Der Titel darf nur zaehlen, wenn er den Zustand
-                    # ausspricht. Die alte Substring-Suche machte aus "neuwertig"
-                    # und "Neupreis" ein NEW_SEALED — womit ein ungeprueftes
-                    # Angebot besser dastand als ein geprueftes.
-                    condition, box_damage = classify_listing_condition(None, title)
-                    sealed = condition == "NEW_SEALED"
-
-                    offers.append(ScrapedOffer(
-                        platform="KLEINANZEIGEN",
-                        offer_url=offer_url,
-                        offer_title=title,
-                        price_eur=price,
-                        seller_location=location,
-                        sealed=sealed,
-                        box_damage=box_damage,
-                        condition=condition,
-                    ))
-                except Exception:
+            for hit in page.hits[:MAX_OFFERS_PER_SEARCH]:
+                title = hit.title
+                if set_number not in title and "lego" not in title.lower():
                     continue
+                if not hit.price_text or "verschenken" in hit.price_text.lower():
+                    continue
+                price = _parse_ka_price(hit.price_text)
+                if not price or price < 5.0:
+                    continue
+
+                # Der Titel darf nur zaehlen, wenn er den Zustand
+                # ausspricht. Die alte Substring-Suche machte aus "neuwertig"
+                # und "Neupreis" ein NEW_SEALED — womit ein ungeprueftes
+                # Angebot besser dastand als ein geprueftes.
+                condition, box_damage = classify_listing_condition(None, title)
+
+                offers.append(ScrapedOffer(
+                    platform="KLEINANZEIGEN",
+                    offer_url=hit.url,
+                    offer_title=title,
+                    price_eur=price,
+                    seller_location=hit.location,
+                    sealed=condition == "NEW_SEALED",
+                    box_damage=box_damage,
+                    condition=condition,
+                ))
 
         except httpx.HTTPStatusError as e:
             # 403/429 muss nach oben — die 2h-Lane bricht darauf ab, statt den

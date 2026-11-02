@@ -1,5 +1,6 @@
 """Scheduled scraping tasks that refresh prices and active offers."""
 
+from collections.abc import Collection
 from datetime import UTC, datetime
 
 import httpx
@@ -81,9 +82,32 @@ def scrape_set_prices(set_number: str) -> dict:
     return _run_async(_scrape_set_prices_async(set_number))
 
 
-async def _scrape_set_prices_async(set_number: str) -> dict:
-    """Async implementation of price scraping."""
-    results = {"set_number": set_number, "prices": 0, "offers": 0, "errors": [], "blocked": False}
+async def _scrape_set_prices_async(set_number: str, skip_scrapers: frozenset[str] = frozenset()) -> dict:
+    """Async implementation of price scraping.
+
+    ``skip_scrapers`` names sources (scraper class names) that already answered
+    403/429 earlier in the same watchlist run; they get no further request. A
+    source that blocks during this set lands in ``blocked_scrapers`` and is
+    skipped for the rest of the set as well: BrickMerge, BrickEconomy and eBay
+    each sit in more than one scraper list.
+    """
+    results = {
+        "set_number": set_number,
+        "prices": 0,
+        "offers": 0,
+        "errors": [],
+        "blocked": False,
+        "blocked_scrapers": [],
+    }
+
+    def _skipped(scraper_cls) -> bool:
+        name = scraper_cls.__name__
+        return name in skip_scrapers or name in results["blocked_scrapers"]
+
+    def _mark_blocked(scraper_cls) -> None:
+        results["blocked"] = True
+        if scraper_cls.__name__ not in results["blocked_scrapers"]:
+            results["blocked_scrapers"].append(scraper_cls.__name__)
 
     async with async_session() as session:
         result = await session.execute(select(LegoSet).where(LegoSet.set_number == set_number))
@@ -96,6 +120,8 @@ async def _scrape_set_prices_async(set_number: str) -> dict:
         scraped_prices = []
 
         for scraper_cls in PRICE_SCRAPERS:
+            if _skipped(scraper_cls):
+                continue
             try:
                 async with scraper_cls() as scraper:
                     price = await scraper.get_price(set_number)
@@ -132,7 +158,7 @@ async def _scrape_set_prices_async(set_number: str) -> dict:
             except httpx.HTTPStatusError as exc:
                 results["errors"].append(f"{scraper_cls.__name__}: HTTP {exc.response.status_code}")
                 if exc.response.status_code in (403, 429):
-                    results["blocked"] = True
+                    _mark_blocked(scraper_cls)
                     logger.warning(
                         "scrape.price_blocked", scraper=scraper_cls.__name__, status=exc.response.status_code
                     )
@@ -147,6 +173,8 @@ async def _scrape_set_prices_async(set_number: str) -> dict:
                 logger.error("scrape.price_failed", scraper=scraper_cls.__name__, error=str(exc))
 
         for scraper_cls in METADATA_SCRAPERS:
+            if _skipped(scraper_cls):
+                continue
             try:
                 async with scraper_cls() as scraper:
                     info = await scraper.get_set_info(set_number)
@@ -155,7 +183,7 @@ async def _scrape_set_prices_async(set_number: str) -> dict:
             except httpx.HTTPStatusError as exc:
                 results["errors"].append(f"{scraper_cls.__name__} metadata: HTTP {exc.response.status_code}")
                 if exc.response.status_code in (403, 429):
-                    results["blocked"] = True
+                    _mark_blocked(scraper_cls)
                     logger.warning(
                         "scrape.metadata_blocked", scraper=scraper_cls.__name__, status=exc.response.status_code
                     )
@@ -168,6 +196,8 @@ async def _scrape_set_prices_async(set_number: str) -> dict:
                 logger.error("scrape.metadata_failed", scraper=scraper_cls.__name__, error=str(exc))
 
         for scraper_cls in OFFER_SCRAPERS:
+            if _skipped(scraper_cls):
+                continue
             try:
                 async with scraper_cls() as scraper:
                     # Bewusst ohne _enrich_offer_details: KleinanzeigenScraper
@@ -180,9 +210,9 @@ async def _scrape_set_prices_async(set_number: str) -> dict:
                 results["errors"].append(f"{scraper_cls.__name__} offers: HTTP {exc.response.status_code}")
                 if exc.response.status_code in (403, 429):
                     # Ohne dieses Flag verschluckt das generische except den
-                    # Rate-Limit-Hinweis, und der Watchlist-Lauf haemmert
-                    # ueber alle restlichen Sets weiter.
-                    results["blocked"] = True
+                    # Rate-Limit-Hinweis, und der Watchlist-Lauf haemmert die
+                    # Quelle ueber alle restlichen Sets weiter.
+                    _mark_blocked(scraper_cls)
                     logger.warning(
                         "scrape.offers_blocked",
                         scraper=scraper_cls.__name__,
@@ -229,8 +259,22 @@ def scrape_all_watched_sets() -> dict:
 
 
 async def _scrape_all_watched_async() -> dict:
-    """Async implementation of full watchlist scraping."""
-    summary = {"total_sets": 0, "success": 0, "errors": 0, "aborted": False}
+    """Async implementation of full watchlist scraping.
+
+    A 403/429 blocks only the source that sent it, for the rest of this run:
+    it gets no further request (that is what the block asks for), every other
+    source keeps going. The run used to stop at the first block, and eBay has
+    answered 403 on prod for weeks — so each six-hour run scraped the first
+    watchlist set and quit, leaving 27 of 31 sets without a fresh price.
+    ``aborted`` now means every source is blocked and nothing is left to ask.
+
+    eBay in particular: ``EbaySoldScraper.get_price`` falls back to the median
+    of active Buy-It-Now listings (``EBAY_ACTIVE``) when the sold search is
+    walled. Only when that fallback is blocked too does eBay count as blocked.
+    """
+    summary = {"total_sets": 0, "success": 0, "errors": 0, "aborted": False, "blocked_sources": []}
+    blocked: list[str] = summary["blocked_sources"]
+    all_sources = {cls.__name__ for cls in (*PRICE_SCRAPERS, *METADATA_SCRAPERS, *OFFER_SCRAPERS)}
 
     async with async_session() as session:
         result = await session.execute(
@@ -241,26 +285,32 @@ async def _scrape_all_watched_async() -> dict:
         set_numbers = [row[0] for row in result.all()]
         summary["total_sets"] = len(set_numbers)
 
-    for set_number in set_numbers:
+    for index, set_number in enumerate(set_numbers):
         try:
-            result = await _scrape_set_prices_async(set_number)
+            result = await _scrape_set_prices_async(set_number, skip_scrapers=frozenset(blocked))
             if result["errors"]:
                 summary["errors"] += 1
             else:
                 summary["success"] += 1
-            if result.get("blocked"):
-                summary["aborted"] = True
-                logger.warning("scrape.all_aborted_blocked", set_number=set_number)
-                break
+            for name in result.get("blocked_scrapers", []):
+                if name not in blocked:
+                    blocked.append(name)
+                    logger.warning("scrape.source_blocked_for_run", scraper=name, set_number=set_number)
         except Exception as exc:
             summary["errors"] += 1
             logger.error("scrape.set_failed", set_number=set_number, error=str(exc))
+
+        remaining = len(set_numbers) - index - 1
+        if remaining and all_sources and all_sources.issubset(blocked):
+            summary["aborted"] = True
+            logger.warning("scrape.all_aborted_blocked", set_number=set_number, remaining=remaining)
+            break
 
     logger.info("scrape.all_complete", **summary)
     return summary
 
 
-async def _enrich_offer_details(scraper, lego_set: LegoSet, offers) -> int:
+async def _enrich_offer_details(scraper, lego_set: LegoSet, offers, skip_urls: Collection[str] = ()) -> int:
     """Read condition off the listing page — only for plausible set offers.
 
     The result list never carries the condition, so it used to be guessed from
@@ -273,7 +323,8 @@ async def _enrich_offer_details(scraper, lego_set: LegoSet, offers) -> int:
     and only for the `scraper_detail_max_per_set` cheapest of those. Cheapest
     first because that is where the condition decides GO/NO-GO: a listing far
     under market is either the find or a wreck, and only the detail page tells
-    them apart. Scrapers without the capability are skipped.
+    them apart. Scrapers without the capability are skipped, and so are URLs in
+    ``skip_urls`` (listings already stored, see the Kleinanzeigen lane).
     """
     if not hasattr(scraper, "fetch_offer_details"):
         return 0
@@ -283,6 +334,7 @@ async def _enrich_offer_details(scraper, lego_set: LegoSet, offers) -> int:
         offer
         for offer in offers
         if offer.offer_url
+        and offer.offer_url not in skip_urls
         and is_set_offer(
             offer.offer_title,
             lego_set.set_number,
@@ -417,6 +469,14 @@ async def _upsert_offers(session, lego_set: LegoSet, offers, now: datetime) -> i
     return count
 
 
+async def _known_offer_urls(session, lego_set: LegoSet, platform: str) -> set[str]:
+    """Canonical URLs of the listings already stored for this set and platform."""
+    result = await session.execute(
+        select(Offer.offer_url).where(Offer.set_id == lego_set.id, Offer.platform == platform)
+    )
+    return {canonical_offer_url(url) for url in result.scalars().all()}
+
+
 @celery_app.task(name="app.tasks.scrape_daily.scrape_kleinanzeigen_watched")
 def scrape_kleinanzeigen_watched() -> dict:
     """Fast lane: refresh Kleinanzeigen offers for the watchlist every 2 hours."""
@@ -428,6 +488,11 @@ async def _scrape_kleinanzeigen_async() -> dict:
 
     A 403/429 aborts the remaining run — a rate-limit signal must reduce
     pressure immediately, never turn into a request burst.
+
+    Detail pages are read only for listings this set has not stored yet. A
+    stored listing already had its turn; reading it again every two hours put
+    up to ten extra requests per set into each run (31 sets: about 310 per
+    run), the kind of volume that gets a host blocked.
     """
     results = {"total_sets": 0, "offers": 0, "errors": [], "aborted": False}
 
@@ -446,8 +511,9 @@ async def _scrape_kleinanzeigen_async() -> dict:
             try:
                 async with KleinanzeigenScraper() as scraper:
                     offers = await scraper.get_offers(lego_set.set_number)
+                    known = await _known_offer_urls(session, lego_set, "KLEINANZEIGEN") if offers else set()
                     try:
-                        await _enrich_offer_details(scraper, lego_set, offers)
+                        await _enrich_offer_details(scraper, lego_set, offers, skip_urls=known)
                     except httpx.HTTPStatusError as exc:
                         if exc.response.status_code not in (403, 429):
                             raise
@@ -464,9 +530,10 @@ async def _scrape_kleinanzeigen_async() -> dict:
                             stage="enrich",
                         )
                 results["offers"] += await _upsert_offers(session, lego_set, offers, now)
-                # Pro Set committen: bei 11 Requests je Set reisst der Lauf ab
-                # ~14 Sets ins Celery-Softlimit (540 s), und ein Commit erst am
-                # Ende haette dann den ganzen Durchlauf verworfen.
+                # Pro Set committen: ein Commit erst am Ende verwirft den ganzen
+                # Durchlauf, wenn der Worker mittendrin endet (Deploy, Neustart).
+                # Das Celery-Zeitlimit (540 s) greift im Solo-Pool von Prod
+                # nicht; der Inventarlauf vom 02.11. lief 1105 s durch.
                 await session.commit()
                 if blocked_during_enrich:
                     results["aborted"] = True

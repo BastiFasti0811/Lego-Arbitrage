@@ -1,31 +1,24 @@
 """Pipeline-health watchdog task.
 
-Runs hourly, evaluates the heartbeats of the scheduled tasks and sends a
-single consolidated Telegram alert when something is stale or failing.
-Re-alerts are throttled per task via ``heartbeat_realert_hours``.
+Runs hourly, evaluates the heartbeats of the scheduled tasks plus the
+Nutzarbeit checks (price data, valuation coverage, offers per source,
+Catawiki) and sends a single consolidated Telegram alert when something is
+stale or failing. Re-alerts are throttled per task via
+``heartbeat_realert_hours``. ``/api/system/status`` shows the same problems
+(app.services.pipeline_health).
 """
 
 from datetime import UTC, datetime, timedelta
 
 import structlog
-from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.config import settings
-from app.models import PriceRecord, WatchlistItem
 from app.models.base import async_session
 from app.models.heartbeat import TaskHeartbeat
-from app.models.valuation_run import ValuationRun
 from app.notifications.telegram_bot import send_pipeline_health_alert
-from app.services.heartbeat import (
-    evaluate_catawiki_scan,
-    evaluate_data_freshness,
-    evaluate_health,
-    evaluate_valuation_coverage,
-    filter_unthrottled,
-    load_heartbeats,
-)
-from app.services.remote_scan import load_scan_watch
+from app.services.heartbeat import filter_unthrottled
+from app.services.pipeline_health import collect_pipeline_state
 from app.tasks.async_runner import run_async as _run_async
 from app.tasks.celery_app import celery_app
 
@@ -47,49 +40,15 @@ async def _check_async() -> dict:
 
     # Phase 1: read state and decide who to alert (no writes, no network I/O).
     async with async_session() as session:
-        heartbeats = await load_heartbeats(session)
-        latest_price_at = (await session.execute(select(func.max(PriceRecord.scraped_at)))).scalar_one_or_none()
-        active_watchlist = (
-            await session.execute(
-                select(func.count()).select_from(WatchlistItem).where(WatchlistItem.is_active)
-            )
-        ).scalar_one()
-        latest_run = (
-            await session.execute(
-                select(ValuationRun)
-                .where(ValuationRun.finished_at.is_not(None))
-                .order_by(ValuationRun.started_at.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        try:
-            catawiki_watch = await load_scan_watch(session)
-        except Exception as exc:  # noqa: BLE001 -- Catawiki darf den restlichen Watchdog nicht verhindern
-            logger.warning("health.catawiki_watch_failed", error=repr(exc)[:300])
-            catawiki_watch = None
-    report = evaluate_health(heartbeats, now)
-
-    # Nutzarbeit on top of task success: a green pipeline that stops writing
-    # price data is exactly the failure mode heartbeats alone cannot see.
-    problems = list(report.problems)
-    freshness_problem = evaluate_data_freshness(latest_price_at, active_watchlist, now)
-    if freshness_problem is not None:
-        problems.append(freshness_problem)
-
-    coverage_problem = evaluate_valuation_coverage(latest_run, now)
-    if coverage_problem is not None:
-        problems.append(coverage_problem)
-
-    # Catawiki kommt vom Heimscanner, nicht aus einem Beat-Task: dessen Ausfall
-    # sieht kein Heartbeat (Kritiker #4/#9 der Feedback-Runde 20.10.2026).
-    if catawiki_watch is not None:
-        problems.extend(evaluate_catawiki_scan(catawiki_watch, now))
+        state = await collect_pipeline_state(session, now)
+    problems = state.problems
+    report = state.report
 
     if not problems:
         logger.info("health.pipeline_ok", monitored=len(report.tasks))
         return {"healthy": True, "monitored": len(report.tasks), "problems": 0}
 
-    by_name = {hb.task_name: hb for hb in heartbeats}
+    by_name = {hb.task_name: hb for hb in state.heartbeats}
     to_alert = filter_unthrottled(problems, by_name, realert_cutoff)
 
     logger.warning(
