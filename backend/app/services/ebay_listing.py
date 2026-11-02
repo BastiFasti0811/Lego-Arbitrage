@@ -40,7 +40,7 @@ from app.models.inventory import InventoryItem, InventoryItemType, InventoryStat
 from app.models.listing import OPEN_LISTING_STATUSES, Listing, ListingPlatform, ListingStatus
 from app.models.listing_posting_job import ListingPostingJob, PostingJobStatus
 from app.models.settings import AppSetting
-from app.services.ebay_api import EbayClient, EbayError
+from app.services.ebay_api import EbayClient, EbayError, EbayInputError
 from app.services.listing_prepare import ListingPrepareError, activate_draft, check_item_can_be_listed
 
 logger = structlog.get_logger()
@@ -82,7 +82,7 @@ def ebay_title(title: str) -> str:
 def ebay_condition(condition: str | None) -> tuple[str, str | None]:
     key = normalize_condition(condition)
     if key not in _EBAY_CONDITION:
-        raise EbayError("Zustand unbekannt — bitte am Posten setzen, bevor er auf eBay geht")
+        raise EbayInputError("Zustand unbekannt — bitte am Posten setzen, bevor er auf eBay geht")
     return _EBAY_CONDITION[key]
 
 
@@ -94,21 +94,21 @@ def description_html(body: str) -> str:
 
 def check_publishable(listing: Listing, item: InventoryItem) -> None:
     if listing.platform != ListingPlatform.EBAY.value:
-        raise EbayError("Nur eBay-Entwürfe lassen sich über die eBay-API einstellen")
+        raise EbayInputError("Nur eBay-Entwürfe lassen sich über die eBay-API einstellen")
     if listing.status != ListingStatus.DRAFT.value:
-        raise EbayError("Nur ein Entwurf lässt sich einstellen")
+        raise EbayInputError("Nur ein Entwurf lässt sich einstellen")
     try:
         check_item_can_be_listed(item)
     except ListingPrepareError as exc:
-        raise EbayError(exc.detail) from exc
+        raise EbayInputError(exc.detail) from exc
     if item.item_type != InventoryItemType.LEGO.value or not item.set_number:
-        raise EbayError("Über die eBay-API werden vorerst nur Lego-Sets mit Setnummer eingestellt")
+        raise EbayInputError("Über die eBay-API werden vorerst nur Lego-Sets mit Setnummer eingestellt")
     if not (listing.title or "").strip() or not (listing.body or "").strip():
-        raise EbayError("Der Entwurf braucht Titel und Text")
+        raise EbayInputError("Der Entwurf braucht Titel und Text")
     if not listing.current_price or listing.current_price <= 0:
-        raise EbayError("Der Entwurf braucht einen Preis")
+        raise EbayInputError("Der Entwurf braucht einen Preis")
     if not item.photos:
-        raise EbayError("eBay verlangt mindestens ein Foto")
+        raise EbayInputError("eBay verlangt mindestens ein Foto")
     ebay_condition(item.condition)
 
 
@@ -221,13 +221,20 @@ async def publish_listing(
 
     offer = build_offer(item, listing, sku, policies)
     offer_id = listing.ebay_offer_id or await client.find_offer_id(sku)
+    ebay_item_id = None
     if offer_id:
         await client.update_offer(offer_id, offer)
+        # Ein frueherer Versuch kann veroeffentlicht haben, ohne dass die App es
+        # erfuhr (Timeout). Dann die vorhandene Artikelnummer uebernehmen.
+        existing = await client.get_offer(offer_id) or {}
+        if existing.get("status") == "PUBLISHED":
+            ebay_item_id = str((existing.get("listing") or {}).get("listingId") or "") or None
     else:
         offer_id = await client.create_offer(offer)
     listing.ebay_offer_id = offer_id
 
-    ebay_item_id = await client.publish_offer(offer_id)
+    if ebay_item_id is None:
+        ebay_item_id = await client.publish_offer(offer_id)
     url = client.item_url(ebay_item_id)
     listing.ebay_listing_id = ebay_item_id
     try:
@@ -246,9 +253,7 @@ async def push_price(listing: Listing, item: InventoryItem, new_price: float, cl
     """Neuen Preis eines aktiven API-Listings auf eBay setzen (vor dem Commit)."""
     if not is_api_listing(listing) or listing.status != ListingStatus.ACTIVE.value:
         return
-    await client.update_price(
-        sku=listing.ebay_sku, offer_id=listing.ebay_offer_id, price=new_price, quantity=max(1, item.quantity or 1)
-    )
+    await client.update_price(sku=listing.ebay_sku, offer_id=listing.ebay_offer_id, price=new_price)
     logger.info("ebay.price_pushed", listing_id=listing.id, price=new_price)
 
 
@@ -258,9 +263,14 @@ async def end_listing(listing: Listing, client: EbayClient) -> None:
         raise EbayError("Dieses Listing wurde nicht über die eBay-API eingestellt")
     if listing.status not in (ListingStatus.ACTIVE.value, ListingStatus.PAUSED.value):
         raise EbayError("Nur aktive eBay-Angebote lassen sich beenden")
-    await client.withdraw_offer(listing.ebay_offer_id)
+    offer = await client.get_offer(listing.ebay_offer_id)
+    if offer is not None and offer.get("status") == "PUBLISHED":
+        await client.withdraw_offer(listing.ebay_offer_id)
+        logger.info("ebay.withdrawn", listing_id=listing.id)
+    else:
+        # Schon beendet (ausverkauft, abgelaufen, in eBay von Hand): nur nachziehen.
+        logger.info("ebay.already_ended", listing_id=listing.id)
     listing.status = ListingStatus.ENDED.value
-    logger.info("ebay.withdrawn", listing_id=listing.id)
 
 
 # ── Verkaufsabgleich ────────────────────────────────────────────────
@@ -271,6 +281,7 @@ class SaleNotice:
     item_label: str
     price: float
     open_elsewhere: list[tuple[str, str | None]]  # (Plattform, URL)
+    posting_running: bool = False  # Kleinanzeigen-Agent stellt gerade ein
 
 
 @dataclass
@@ -278,6 +289,7 @@ class SyncResult:
     orders_seen: int = 0
     sold: list[SaleNotice] = field(default_factory=list)
     partial: list[str] = field(default_factory=list)  # Teilverkaeufe, von Hand aufteilen
+    double_sales: list[str] = field(default_factory=list)  # schon anderswo verkauft, trotzdem eBay-Bestellung
     withdrawn: int = 0  # auf anderem Kanal verkauft, eBay-Angebot zurueckgezogen
     errors: list[str] = field(default_factory=list)  # nur Log und Task-Ergebnis, keine Meldung
 
@@ -322,7 +334,9 @@ def _order_date(order: dict) -> date:
 def apply_ebay_sale(item: InventoryItem, listing: Listing, price: float, sold_on: date) -> list[Listing]:
     """Posten und eBay-Listing als verkauft markieren, wie „Verkauft“ in der App.
 
-    Gibt die offenen Listings auf anderen Kanaelen zurueck (Loesch-Checkliste)."""
+    `price` ist der Gesamterloes aller zugehoerigen Bestellungen. Anders als die
+    App-Route legt der Abgleich (noch) kein DealFeedback an. Gibt die offenen
+    Listings auf anderen Kanaelen zurueck (Loesch-Checkliste)."""
     item.status = InventoryStatus.SOLD.value
     item.sell_price = round(price, 2)
     item.sell_date = sold_on
@@ -337,19 +351,28 @@ def apply_ebay_sale(item: InventoryItem, listing: Listing, price: float, sold_on
     return [x for x in item.listings if x is not listing and x.status in OPEN_LISTING_STATUSES]
 
 
-async def _cancel_open_posting_jobs(session: AsyncSession, listing_ids: list[int], now: datetime) -> None:
+async def _cancel_open_posting_jobs(session: AsyncSession, listing_ids: list[int], now: datetime) -> bool:
+    """Wartende Kleinanzeigen-Auftraege abbrechen. True, wenn einer gerade laeuft:
+    den kann nur der Agent beenden, also muss Sebastian die Anzeige pruefen."""
     if not listing_ids:
-        return
+        return False
     rows = await session.execute(
         select(ListingPostingJob).where(
             ListingPostingJob.listing_id.in_(listing_ids),
-            ListingPostingJob.status.in_((PostingJobStatus.REQUESTED.value, PostingJobStatus.APPROVED.value)),
+            ListingPostingJob.status.in_(
+                (PostingJobStatus.REQUESTED.value, PostingJobStatus.APPROVED.value, PostingJobStatus.IN_PROGRESS.value)
+            ),
         )
     )
+    running = False
     for job in rows.scalars():
+        if job.status == PostingJobStatus.IN_PROGRESS.value:
+            running = True
+            continue
         job.status = PostingJobStatus.CANCELLED.value
         job.finished_at = now
         job.error = "Auf eBay verkauft"
+    return running
 
 
 def _label(item: InventoryItem) -> str:
@@ -377,12 +400,20 @@ async def sync_sales(session: AsyncSession, client: EbayClient, now: datetime | 
     if not by_sku:
         return result
 
-    since = (now - timedelta(days=settings.ebay_order_lookback_days)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    # Ab dem fruehesten Einstell-Datum, damit auch alte Teilverkaeufe zaehlen;
+    # mindestens das Standardfenster, hoechstens zwei Jahre (Grenze von getOrders).
+    since_dt = now - timedelta(days=settings.ebay_order_lookback_days)
+    listed = [x.listed_at for x in by_sku.values() if x.listed_at]
+    if listed:
+        earliest = datetime(min(listed).year, min(listed).month, min(listed).day, tzinfo=UTC) - timedelta(days=1)
+        since_dt = max(min(since_dt, earliest), now - timedelta(days=720))
+    since = since_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
     orders = await client.orders_modified_since(since)
     result.orders_seen = len(orders)
     sold_qty: dict[str, int] = {}
     order_ids: dict[str, set[str]] = {}
-    sale_info: dict[str, tuple[float, date]] = {}
+    revenue: dict[str, float] = {}
+    last_sale: dict[str, date] = {}
     for order in orders:
         if _order_cancelled(order):
             continue
@@ -393,8 +424,11 @@ async def sync_sales(session: AsyncSession, client: EbayClient, now: datetime | 
             qty = int(line.get("quantity") or 1)
             sold_qty[sku] = sold_qty.get(sku, 0) + qty
             order_ids.setdefault(sku, set()).add(str(order.get("orderId")))
-            unit = (_amount(line.get("lineItemCost")) or _amount(line.get("total")) or 0.0) / max(1, qty)
-            sale_info[sku] = (unit, _order_date(order))
+            # lineItemCost = Stueckpreis x Menge (Spec); Summe ueber alle Bestellungen.
+            amount = _amount(line.get("lineItemCost")) or _amount(line.get("total")) or 0.0
+            revenue[sku] = revenue.get(sku, 0.0) + amount
+            sold_on = _order_date(order)
+            last_sale[sku] = max(last_sale.get(sku, sold_on), sold_on)
 
     reported_row, reported = await _reported_partials(session)
     newly_reported: list[str] = []
@@ -402,7 +436,14 @@ async def sync_sales(session: AsyncSession, client: EbayClient, now: datetime | 
         listing = by_sku[sku]
         item = listing.item
         if item.status == InventoryStatus.SOLD.value:
+            # Anderswo schon verkauft und trotzdem auf eBay bestellt: Sebastian
+            # muss mit dem eBay-Kaeufer klaeren (stornieren). Einmal melden.
             listing.status = ListingStatus.SOLD.value
+            key = f"double|{sku}|{','.join(sorted(order_ids[sku]))}"
+            if key not in reported:
+                orders_text = ", ".join(sorted(order_ids[sku]))
+                result.double_sales.append(f"{_label(item)} (eBay-Bestellung {orders_text})")
+                newly_reported.append(key)
             continue
         if qty < (item.quantity or 1):
             key = f"{sku}|{','.join(sorted(order_ids[sku]))}"
@@ -410,10 +451,10 @@ async def sync_sales(session: AsyncSession, client: EbayClient, now: datetime | 
                 result.partial.append(f"{_label(item)}: {qty} von {item.quantity} verkauft")
                 newly_reported.append(key)
             continue
-        price, sold_on = sale_info[sku]
+        price, sold_on = revenue[sku], last_sale[sku]
         others = apply_ebay_sale(item, listing, price, sold_on)
-        await _cancel_open_posting_jobs(session, [x.id for x in others], now)
-        result.sold.append(SaleNotice(_label(item), price, [(x.platform, x.url) for x in others]))
+        running = await _cancel_open_posting_jobs(session, [x.id for x in others], now)
+        result.sold.append(SaleNotice(_label(item), price, [(x.platform, x.url) for x in others], running))
         logger.info("ebay.sold", item_id=item.id, listing_id=listing.id, price=price, open_elsewhere=len(others))
 
     if newly_reported:
@@ -445,6 +486,10 @@ def format_sync_message(result: SyncResult) -> str | None:
         for platform, url in sale.open_elsewhere:
             target = url or "ohne Adresse"
             lines.append(f"   ↳ {platform.title()}-Anzeige von Hand löschen: {target}")
+        if sale.posting_running:
+            lines.append("   ↳ Kleinanzeigen-Agent stellt gerade ein — Anzeige prüfen und löschen")
+    for text in result.double_sales:
+        lines.append(f"🔴 Doppelt verkauft: {text} — Posten war schon anderswo verkauft, eBay-Käufer kontaktieren")
     for text in result.partial:
         lines.append(f"🟡 Teilverkauf auf eBay: {text} — Posten in der App aufteilen")
     return "\n".join(lines) if lines else None

@@ -42,18 +42,25 @@ def set_env_value(path: Path, key: str, value: str) -> None:
     if "\n" in value or "\r" in value:
         raise ValueError("Wert mit Zeilenumbruch")
     lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    prefix = f"{key}="
     replaced = False
     for index, line in enumerate(lines):
-        if line.strip().startswith(prefix) or line.strip().startswith(f"# {prefix}"):
+        bare = line.strip().removeprefix("#").strip().removeprefix("export ").strip()
+        if bare.startswith(f"{key}="):
             if not replaced:
                 lines[index] = f"{key}={value}"
                 replaced = True
     if not replaced:
         lines.append(f"{key}={value}")
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write("\n".join(lines) + "\n")
-    os.chmod(path, 0o600)
+    data = ("\n".join(lines) + "\n").encode("utf-8")
+    # Erst Rechte, dann Inhalt: eine neue Datei ist nie lesbarer als 0600, und
+    # fsync, damit ein Abbruch keine halb geschriebene .env hinterlaesst.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        os.write(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def fulfillment_policy_body() -> dict:

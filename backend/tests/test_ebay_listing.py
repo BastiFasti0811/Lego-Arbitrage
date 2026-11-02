@@ -70,6 +70,9 @@ class FakeEbay:
         self.orders: list[dict] = []
         self.fail: dict[str, tuple[int, dict]] = {}  # Pfadteil -> Fehlerantwort
         self.withdrawn: list[str] = []
+        self.published: set[str] = set()
+        self.image_via_location = False  # realer Fall laut Spec: 201, Location, kein Body
+        self.network_error: str | None = None  # Pfadteil, der mit Timeout scheitert
         self.token_requests = 0
 
     def paths(self, method: str | None = None) -> list[str]:
@@ -78,6 +81,8 @@ class FakeEbay:
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request)
         path = request.url.path
+        if self.network_error and self.network_error in path:
+            raise httpx.ReadTimeout("timeout", request=request)
         for part, (status, body) in self.fail.items():
             if part in path:
                 return httpx.Response(status, json=body)
@@ -97,6 +102,13 @@ class FakeEbay:
             return httpx.Response(200, json={"access_token": "v^1.1#access", "expires_in": 7200})
         if path.endswith("/image/create_image_from_file"):
             n = len([p for p in self.paths() if p.endswith("create_image_from_file")])
+            if self.image_via_location:
+                return httpx.Response(
+                    201, headers={"Location": f"https://apim.sandbox.ebay.com/commerce/media/v1_beta/image/IMG{n}"}
+                )
+            return httpx.Response(201, json={"imageUrl": f"https://i.ebayimg.com/images/g/{n}/s-l1600.jpg"})
+        if "/commerce/media/v1_beta/image/IMG" in path:
+            n = path.rsplit("IMG", 1)[-1]
             return httpx.Response(201, json={"imageUrl": f"https://i.ebayimg.com/images/g/{n}/s-l1600.jpg"})
         if path.startswith("/sell/inventory/v1/inventory_item/") and request.method == "PUT":
             self.inventory[path.rsplit("/", 1)[-1]] = json.loads(request.content)
@@ -110,10 +122,22 @@ class FakeEbay:
             self.offers[offer_id] = json.loads(request.content)
             return httpx.Response(201, json={"offerId": offer_id})
         if path.startswith("/sell/inventory/v1/offer/") and path.endswith("/publish"):
+            self.published.add(path.split("/")[-2])
             return httpx.Response(200, json={"listingId": "110551234567"})
         if path.startswith("/sell/inventory/v1/offer/") and path.endswith("/withdraw"):
             self.withdrawn.append(path.split("/")[-2])
+            self.published.discard(path.split("/")[-2])
             return httpx.Response(200, json={"listingId": "110551234567"})
+        if path.startswith("/sell/inventory/v1/offer/") and request.method == "GET":
+            offer_id = path.rsplit("/", 1)[-1]
+            if offer_id not in self.offers:
+                return httpx.Response(404, json={"errors": []})
+            body = {"offerId": offer_id, **self.offers[offer_id]}
+            if offer_id in self.published:
+                body.update(status="PUBLISHED", listing={"listingId": "110551234567"})
+            else:
+                body["status"] = "UNPUBLISHED"
+            return httpx.Response(200, json=body)
         if path.startswith("/sell/inventory/v1/offer/") and request.method == "PUT":
             self.offers[path.rsplit("/", 1)[-1]] = json.loads(request.content)
             return httpx.Response(204)
@@ -477,7 +501,8 @@ async def test_price_from_the_staircase_is_pushed_to_ebay(db, fake, client, phot
     body = json.loads(request.content)
     offer = body["requests"][0]["offers"][0]
     assert body["requests"][0]["sku"] == listing.ebay_sku
-    assert offer == {"offerId": "O1", "availableQuantity": 1, "price": {"value": "585.00", "currency": "EUR"}}
+    # nur der Preis: die Menge fuehrt eBay (Teilverkaeufe), sie mitzuschicken gaebe Verkauftes frei
+    assert offer == {"offerId": "O1", "price": {"value": "585.00", "currency": "EUR"}}
 
 
 async def test_price_push_ignores_listings_posted_by_hand(db, fake, client, photo_root):
@@ -710,3 +735,130 @@ def test_refresh_token_is_written_into_env_file_with_0600(tmp_path):
 def test_ebay_tokens_are_redacted_in_logs():
     text = "refresh failed for v^1.1#i^1#r^1#p^3#abc123 in request"
     assert redact_text(text) == "refresh failed for <ebay-token> in request"
+
+
+# ── Review-Fälle (PR #53) ────────────────────────────────────────────
+
+
+async def test_photo_url_is_read_via_location_header_when_body_is_empty(db, fake, client, photo_root):
+    listing, item = _draft(db, photo_root, photos=1)
+    fake.image_via_location = True
+    async with client:
+        await ebay_listing.publish_listing(listing, item, client, photo_root=photo_root)
+    sku = listing.ebay_sku
+    assert fake.inventory[sku]["product"]["imageUrls"] == ["https://i.ebayimg.com/images/g/1/s-l1600.jpg"]
+    assert "/commerce/media/v1_beta/image/IMG1" in fake.paths("GET")
+
+
+async def test_timeout_on_publish_keeps_offer_and_retry_takes_the_live_listing(monkeypatch, db, fake, photo_root):
+    listing, item = _draft(db, photo_root)
+    fake.network_error = "/publish"
+    monkeypatch.setattr(listing_routes, "PHOTO_STORAGE_ROOT", photo_root)
+    monkeypatch.setattr(
+        listing_routes, "ebay_client", lambda: EbayClient(CONFIG, transport=httpx.MockTransport(fake.handler))
+    )
+    with pytest.raises(HTTPException) as exc:
+        await listing_routes.publish_on_ebay(item.id, listing.id, session=db)
+    assert exc.value.status_code == 502
+    assert "Ergebnis unklar" in exc.value.detail
+    assert listing.ebay_offer_id == "O1"
+
+    # eBay hatte trotz Timeout veroeffentlicht: der zweite Versuch uebernimmt die Nummer
+    fake.network_error = None
+    fake.published.add("O1")
+    fake.calls.clear()
+    response = await listing_routes.publish_on_ebay(item.id, listing.id, session=db)
+    assert response.status == ListingStatus.ACTIVE.value
+    assert response.ebay_listing_id == "110551234567"
+    assert not [p for p in fake.paths() if p.endswith("/publish")]
+
+
+async def test_offer_already_ended_on_ebay_is_just_marked_ended(db, fake, client, photo_root):
+    listing, _item = await _published(db, fake, photo_root)
+    fake.published.discard("O1")  # ausverkauft oder in eBay von Hand beendet
+    async with client:
+        await ebay_listing.end_listing(listing, client)
+    assert fake.withdrawn == []
+    assert listing.status == ListingStatus.ENDED.value
+
+
+async def test_order_for_item_already_sold_elsewhere_is_reported_once(db, fake, client, photo_root):
+    listing, item = await _published(db, fake, photo_root)
+    item.status = InventoryStatus.SOLD.value
+    fake.orders = [_order(listing.ebay_sku)]
+    async with client:
+        result = await ebay_listing.sync_sales(db, client, NOW)
+    assert result.double_sales == ["75192 Millennium Falcon (eBay-Bestellung 12-34567-89012)"]
+    assert "Doppelt verkauft" in format_sync_message(result)
+    assert listing.status == ListingStatus.SOLD.value
+    async with EbayClient(CONFIG, transport=httpx.MockTransport(fake.handler)) as again:
+        assert (await ebay_listing.sync_sales(db, again, NOW)).double_sales == []
+
+
+async def test_several_orders_complete_the_sale_with_total_revenue(db, fake, client, photo_root):
+    listing, item = await _published(db, fake, photo_root, quantity=2)
+    first = _order(listing.ebay_sku, price="300.00")
+    second = _order(listing.ebay_sku, price="310.00")
+    second["orderId"] = "99-00000-00002"
+    fake.orders = [first, second]
+    async with client:
+        result = await ebay_listing.sync_sales(db, client, NOW)
+    assert item.status == InventoryStatus.SOLD.value
+    assert item.sell_price == 610.0
+    assert result.sold[0].price == 610.0
+
+
+async def test_running_kleinanzeigen_job_is_flagged_not_cancelled(db, fake, client, photo_root):
+    listing, item = await _published(db, fake, photo_root)
+    ka = Listing(item_id=item.id, platform="KLEINANZEIGEN", status=ListingStatus.DRAFT.value, price_type="VB")
+    db.add(ka)
+    db._session.flush()
+    job = ListingPostingJob(
+        listing_id=ka.id, action="CREATE", status=PostingJobStatus.IN_PROGRESS.value, requested_at=NOW
+    )
+    db.add(job)
+    db._session.flush()
+    db._session.refresh(item)
+    fake.orders = [_order(listing.ebay_sku)]
+    async with client:
+        result = await ebay_listing.sync_sales(db, client, NOW)
+    assert job.status == PostingJobStatus.IN_PROGRESS.value
+    assert "stellt gerade ein" in format_sync_message(result)
+
+
+async def test_incomplete_draft_is_400_not_502(monkeypatch, db, fake, photo_root):
+    listing, item = _draft(db, photo_root, photos=0)
+    monkeypatch.setattr(
+        listing_routes, "ebay_client", lambda: EbayClient(CONFIG, transport=httpx.MockTransport(fake.handler))
+    )
+    with pytest.raises(HTTPException) as exc:
+        await listing_routes.publish_on_ebay(item.id, listing.id, session=db)
+    assert exc.value.status_code == 400
+
+
+async def test_text_of_running_ebay_offer_cannot_drift_from_ebay(db, fake, photo_root):
+    listing, item = await _published(db, fake, photo_root)
+    with pytest.raises(HTTPException) as exc:
+        await listing_routes.update_listing(
+            item.id, listing.id, listing_routes.ListingUpdate(title="Neuer Titel"), session=db
+        )
+    assert exc.value.status_code == 400
+
+
+async def test_item_with_live_ebay_offer_cannot_be_deleted(db, fake, photo_root):
+    from app.api.routes.inventory import delete_inventory_item
+
+    _listing, item = await _published(db, fake, photo_root)
+    with pytest.raises(HTTPException) as exc:
+        await delete_inventory_item(item.id, session=db)
+    assert exc.value.status_code == 409
+
+
+def test_env_file_handles_export_lines_and_new_file_is_0600(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("export EBAY_REFRESH_TOKEN=alt\n")
+    set_env_value(env, "EBAY_REFRESH_TOKEN", "v^1.1#neu")
+    assert env.read_text() == "EBAY_REFRESH_TOKEN=v^1.1#neu\n"
+    fresh = tmp_path / "neu.env"
+    set_env_value(fresh, "EBAY_RUNAME", "x")
+    assert stat.S_IMODE(os.stat(fresh).st_mode) == 0o600

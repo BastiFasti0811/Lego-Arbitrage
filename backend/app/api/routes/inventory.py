@@ -996,6 +996,12 @@ async def split_inventory_item(item_id: int, data: SplitRequest, session: AsyncS
 @router.delete("/{item_id}")
 async def delete_inventory_item(item_id: int, session: AsyncSession = Depends(get_session)):
     item = await _get_item(item_id, session)
+    if any(
+        listing.ebay_offer_id and listing.status in (ListingStatus.ACTIVE.value, ListingStatus.PAUSED.value)
+        for listing in item.listings
+    ):
+        # Ohne Zeile koennte der Verkaufsabgleich einen Kauf nicht mehr zuordnen.
+        raise HTTPException(status_code=409, detail="Läuft auf eBay — erst das eBay-Angebot beenden, dann löschen")
     await session.delete(item)
     await session.commit()
     photo_dir = _photo_dir(item_id)

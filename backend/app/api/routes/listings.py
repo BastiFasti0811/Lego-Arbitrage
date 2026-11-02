@@ -22,7 +22,14 @@ from app.models.inventory import InventoryItem, InventoryStatus
 from app.models.listing import OPEN_LISTING_STATUSES, Listing, ListingStatus
 from app.models.listing_posting_job import OPEN_POSTING_STATUSES, ListingPostingJob, PostingJobStatus
 from app.services import ebay_listing
-from app.services.ebay_api import EbayClient, EbayConfig, EbayError, EbayNotConfiguredError, is_configured
+from app.services.ebay_api import (
+    EbayClient,
+    EbayConfig,
+    EbayError,
+    EbayInputError,
+    EbayNotConfiguredError,
+    is_configured,
+)
 from app.services.listing_check import days_online, item_label
 from app.services.listing_prepare import (
     ListingPrepareError,
@@ -202,8 +209,12 @@ def ebay_client() -> EbayClient:
 
 
 def _ebay_http_error(exc: EbayError) -> HTTPException:
-    # Nicht eingerichtet: 409 (Zustand der App). eBay lehnt ab: 502 mit eBays Text.
-    return HTTPException(status_code=409 if isinstance(exc, EbayNotConfiguredError) else 502, detail=exc.detail)
+    # Entwurf unvollstaendig: 400. Nicht eingerichtet: 409. eBay lehnt ab: 502 mit eBays Text.
+    if isinstance(exc, EbayInputError):
+        return HTTPException(status_code=400, detail=exc.detail)
+    if isinstance(exc, EbayNotConfiguredError):
+        return HTTPException(status_code=409, detail=exc.detail)
+    return HTTPException(status_code=502, detail=exc.detail)
 
 
 async def _push_ebay_price(listing: Listing, new_price: float, session: AsyncSession) -> None:
@@ -454,6 +465,13 @@ async def update_listing(
 
     if _changes_posted_fields(listing, data):
         await _reject_if_posting_job_open(listing, session)
+    text_changed = any(
+        getattr(data, field) is not None and getattr(data, field) != getattr(listing, field)
+        for field in ("title", "body")
+    )
+    if text_changed and ebay_listing.is_api_listing(listing) and listing.status != ListingStatus.DRAFT.value:
+        # Text-Updates schickt die App (noch) nicht zu eBay; sonst zeigte sie etwas anderes als eBay.
+        raise HTTPException(status_code=400, detail="Text eines laufenden eBay-Angebots bitte direkt in eBay ändern")
 
     if data.min_price is not None and data.min_price != listing.min_price:
         # Neue Schmerzgrenze: der einmalige Hinweis darf wieder kommen.

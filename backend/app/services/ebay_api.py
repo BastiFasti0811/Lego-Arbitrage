@@ -83,6 +83,10 @@ class EbayNotConfiguredError(EbayError):
     pass
 
 
+class EbayInputError(EbayError):
+    """Der Entwurf taugt noch nicht fuer eBay (kein Foto, kein Preis, ...). Nichts ging raus."""
+
+
 @dataclass(frozen=True)
 class EbayConfig:
     environment: str
@@ -223,11 +227,17 @@ class EbayClient:
     # OAuth ---------------------------------------------------------
 
     async def _token_request(self, form: dict) -> dict:
-        response = await self._http.post(
-            f"{self.config.endpoints.api}/identity/v1/oauth2/token",
-            data=form,
-            headers={"Authorization": _basic_auth(self.config), "Content-Type": "application/x-www-form-urlencoded"},
-        )
+        try:
+            response = await self._http.post(
+                f"{self.config.endpoints.api}/identity/v1/oauth2/token",
+                data=form,
+                headers={
+                    "Authorization": _basic_auth(self.config),
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
+        except httpx.HTTPError as exc:
+            raise EbayError(f"eBay-Anmeldung nicht erreichbar ({type(exc).__name__})") from exc
         if response.status_code != 200:
             detail, ids = _error_detail(response)
             raise EbayError(detail, status=response.status_code, error_ids=ids)
@@ -273,9 +283,16 @@ class EbayClient:
         headers = {"Authorization": f"Bearer {await self.access_token()}", "Accept": "application/json"}
         if content_language:
             headers["Content-Language"] = CONTENT_LANGUAGE
-        response = await self._http.request(
-            method, f"{base or self.config.endpoints.api}{path}", json=json, params=params, files=files, headers=headers
-        )
+        try:
+            url = f"{base or self.config.endpoints.api}{path}"
+            response = await self._http.request(method, url, json=json, params=params, files=files, headers=headers)
+        except httpx.HTTPError as exc:
+            # Timeout/Verbindungsabbruch: ob eBay den Aufruf ausgefuehrt hat, ist
+            # offen. Als EbayError, damit die Route den Zwischenstand speichert.
+            logger.warning("ebay.network_error", method=method, path=path, error=type(exc).__name__)
+            raise EbayError(
+                f"eBay nicht erreichbar ({type(exc).__name__}) — Ergebnis unklar, bitte erneut versuchen"
+            ) from exc
         if allow_404 and response.status_code == 404:
             return None
         if response.status_code >= 400:
@@ -339,6 +356,10 @@ class EbayClient:
     async def update_offer(self, offer_id: str, body: dict) -> None:
         await self._request("PUT", f"/sell/inventory/v1/offer/{offer_id}", json=body, content_language=True)
 
+    async def get_offer(self, offer_id: str) -> dict | None:
+        response = await self._request("GET", f"/sell/inventory/v1/offer/{offer_id}", allow_404=True)
+        return None if response is None else response.json()
+
     async def publish_offer(self, offer_id: str) -> str:
         response = await self._request("POST", f"/sell/inventory/v1/offer/{offer_id}/publish")
         return str(response.json()["listingId"])
@@ -346,7 +367,9 @@ class EbayClient:
     async def withdraw_offer(self, offer_id: str) -> None:
         await self._request("POST", f"/sell/inventory/v1/offer/{offer_id}/withdraw")
 
-    async def update_price(self, *, sku: str, offer_id: str, price: float, quantity: int) -> None:
+    async def update_price(self, *, sku: str, offer_id: str, price: float) -> None:
+        """Nur der Preis. Die Menge fuehrt eBay selbst (Teilverkaeufe); sie
+        mitzuschicken koennte schon Verkauftes wieder freigeben."""
         body = {
             "requests": [
                 {
@@ -354,7 +377,6 @@ class EbayClient:
                     "offers": [
                         {
                             "offerId": offer_id,
-                            "availableQuantity": quantity,
                             "price": {"value": f"{price:.2f}", "currency": "EUR"},
                         }
                     ],

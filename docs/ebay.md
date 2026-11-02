@@ -81,5 +81,8 @@ Der Refresh-Token läuft nach 18 Monaten ab (eBay-Standard); dann A.6 bis A.9 wi
 - Nur Lego-Sets mit Setnummer und mindestens einem Foto. Sonstige Artikel bleiben beim Einstellen von Hand.
 - Teilverkäufe (Menge > 1, nur ein Teil verkauft) bucht der Abgleich nicht; er meldet sie einmal je neuer Bestellung per Telegram, aufgeteilt wird in der App.
 - Scheitert das Zurückziehen eines Angebots, steht das im Log und im Task-Ergebnis; der nächste Lauf versucht es erneut.
-- Kleinanzeigen-Anzeigen werden nach einem eBay-Verkauf nie gelöscht, nur gemeldet.
+- Kleinanzeigen-Anzeigen werden nach einem eBay-Verkauf nie gelöscht, nur gemeldet. Stellt der Kleinanzeigen-Agent in dem Moment gerade ein, steht das extra in der Meldung.
+- Eine eBay-Bestellung für einen Posten, der schon anderswo verkauft ist, meldet Telegram als „Doppelt verkauft“; stornieren muss Sebastian in eBay.
+- Ein auf eBay verkaufter Posten bekommt (noch) keinen DealFeedback-Eintrag wie beim Verkauf von Hand. Folgeaufgabe.
+- Titel und Text eines laufenden eBay-Angebots ändert die App nicht; die App sperrt die Änderung, damit sie nicht von eBay abweicht.
 - Kaufen und Bieten gibt es nicht.
