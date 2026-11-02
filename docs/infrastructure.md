@@ -28,6 +28,12 @@ Until early October 2026 production ran on the Hetzner Cloud host
 - Containers: `docker compose --env-file .env.prod -f docker-compose.prod.yml ps`
 - Logs: `docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f --tail=200`
 - Local health check: `curl -sS http://localhost/lego/health`
+- RAM on victus: `bash scripts/victus-ram-report.sh` (read-only, no root):
+  RSS per process name, `claude` CLI processes older than 2 h with agent,
+  session and working directory, Docker total. Run it when the autopilot's
+  RAM guard (available < 6144 MB) keeps skipping runs. The prod stack itself
+  needs about 400 MB; on 01.11.2026 the shortage came from 76 open agent
+  sessions (about 23 GB RSS).
 
 ## Deployment Pattern
 

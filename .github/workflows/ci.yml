@@ -60,6 +60,9 @@ jobs:
       - name: Test rollback script
         run: bash tests/rollback-prod.test.sh
 
+      - name: Test victus RAM report script
+        run: bash tests/victus-ram-report.test.sh
+
       # Real BuildKit build of a FROM-scratch probe (no pull, no stored image)
       # against the repository's .dockerignore files, plus .gitignore checks.
       - name: Test secret hygiene (.gitignore, .dockerignore)
