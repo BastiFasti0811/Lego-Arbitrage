@@ -1,307 +1,28 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
-import GoalProgress from "../components/GoalProgress";
-import StatCard from "../components/StatCard";
-import ListingBadges from "../components/ListingBadges";
 import ListingManager from "../components/ListingManager";
-import MarketAge from "../components/MarketAge";
 import PhotoFirstModal from "../components/PhotoFirstModal";
-import PriceBasis from "../components/PriceBasis";
-import ValuationStatus from "../components/ValuationStatus";
-import { referenceLinks } from "./inventoryLinks";
-import { useToast } from "../components/toastContext";
+import InventoryAddDialog from "../components/inventory/InventoryAddDialog";
+import InventoryDetail, { InventorySellDialog } from "../components/inventory/InventoryDetail";
+import InventoryFilters from "../components/inventory/InventoryFilters";
+import InventoryHeader from "../components/inventory/InventoryHeader";
+import InventoryList from "../components/inventory/InventoryList";
 import {
-  copyListingText,
-  LISTING_FILTERS,
-  matchesListingFilter,
-  matchesSearch,
-  openListing,
-  PLATFORM_LABELS,
-  RUNNING_STATUSES,
-} from "./listingPrep";
+  createLocalPhotoEntries,
+  emptyAddForm,
+  normalizeLocation,
+  revokeLocalPhotoEntries,
+} from "../components/inventory/inventoryFormat";
+import { useToast } from "../components/toastContext";
+import { filterInventory, prepareListingWithToast } from "./listingPrep";
 
-const EURO = "\u20ac";
-const PHOTO_ICON = "\u{1F4F8}";
-const BOX_ICON = "\u{1F4E6}";
-const LINK_ICON = "\u2197";
-const MAX_PREVIEW_PHOTOS = 4;
-const SELL_PLATFORM_QUICK_PICKS = [
-  { value: "KLEINANZEIGEN", label: "Kleinanzeigen" },
-  { value: "EBAY", label: "eBay" },
-];
-
-const emptyAddForm = () => ({
-  item_type: "LEGO",
-  set_number: "",
-  set_name: "",
-  theme: "",
-  product_group: "",
-  buy_price: "",
-  buy_shipping: "0",
-  buy_date: new Date().toISOString().split("T")[0],
-  buy_platform: "",
-  buy_url: "",
-  image_url: "",
-  condition: "NEW_SEALED",
-  quantity: "1",
-  notes: "",
-  storage_location: "",
-});
-
-function normalizeLocation(value) {
-  return (value || "").trim().toLocaleLowerCase("de-DE");
-}
-
-// "10.01.2026, 19.99 €, Lagerort Kiste 3" -- eine Dublette im Hinweis.
-function describeDuplicate(d) {
-  const price = d.buy_price != null ? `${d.buy_price} €` : "ohne Kaufpreis";
-  const location = d.storage_location ? `, Lagerort ${d.storage_location}` : "";
-  return `${new Date(d.buy_date).toLocaleDateString("de-DE")}, ${price}${location}`;
-}
-
-function formatMoney(value, digits = 0) {
-  return `${Number(value || 0).toLocaleString("de-DE", {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  })}${EURO}`;
-}
-
-function createLocalPhotoEntries(fileList) {
-  return Array.from(fileList).map((file, index) => ({
-    id: `${file.name}-${file.lastModified}-${index}-${Math.random().toString(36).slice(2, 7)}`,
-    file,
-    previewUrl: URL.createObjectURL(file),
-  }));
-}
-
-function revokeLocalPhotoEntries(entries) {
-  entries.forEach((entry) => URL.revokeObjectURL(entry.previewUrl));
-}
-
-function SellDropdown({ item, onPrepared, onMarkSold }) {
-  const toast = useToast();
-  const [open, setOpen] = useState(false);
-  const [pendingPlatform, setPendingPlatform] = useState(null);
-  const ref = useRef(null);
-
-  useEffect(() => {
-    const handler = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-
-  // Ein Klick: Entwurf mit Text und Preisvorschlag anlegen (oder den
-  // vorhandenen nehmen), Text in die Zwischenablage, Listing-Fenster auf.
-  // Eingestellt wird von Hand (ADR 0002); dort reicht dann die URL.
-  const prepare = async (platform) => {
-    setOpen(false);
-    setPendingPlatform(platform);
-    try {
-      const result = await api.prepareListing(item.id, platform, null);
-      if (result.warning) toast.warning(result.warning);
-      const copied = await copyListingText(result.listing);
-      const label = PLATFORM_LABELS[platform];
-      toast.success(
-        copied
-          ? `${label}: Entwurf bereit, Text kopiert (${Math.round(result.listing.current_price)}${EURO})`
-          : `${label}: Entwurf bereit (${Math.round(result.listing.current_price)}${EURO}) — Text im Fenster kopieren`,
-      );
-      onPrepared();
-    } catch (err) {
-      toast.error(`Inserat nicht vorbereitet: ${err.message}`);
-    } finally {
-      setPendingPlatform(null);
-    }
-  };
-
-  const options = SELL_PLATFORM_QUICK_PICKS.map((p) => {
-    const running = (item.listings || []).find((x) => x.platform === p.value && RUNNING_STATUSES.includes(x.status));
-    const draft = openListing(item, p.value)?.status === "DRAFT";
-    return { ...p, running: !!running, draft };
-  });
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpen(!open)}
-        disabled={pendingPlatform !== null}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        className={`text-xs px-3 py-1.5 rounded-lg font-bold transition-colors bg-lego-yellow text-black hover:bg-lego-yellow/90 disabled:opacity-60 ${
-          item.sell_signal_active ? "animate-pulse shadow-[0_0_8px_rgba(255,206,0,0.6)]" : ""
-        }`}
-      >
-        {pendingPlatform ? "Bereite vor …" : "Verkaufen \u25BE"}
-      </button>
-      {open && (
-        <div role="menu" className="absolute left-0 top-full mt-1 bg-bg-primary border border-border rounded-lg shadow-xl z-50 min-w-[240px]">
-          {options.map((option) => (
-            <button
-              key={option.value}
-              role="menuitem"
-              disabled={option.running}
-              onClick={() => prepare(option.value)}
-              className="w-full text-left text-sm text-text-primary px-3 py-2 hover:bg-bg-hover first:rounded-t-lg transition-colors disabled:text-text-muted disabled:hover:bg-transparent"
-            >
-              {option.running
-                ? `${option.label}: läuft schon`
-                : option.draft
-                  ? `${option.label}: Entwurf öffnen`
-                  : `Inserat vorbereiten: ${option.label}`}
-            </button>
-          ))}
-          <button
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              onMarkSold();
-            }}
-            className="w-full text-left text-sm text-text-primary px-3 py-2 hover:bg-bg-hover rounded-b-lg transition-colors border-t border-border/50"
-          >
-            Als verkauft markieren
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function PhotoPicker({
-  itemId,
-  existingPhotos = [],
-  removedPhotoIds = [],
-  onToggleExistingPhoto,
-  onMakePrimaryExistingPhoto,
-  localPhotos = [],
-  onSelectFiles,
-  onRemoveLocalPhoto,
-  externalImageUrl = "",
-  onExternalImageUrlChange,
-  isUpdatingPrimary = false,
-}) {
-  const visibleExistingPhotos = existingPhotos.filter((photo) => !removedPhotoIds.includes(photo.id));
-  const hasAnyPhotos = visibleExistingPhotos.length > 0 || localPhotos.length > 0;
-
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <label className="block text-text-muted text-xs">Fotos</label>
-        <label className="cursor-pointer text-xs text-lego-yellow hover:text-lego-yellow/80 transition-colors">
-          + Bilder wählen
-          <input
-            type="file"
-            accept="image/*"
-            multiple
-            className="hidden"
-            onChange={(e) => {
-              onSelectFiles(e.target.files);
-              e.target.value = "";
-            }}
-          />
-        </label>
-      </div>
-      {hasAnyPhotos ? (
-        <div className="grid grid-cols-3 gap-2">
-          {visibleExistingPhotos.map((photo, index) => (
-            <div key={photo.id} className="relative rounded-lg overflow-hidden border border-border bg-bg-primary">
-              <img src={api.inventoryPhotoUrl(itemId, photo.id)} alt={photo.original_filename || "Inventar-Foto"} className="w-full aspect-square object-cover" />
-              <div className="absolute left-1 bottom-1 right-1 flex items-center justify-between gap-1">
-                {index === 0 ? (
-                  <span className="bg-lego-yellow text-black text-[11px] font-bold px-1.5 py-0.5 rounded">
-                    Titelbild
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => onMakePrimaryExistingPhoto(photo.id)}
-                    disabled={isUpdatingPrimary}
-                    className="bg-black/70 text-white text-[11px] px-1.5 py-0.5 rounded disabled:opacity-50"
-                  >
-                    Titelbild
-                  </button>
-                )}
-              </div>
-              <button type="button" onClick={() => onToggleExistingPhoto(photo.id)} className="absolute top-1 right-1 bg-black/70 text-white text-xs px-1.5 py-0.5 rounded">
-                Entfernen
-              </button>
-            </div>
-          ))}
-          {localPhotos.map((photo) => (
-            <div key={photo.id} className="relative rounded-lg overflow-hidden border border-lego-blue/30 bg-bg-primary">
-              <img src={photo.previewUrl} alt={photo.file.name} className="w-full aspect-square object-cover" />
-              <span className="absolute left-1 bottom-1 bg-lego-blue/80 text-white text-[11px] px-1.5 py-0.5 rounded">
-                Neu
-              </span>
-              <button type="button" onClick={() => onRemoveLocalPhoto(photo.id)} className="absolute top-1 right-1 bg-black/70 text-white text-xs px-1.5 py-0.5 rounded">
-                X
-              </button>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-text-muted text-sm">
-          {PHOTO_ICON} Noch keine Fotos hinterlegt
-        </div>
-      )}
-      <div className="space-y-2">
-        <label className="block text-text-muted text-xs">Externer Foto-Link</label>
-        <input
-          type="url"
-          value={externalImageUrl}
-          onChange={(e) => onExternalImageUrlChange(e.target.value)}
-          placeholder="Optional, z. B. Google Photos oder Cloud-Link"
-          className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm"
-        />
-        <p className="text-text-muted text-xs">
-          Praktisch, wenn Bilder nicht direkt hochgeladen werden sollen.
-        </p>
-      </div>
-      <p className="text-text-muted text-xs">
-        Mehrere Bilder möglich. Gespeicherte Fotos können als Titelbild nach vorn gezogen werden.
-      </p>
-    </div>
-  );
-}
-
-function InventoryPhotoStrip({ item }) {
-  const uploadedPhotos = item.photos || [];
-  if (!uploadedPhotos.length && !item.image_url) return null;
-
-  return (
-    <div className="flex flex-wrap gap-2 mt-3">
-      {uploadedPhotos.slice(0, MAX_PREVIEW_PHOTOS).map((photo) => {
-        const photoUrl = api.inventoryPhotoUrl(item.id, photo.id);
-        return (
-          <a key={photo.id} href={photoUrl} target="_blank" rel="noreferrer" className="block rounded-lg overflow-hidden border border-border bg-bg-primary hover:border-lego-yellow transition-colors">
-            <img src={photoUrl} alt={photo.original_filename || item.set_name} className="w-16 h-16 object-cover" />
-          </a>
-        );
-      })}
-      {uploadedPhotos.length > MAX_PREVIEW_PHOTOS && (
-        <div className="w-16 h-16 rounded-lg border border-border bg-bg-primary flex items-center justify-center text-xs text-text-muted">
-          +{uploadedPhotos.length - MAX_PREVIEW_PHOTOS}
-        </div>
-      )}
-      {item.image_url && (
-        <a
-          href={item.image_url}
-          target="_blank"
-          rel="noreferrer"
-          className="min-h-16 px-3 rounded-lg border border-border bg-bg-primary hover:border-lego-yellow transition-colors text-xs text-text-muted inline-flex items-center gap-2"
-        >
-          <span>{PHOTO_ICON}</span>
-          <span>Externer Foto-Link {LINK_ICON}</span>
-        </a>
-      )}
-    </div>
-  );
-}
+// Inventar als Verkaufs-Cockpit: Seite haelt Zustand, Abfragen und Mutationen;
+// Darstellung in components/inventory (Kopf, Filter, Liste, Dialoge).
 
 export default function Inventar() {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [sellModal, setSellModal] = useState(null);
   const [sellPrice, setSellPrice] = useState("");
   const [sellDate, setSellDate] = useState(new Date().toISOString().split("T")[0]);
@@ -317,7 +38,9 @@ export default function Inventar() {
   const [typeFilter, setTypeFilter] = useState("");
   const [groupFilter, setGroupFilter] = useState("");
   const [listingFilter, setListingFilter] = useState("");
+  const [photoFilter, setPhotoFilter] = useState("");
   const [search, setSearch] = useState("");
+  const [preparingId, setPreparingId] = useState(null);
   const [addPhotoEntries, setAddPhotoEntries] = useState([]);
   const [editPhotoEntries, setEditPhotoEntries] = useState([]);
   const [editRemovedPhotoIds, setEditRemovedPhotoIds] = useState([]);
@@ -342,6 +65,8 @@ export default function Inventar() {
   const { data: summary } = useQuery({ queryKey: ["portfolio"], queryFn: api.portfolioSummary });
   // Unter ["portfolio", ...]: jede Invalidierung des Portfolios zieht den Zielstand mit.
   const { data: goalProgress } = useQuery({ queryKey: ["portfolio", "goals"], queryFn: api.goalProgress });
+  // Ebenso das Cockpit: Inserat vorbereiten, Einstell-Auftraege und Fotos laden es neu.
+  const { data: cockpit } = useQuery({ queryKey: ["portfolio", "cockpit"], queryFn: api.salesCockpit });
   const { data: items, isLoading } = useQuery({
     queryKey: ["inventory", typeFilter, groupFilter],
     queryFn: () =>
@@ -407,6 +132,7 @@ export default function Inventar() {
     mutationFn: (id) => api.splitInventory(id, 1),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["inventory"] });
+      queryClient.invalidateQueries({ queryKey: ["portfolio", "cockpit"] });
     },
   });
 
@@ -414,6 +140,7 @@ export default function Inventar() {
     mutationFn: (id) => api.revalueItem(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["inventory"] });
+      queryClient.invalidateQueries({ queryKey: ["portfolio", "cockpit"] });
     },
   });
 
@@ -605,565 +332,142 @@ export default function Inventar() {
     normalizeLocation(duplicateTarget.storage_location) !== "" &&
     normalizeLocation(duplicateTarget.storage_location) !== enteredLocationKey;
 
-  const visibleItems = (items || []).filter(
-    (item) => matchesListingFilter(item, listingFilter) && matchesSearch(item, search),
-  );
-  const filtersActive = listingFilter !== "" || search.trim() !== "";
+  const visibleItems = filterInventory(items, { listingFilter, photoFilter, search });
+  const filtersActive = listingFilter !== "" || photoFilter !== "" || search.trim() !== "";
 
-  const profitColor = (value) => (value > 0 ? "text-go-star" : value < 0 ? "text-no-go" : "text-text-primary");
+  // Sprung aus dem Cockpit: alle Filter neu setzen, sonst zeigt die Liste
+  // weniger Posten als die Kachel zaehlt (Review #54).
+  const showOnly = ({ type = "", photo = "", listing = "" }) => {
+    setTypeFilter(type);
+    setGroupFilter("");
+    setListingFilter(listing);
+    setPhotoFilter(photo);
+    setSearch("");
+  };
+
+  // "Naechste 3": derselbe Weg wie "Verkaufen > Inserat vorbereiten" am Posten.
+  // Danach faellt der Posten aus der Liste (er hat jetzt einen Entwurf).
+  const prepareCandidate = async (candidate) => {
+    setPreparingId(candidate.item_id);
+    try {
+      if (await prepareListingWithToast(candidate.item_id, "KLEINANZEIGEN", toast)) {
+        queryClient.invalidateQueries({ queryKey: ["inventory"] });
+        queryClient.invalidateQueries({ queryKey: ["portfolio"] });
+        const item = (items || []).find((x) => x.id === candidate.item_id);
+        if (item) setListingItem(item);
+        else toast.info("Entwurf liegt unter „Bereit zum Einstellen“ — der Posten ist gerade herausgefiltert");
+      }
+    } finally {
+      setPreparingId(null);
+    }
+  };
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-text-primary">Inventar</h1>
-        <div className="flex gap-2">
-          <button onClick={() => setPhotoFirstModal(true)} className="bg-lego-blue text-white font-bold px-4 py-2 rounded-lg text-sm hover:bg-lego-blue/90 transition-colors">
-            Per Foto anlegen
-          </button>
-          <button onClick={openAddModal} className="bg-lego-yellow text-black font-bold px-4 py-2 rounded-lg text-sm hover:bg-lego-yellow/90 transition-colors">
-            + Hinzufügen
-          </button>
-        </div>
-      </div>
+      <InventoryHeader
+        summary={summary}
+        goalProgress={goalProgress}
+        cockpit={cockpit}
+        onPhotoFirst={() => setPhotoFirstModal(true)}
+        onAdd={openAddModal}
+        onShowWithoutPhoto={() => showOnly({ type: "LEGO", photo: "without" })}
+        onShowReady={() => showOnly({ listing: "ready" })}
+        onPrepareCandidate={prepareCandidate}
+        preparingId={preparingId}
+      />
 
-      {summary && (
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
-          <StatCard label="Sets" value={summary.holding_items} sub={`${summary.sold_items} verkauft`} />
-          <StatCard
-            label="Lego inseriert"
-            value={`${summary.lego_listed}/${summary.lego_items}`}
-            sub={`${summary.lego_sold} verkauft`}
-          />
-          <StatCard label="Investiert" value={formatMoney(summary.total_invested)} />
-          <StatCard
-            label="Aktueller Wert"
-            value={formatMoney(summary.current_value)}
-            sub={summary.stale_market_values > 0 ? `${summary.stale_market_values} Marktwert${summary.stale_market_values > 1 ? "e" : ""} veraltet` : undefined}
-            color="text-lego-yellow"
-          />
-          <StatCard label="Unrealisiert" value={`${summary.unrealized_profit >= 0 ? "+" : ""}${formatMoney(summary.unrealized_profit)}`} sub={`${summary.unrealized_roi_percent.toFixed(1)}%`} color={profitColor(summary.unrealized_profit)} />
-        </div>
-      )}
+      <InventoryFilters
+        typeFilter={typeFilter}
+        setTypeFilter={setTypeFilter}
+        groupFilter={groupFilter}
+        setGroupFilter={setGroupFilter}
+        listingFilter={listingFilter}
+        setListingFilter={setListingFilter}
+        photoFilter={photoFilter}
+        setPhotoFilter={setPhotoFilter}
+        search={search}
+        setSearch={setSearch}
+        productGroups={productGroups}
+        totalCount={items?.length ?? 0}
+        visibleCount={visibleItems.length}
+      />
 
-      <GoalProgress progress={goalProgress} />
-
-      <ValuationStatus />
-
-      {summary?.sell_signals_active > 0 && (
-        <div className="bg-sell-signal/10 border border-sell-signal/30 rounded-xl p-4 mb-6 flex items-center gap-3">
-          <div className="w-3 h-3 bg-sell-signal rounded-full animate-pulse" />
-          <span className="text-sell-signal font-medium text-sm">
-            {summary.sell_signals_active} Sell-Signal{summary.sell_signals_active > 1 ? "e" : ""} aktiv - jetzt verkaufen.
-          </span>
-        </div>
-      )}
-
-      <div className="bg-bg-card border border-border rounded-xl p-4 mb-6 flex flex-wrap items-center gap-4">
-        <div>
-          <label className="block text-text-muted text-xs mb-1">Typ</label>
-          <select
-            value={typeFilter}
-            onChange={(e) => setTypeFilter(e.target.value)}
-            className="bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm"
-          >
-            <option value="">Alle</option>
-            <option value="LEGO">Lego</option>
-            <option value="GENERIC">Sonstiges</option>
-          </select>
-        </div>
-        <div>
-          <label className="block text-text-muted text-xs mb-1">Warengruppe</label>
-          <select
-            value={groupFilter}
-            onChange={(e) => setGroupFilter(e.target.value)}
-            className="bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm"
-          >
-            <option value="">Alle</option>
-            {productGroups.map((group) => (
-              <option key={group} value={group}>{group}</option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label htmlFor="inventory-listing-filter" className="block text-text-muted text-xs mb-1">Inserat</label>
-          <select
-            id="inventory-listing-filter"
-            value={listingFilter}
-            onChange={(e) => setListingFilter(e.target.value)}
-            className="bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm"
-          >
-            {LISTING_FILTERS.map((f) => (
-              <option key={f.value} value={f.value}>{f.label}</option>
-            ))}
-          </select>
-        </div>
-        <div className="flex-1 min-w-[12rem]">
-          <label htmlFor="inventory-search" className="block text-text-muted text-xs mb-1">Suche</label>
-          <input
-            id="inventory-search"
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Setnummer, Name, Lagerort …"
-            className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm"
-          />
-        </div>
-        {items?.length > 0 && (
-          <p className="text-text-muted text-xs self-end pb-2" aria-live="polite">
-            {visibleItems.length} von {items.length}
-          </p>
-        )}
-      </div>
-
-      {isLoading ? (
-        <div className="space-y-3">
-          {[...Array(3)].map((_, i) => (
-            <div key={i} className="bg-bg-card border border-border rounded-xl p-4 animate-pulse">
-              <div className="h-4 bg-bg-hover rounded w-1/4 mb-2" />
-              <div className="h-3 bg-bg-hover rounded w-1/2" />
-            </div>
-          ))}
-        </div>
-      ) : !items?.length ? (
-        <div className="text-center py-20">
-          <div className="text-4xl mb-4">{BOX_ICON}</div>
-          <h2 className="text-text-primary text-lg font-semibold mb-2">Noch keine Sets im Inventar</h2>
-          <p className="text-text-muted text-sm">Kaufe Sets über den Deal-Check oder füge sie manuell hinzu.</p>
-        </div>
-      ) : visibleItems.length === 0 ? (
-        <div className="text-center py-12">
-          <p className="text-text-primary text-sm font-medium mb-2">Kein Posten passt zu Filter und Suche.</p>
-          {filtersActive && (
-            <button
-              type="button"
-              onClick={() => { setListingFilter(""); setSearch(""); }}
-              className="text-lego-yellow text-sm hover:underline"
-            >
-              Filter zurücksetzen
-            </button>
-          )}
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {visibleItems.map((item) => (
-            <div key={item.id} className={`bg-bg-card border rounded-xl p-4 ${item.sell_signal_active ? "border-sell-signal/50" : "border-border"}`}>
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-lego-yellow font-[family-name:var(--font-mono)] text-sm font-semibold">{item.set_number ?? item.product_group}</span>
-                    {item.quantity > 1 && <span className="bg-lego-blue/20 text-lego-blue text-xs px-1.5 py-0.5 rounded font-[family-name:var(--font-mono)] font-bold">x{item.quantity}</span>}
-                    {item.photos?.length > 0 && <span className="bg-lego-blue/10 text-lego-blue text-xs px-2 py-0.5 rounded-full">{PHOTO_ICON} {item.photos.length}</span>}
-                    {item.sell_signal_active && <span className="bg-sell-signal/20 text-sell-signal text-xs px-2 py-0.5 rounded-full animate-pulse font-medium">SELL</span>}
-                  </div>
-                  <h3 className="text-text-primary text-sm font-medium truncate">{item.set_name}</h3>
-                  <div className="flex flex-wrap gap-4 mt-2 text-xs text-text-muted">
-                    <span>Gekauft: {new Date(item.buy_date).toLocaleDateString("de-DE")}</span>
-                    <span>{item.holding_days} Tage</span>
-                    {item.buy_platform && <span>{item.buy_platform}</span>}
-                    {item.storage_location && <span>{BOX_ICON} {item.storage_location}</span>}
-                    {item.buy_url && <a href={item.buy_url} target="_blank" rel="noreferrer" className="text-lego-yellow hover:text-lego-yellow/80 transition-colors">Original-Link</a>}
-                    {item.image_url && <a href={item.image_url} target="_blank" rel="noreferrer" className="text-lego-blue hover:text-lego-blue/80 transition-colors">Externer Foto-Link</a>}
-                    {referenceLinks(item).map((link) => (
-                      <a
-                        key={link.label}
-                        href={link.href}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-lego-yellow hover:underline"
-                      >
-                        {link.label} ↗
-                      </a>
-                    ))}
-                  </div>
-                  {item.notes && <p className="text-text-muted text-xs mt-2">{item.notes}</p>}
-                  {item.sell_signal_active && item.sell_signal_reason && <p className="text-sell-signal text-xs mt-2">{item.sell_signal_reason}</p>}
-                  <InventoryPhotoStrip item={item} />
-                </div>
-                <div className="text-right shrink-0">
-                  <div className="text-text-muted text-xs">Kaufpreis</div>
-                  <div className="text-text-primary font-[family-name:var(--font-mono)] font-semibold">
-                    {item.total_invested != null ? formatMoney(item.total_invested) : "—"}
-                  </div>
-                  {item.current_market_price && (
-                    <>
-                      <div className="text-text-muted text-xs mt-2">Marktwert</div>
-                      <div className={`text-lego-yellow font-[family-name:var(--font-mono)] font-semibold ${item.market_price_stale ? "opacity-60" : ""}`}>
-                        <PriceBasis basis={item.market_price_basis}>{formatMoney(item.current_market_price)}</PriceBasis>
-                      </div>
-                      <MarketAge updatedAt={item.market_price_updated_at} stale={item.market_price_stale} />
-                      {/* Ohne Kaufpreis (Dachbodenfund) gibt es keinen Gewinn -- nicht "+0 €" zeigen. */}
-                      {item.unrealized_profit != null && (
-                        <div className={`font-[family-name:var(--font-mono)] text-sm font-bold ${profitColor(item.unrealized_profit)} ${item.market_price_stale ? "opacity-60" : ""}`}>
-                          {item.unrealized_profit > 0 ? "+" : ""}{formatMoney(item.unrealized_profit)}
-                          {item.unrealized_roi_percent != null && (
-                            <span className="text-xs ml-1">({item.unrealized_roi_percent.toFixed(1)}%)</span>
-                          )}
-                        </div>
-                      )}
-                    </>
-                  )}
-                  <div className="mt-2 flex justify-end">
-                    <ListingBadges item={item} />
-                  </div>
-                </div>
-              </div>
-              <div className="flex gap-2 mt-3 pt-3 border-t border-border/50">
-                <button onClick={() => openEdit(item)} className="bg-lego-blue/10 text-lego-blue text-xs px-3 py-1.5 rounded-lg hover:bg-lego-blue/20 transition-colors">Bearbeiten</button>
-                <SellDropdown
-                  item={item}
-                  onPrepared={() => {
-                    queryClient.invalidateQueries({ queryKey: ["inventory"] });
-                    setListingItem(item);
-                  }}
-                  onMarkSold={() => { setSellModal(item); setSellPrice(""); setSellPlatform(""); }}
-                />
-                <button onClick={() => setListingItem(item)} className="bg-lego-yellow/10 text-lego-yellow text-xs px-3 py-1.5 rounded-lg hover:bg-lego-yellow/20 transition-colors">Listings</button>
-                {item.item_type === "GENERIC" && item.search_query && (
-                  <button
-                    onClick={() => revalueMutation.mutate(item.id)}
-                    disabled={revalueMutation.isPending && revalueMutation.variables === item.id}
-                    className="bg-lego-blue/10 text-lego-blue text-xs px-3 py-1.5 rounded-lg hover:bg-lego-blue/20 transition-colors disabled:opacity-50"
-                  >
-                    {revalueMutation.isPending && revalueMutation.variables === item.id ? "..." : "Neu bewerten"}
-                  </button>
-                )}
-                {item.quantity > 1 && (
-                  <button
-                    onClick={() => splitMutation.mutate(item.id)}
-                    disabled={splitMutation.isPending}
-                    className="bg-lego-blue/10 text-lego-blue text-xs px-3 py-1.5 rounded-lg hover:bg-lego-blue/20 transition-colors disabled:opacity-50"
-                  >
-                    Teilen
-                  </button>
-                )}
-                <button onClick={() => { if (confirm(`${item.set_name} entfernen?`)) deleteMutation.mutate(item.id); }} className="bg-no-go/10 text-no-go text-xs px-3 py-1.5 rounded-lg hover:bg-no-go/20 transition-colors">Entfernen</button>
-              </div>
-              {revalueMutation.isError && revalueMutation.variables === item.id && (
-                <p className="text-no-go text-xs mt-2">{revalueMutation.error.message}</p>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+      <InventoryList
+        items={items}
+        visibleItems={visibleItems}
+        isLoading={isLoading}
+        filtersActive={filtersActive}
+        onResetFilters={() => { setListingFilter(""); setPhotoFilter(""); setSearch(""); }}
+        onEdit={openEdit}
+        onPrepared={(item) => {
+          queryClient.invalidateQueries({ queryKey: ["inventory"] });
+          queryClient.invalidateQueries({ queryKey: ["portfolio", "cockpit"] });
+          setListingItem(item);
+        }}
+        onMarkSold={(item) => { setSellModal(item); setSellPrice(""); setSellPlatform(""); }}
+        onOpenListings={setListingItem}
+        onDelete={(item) => deleteMutation.mutate(item.id)}
+        revalueMutation={revalueMutation}
+        splitMutation={splitMutation}
+      />
 
       {sellModal && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center md:items-center bg-black/60 backdrop-blur-sm overflow-y-auto p-4">
-          <div className="bg-bg-card border border-border rounded-xl p-6 w-full max-w-md my-6">
-            <h2 className="text-text-primary text-lg font-bold mb-4">Verkauft markieren</h2>
-            <div className="text-text-muted text-sm mb-4">
-              <span className="text-lego-yellow font-[family-name:var(--font-mono)]">{sellModal.set_number ?? sellModal.product_group}</span> - {sellModal.set_name}
-            </div>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-text-muted text-xs mb-1">Verkaufspreis ({EURO})</label>
-                <input type="number" step="0.01" value={sellPrice} onChange={(e) => setSellPrice(e.target.value)} autoFocus className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary font-[family-name:var(--font-mono)]" />
-              </div>
-              <div>
-                <label className="block text-text-muted text-xs mb-1">Verkaufsdatum</label>
-                <input type="date" value={sellDate} onChange={(e) => setSellDate(e.target.value)} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-              </div>
-              <div>
-                <label className="block text-text-muted text-xs mb-1">Plattform</label>
-                {sellModal.listings?.length > 0 && (
-                  <div className="flex gap-2 mb-2">
-                    {SELL_PLATFORM_QUICK_PICKS.map((p) => (
-                      <button
-                        key={p.value}
-                        type="button"
-                        onClick={() => setSellPlatform(p.label)}
-                        className="text-xs px-2 py-1 rounded bg-bg-hover text-text-primary border border-border"
-                      >
-                        {p.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                <input type="text" value={sellPlatform} onChange={(e) => setSellPlatform(e.target.value)} placeholder="z.B. eBay" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-              </div>
-            </div>
-            <div className="flex gap-3 mt-6">
-              <button onClick={() => setSellModal(null)} className="flex-1 bg-bg-hover text-text-secondary py-2 rounded-lg">Abbrechen</button>
-              <button onClick={handleSell} disabled={!sellPrice || sellMutation.isPending} className="flex-1 bg-go-star text-black font-bold py-2 rounded-lg disabled:opacity-50">
-                {sellMutation.isPending ? "..." : "Verkauft"}
-              </button>
-            </div>
-          </div>
-        </div>
+        <InventorySellDialog
+          sellModal={sellModal}
+          setSellModal={setSellModal}
+          sellPrice={sellPrice}
+          setSellPrice={setSellPrice}
+          sellDate={sellDate}
+          setSellDate={setSellDate}
+          sellPlatform={sellPlatform}
+          setSellPlatform={setSellPlatform}
+          handleSell={handleSell}
+          sellMutation={sellMutation}
+        />
       )}
 
       {editModal && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center md:items-center bg-black/60 backdrop-blur-sm overflow-y-auto p-4">
-          <div className="bg-bg-card border border-border rounded-xl p-6 w-full max-w-2xl my-6">
-            <h2 className="text-text-primary text-lg font-bold mb-2">Set bearbeiten</h2>
-            <p className="text-lego-yellow font-[family-name:var(--font-mono)] text-sm mb-4">{editModal.set_number ?? editModal.product_group}</p>
-            <form onSubmit={handleEdit} className="space-y-4">
-              <div className="grid md:grid-cols-2 gap-4">
-                <div className="space-y-3">
-                  <input type="text" value={editForm.set_name} onChange={(e) => setEditForm({ ...editForm, set_name: e.target.value })} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-                  <input type="text" value={editForm.theme} onChange={(e) => setEditForm({ ...editForm, theme: e.target.value })} placeholder="Theme" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-                  {editModal.item_type === "GENERIC" && (
-                    <>
-                      <input type="text" list="product-groups-edit-list" value={editForm.product_group} onChange={(e) => setEditForm({ ...editForm, product_group: e.target.value })} placeholder="Warengruppe" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-                      <datalist id="product-groups-edit-list">{productGroups.map((group) => <option key={group} value={group} />)}</datalist>
-                    </>
-                  )}
-                  <input type="text" value={editForm.search_query} onChange={(e) => setEditForm({ ...editForm, search_query: e.target.value })} placeholder="Such-Query fuer Marktpreis-Recherche" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-                  <div className="grid grid-cols-2 gap-3">
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={editForm.buy_price}
-                      onChange={(e) => setEditForm({ ...editForm, buy_price: e.target.value })}
-                      required={editModal.item_type !== "GENERIC"}
-                      placeholder={editModal.item_type === "GENERIC" ? "unbekannt" : undefined}
-                      className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]"
-                    />
-                    <input type="number" step="0.01" value={editForm.buy_shipping} onChange={(e) => setEditForm({ ...editForm, buy_shipping: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <input type="date" value={editForm.buy_date} onChange={(e) => setEditForm({ ...editForm, buy_date: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-                    <input type="text" list="platforms-list" value={editForm.buy_platform} onChange={(e) => setEditForm({ ...editForm, buy_platform: e.target.value })} placeholder="Plattform" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-                  </div>
-                  <datalist id="platforms-list">{platforms.map((platform) => <option key={platform} value={platform} />)}</datalist>
-                  <input type="url" value={editForm.buy_url} onChange={(e) => setEditForm({ ...editForm, buy_url: e.target.value })} placeholder="Original-Link" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-                  <div>
-                    <label className="block text-xs text-text-muted mb-1">Eigener Referenz-Link</label>
-                    <input
-                      type="url"
-                      value={editForm.reference_url || ""}
-                      onChange={(e) => setEditForm({ ...editForm, reference_url: e.target.value })}
-                      placeholder="https://…"
-                      className="w-full px-3 py-2 rounded-lg bg-bg-primary border border-border text-sm"
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <select value={editForm.condition} onChange={(e) => setEditForm({ ...editForm, condition: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm">
-                      <option value="NEW_SEALED">Neu & Versiegelt</option>
-                      <option value="NEW_OPEN_BOX">Neu & Geöffnet</option>
-                      <option value="USED_COMPLETE">Gebraucht (komplett)</option>
-                      <option value="USED_INCOMPLETE">Gebraucht (unvollständig)</option>
-                      <option value="UNKNOWN">Zustand unbekannt</option>
-                    </select>
-                    <input type="number" min="1" value={editForm.quantity} onChange={(e) => setEditForm({ ...editForm, quantity: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
-                  </div>
-                  <input type="text" maxLength={200} aria-label="Lagerort" value={editForm.storage_location} onChange={(e) => setEditForm({ ...editForm, storage_location: e.target.value })} placeholder="Lagerort, z. B. Dachboden Kiste 3" className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-                  <textarea value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} placeholder="Eigene Notizen..." rows={3} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm resize-none" />
-                </div>
-                <PhotoPicker
-                  itemId={editModal.id}
-                  existingPhotos={editModal.photos || []}
-                  removedPhotoIds={editRemovedPhotoIds}
-                  onToggleExistingPhoto={(photoId) => setEditRemovedPhotoIds((prev) => prev.includes(photoId) ? prev.filter((id) => id !== photoId) : [...prev, photoId])}
-                  onMakePrimaryExistingPhoto={(photoId) => makePrimaryPhotoMutation.mutate({ itemId: editModal.id, photoId })}
-                  localPhotos={editPhotoEntries}
-                  onSelectFiles={appendEditPhotos}
-                  onRemoveLocalPhoto={(photoId) => removeLocalPhoto(setEditPhotoEntries, photoId)}
-                  externalImageUrl={editForm.image_url || ""}
-                  onExternalImageUrlChange={(value) => setEditForm({ ...editForm, image_url: value })}
-                  isUpdatingPrimary={makePrimaryPhotoMutation.isPending}
-                />
-              </div>
-              <div className="flex gap-3 mt-4">
-                <button type="button" onClick={closeEditModal} className="flex-1 bg-bg-hover text-text-secondary py-2 rounded-lg">Abbrechen</button>
-                <button type="submit" disabled={editMutation.isPending} className="flex-1 bg-lego-yellow text-black font-bold py-2 rounded-lg disabled:opacity-50">
-                  {editMutation.isPending ? "Speichern..." : "Speichern"}
-                </button>
-              </div>
-              {editMutation.isError && <p className="text-no-go text-sm">{editMutation.error.message}</p>}
-            </form>
-          </div>
-        </div>
+        <InventoryDetail
+          editModal={editModal}
+          editForm={editForm}
+          setEditForm={setEditForm}
+          handleEdit={handleEdit}
+          productGroups={productGroups}
+          platforms={platforms}
+          editRemovedPhotoIds={editRemovedPhotoIds}
+          setEditRemovedPhotoIds={setEditRemovedPhotoIds}
+          makePrimaryPhotoMutation={makePrimaryPhotoMutation}
+          editPhotoEntries={editPhotoEntries}
+          appendEditPhotos={appendEditPhotos}
+          removeLocalPhoto={removeLocalPhoto}
+          setEditPhotoEntries={setEditPhotoEntries}
+          closeEditModal={closeEditModal}
+          editMutation={editMutation}
+        />
       )}
 
       {addModal && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center md:items-center bg-black/60 backdrop-blur-sm overflow-y-auto p-4">
-          <div className="bg-bg-card border border-border rounded-xl p-6 w-full max-w-2xl my-6">
-            <h2 className="text-text-primary text-lg font-bold mb-4">Set manuell hinzufügen</h2>
-            <form onSubmit={handleAdd} className="space-y-4">
-              <div className="grid md:grid-cols-2 gap-4">
-                <div className="space-y-3">
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setAddForm((prev) => ({ ...prev, item_type: "LEGO" }))}
-                      className={`flex-1 text-sm px-3 py-2 rounded-lg font-medium transition-colors ${
-                        addForm.item_type === "LEGO" ? "bg-lego-yellow text-black" : "bg-bg-hover text-text-secondary hover:text-text-primary"
-                      }`}
-                    >
-                      Lego
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setAddForm((prev) => ({ ...prev, item_type: "GENERIC" }))}
-                      className={`flex-1 text-sm px-3 py-2 rounded-lg font-medium transition-colors ${
-                        addForm.item_type === "GENERIC" ? "bg-lego-yellow text-black" : "bg-bg-hover text-text-secondary hover:text-text-primary"
-                      }`}
-                    >
-                      Sonstiges
-                    </button>
-                  </div>
-                  {addForm.item_type === "LEGO" ? (
-                    <>
-                      <div className="relative">
-                        <input
-                          type="text"
-                          placeholder="Set-Nummer *"
-                          value={addForm.set_number}
-                          onChange={(e) => handleSetNumberChange(e.target.value)}
-                          onBlur={async (e) => {
-                            // Jeder neue Abgleich ist ein neuer Fall: eine
-                            // fehlgeschlagene "Menge erhoehen" fuer die zuvor
-                            // eingetragene Setnummer darf nicht als Fehler unter
-                            // dem naechsten Hinweis auftauchen (Tippen, Tab raus,
-                            // Nummer korrigieren, wieder raus — alles ohne dass
-                            // der Dialog je zu war).
-                            editMutation.reset();
-                            const value = e.target.value.trim();
-                            if (!value) { setDuplicates([]); return; }
-                            try {
-                              setDuplicates(await api.lookupInventory(value));
-                            } catch {
-                              // Der Hinweis ist eine Hilfe, kein Tor: faellt die Abfrage aus,
-                              // laesst sich trotzdem einbuchen.
-                              setDuplicates([]);
-                            }
-                          }}
-                          required
-                          className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]"
-                        />
-                        {lookupLoading && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-lego-yellow text-xs animate-pulse">Suche...</span>}
-                      </div>
-                      {duplicates.length > 0 && (
-                        <div className="mt-2 p-3 rounded-lg border border-lego-yellow/40 bg-lego-yellow/5 text-xs">
-                          <p className="mb-2">
-                            <strong>{duplicates[0].set_number}</strong> liegt bereits{" "}
-                            {duplicates.reduce((sum, d) => sum + (d.quantity || 1), 0)}× im Bestand
-                            {" "}({duplicates
-                              .map((d) => describeDuplicate(d))
-                              .join(" · ")}).
-                          </p>
-                          {duplicates.length > 1 && (
-                            <p className="mb-2 text-text-muted">Erhöht wird der Posten vom {describeDuplicate(duplicateTarget)}.</p>
-                          )}
-                          {addStorageLocationConflict && (
-                            <p id="add-storage-location-conflict" role="status" className="mb-2 text-text-muted">
-                              Dein Lagerort „{enteredStorageLocation}" weicht ab und wird beim Erhöhen nicht übernommen. Liegt das Exemplar woanders, lege es neu an.
-                            </p>
-                          )}
-                          <div className="flex flex-wrap gap-2">
-                            <button
-                              type="button"
-                              disabled={editMutation.isPending}
-                              className="px-2 py-1 rounded bg-lego-yellow text-bg-primary font-medium disabled:opacity-50"
-                              onClick={() => {
-                                const target = duplicateTarget;
-                                const data = { quantity: (target.quantity || 1) + 1 };
-                                // Lagerort nur nachtragen, wenn der vorhandene Posten keinen hat;
-                                // einen abweichenden nicht still ueberschreiben.
-                                if (enteredStorageLocation && !normalizeLocation(target.storage_location)) {
-                                  data.storage_location = enteredStorageLocation;
-                                }
-                                editMutation.mutate(
-                                  {
-                                    id: target.id,
-                                    data,
-                                    photoFiles: [],
-                                    deletedPhotoIds: [],
-                                  },
-                                  {
-                                    // Nur bei Erfolg schliessen: sonst behauptet der
-                                    // Dialog eine Mengenerhoehung, die nie ankam.
-                                    onSuccess: () => {
-                                      setDuplicates([]);
-                                      closeAddModal();
-                                    },
-                                  },
-                                );
-                              }}
-                            >
-                              Menge erhöhen
-                            </button>
-                            <button
-                              type="button"
-                              className="px-2 py-1 rounded border border-bg-hover"
-                              onClick={() => setDuplicates([])}
-                            >
-                              Trotzdem neu anlegen
-                            </button>
-                          </div>
-                          {editMutation.isError && <p className="text-no-go text-sm mt-2">{editMutation.error.message}</p>}
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      <input
-                        type="text"
-                        list="product-groups-add-list"
-                        placeholder="Warengruppe"
-                        value={addForm.product_group}
-                        onChange={(e) => setAddForm({ ...addForm, product_group: e.target.value })}
-                        className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm"
-                      />
-                      <datalist id="product-groups-add-list">{productGroups.map((group) => <option key={group} value={group} />)}</datalist>
-                    </>
-                  )}
-                  <input type="text" placeholder="Set-Name *" value={addForm.set_name} onChange={(e) => setAddForm({ ...addForm, set_name: e.target.value })} required className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-                  <input type="text" placeholder="Theme" value={addForm.theme} onChange={(e) => setAddForm({ ...addForm, theme: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-                  <div className="grid grid-cols-2 gap-3">
-                    <input
-                      type="number"
-                      step="0.01"
-                      placeholder={addForm.item_type === "GENERIC" ? "unbekannt" : `Kaufpreis (${EURO})`}
-                      value={addForm.buy_price}
-                      onChange={(e) => setAddForm({ ...addForm, buy_price: e.target.value })}
-                      required={addForm.item_type !== "GENERIC"}
-                      className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]"
-                    />
-                    <input type="number" step="0.01" placeholder={`Versand (${EURO})`} value={addForm.buy_shipping} onChange={(e) => setAddForm({ ...addForm, buy_shipping: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <input type="date" value={addForm.buy_date} onChange={(e) => setAddForm({ ...addForm, buy_date: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-                    <input type="text" list="platforms-add-list" placeholder="Plattform" value={addForm.buy_platform} onChange={(e) => setAddForm({ ...addForm, buy_platform: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-                  </div>
-                  <datalist id="platforms-add-list">{platforms.map((platform) => <option key={platform} value={platform} />)}</datalist>
-                  <input type="url" placeholder="Original-Link" value={addForm.buy_url} onChange={(e) => setAddForm({ ...addForm, buy_url: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-                  <div className="grid grid-cols-2 gap-3">
-                    <select value={addForm.condition} onChange={(e) => setAddForm({ ...addForm, condition: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm">
-                      <option value="NEW_SEALED">Neu & Versiegelt</option>
-                      <option value="NEW_OPEN_BOX">Neu & Geöffnet</option>
-                      <option value="USED_COMPLETE">Gebraucht (komplett)</option>
-                      <option value="USED_INCOMPLETE">Gebraucht (unvollständig)</option>
-                      <option value="UNKNOWN">Zustand unbekannt</option>
-                    </select>
-                    <input type="number" min="1" placeholder="Anzahl" value={addForm.quantity} onChange={(e) => setAddForm({ ...addForm, quantity: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm font-[family-name:var(--font-mono)]" />
-                  </div>
-                  <input type="text" maxLength={200} aria-label="Lagerort" aria-describedby={addStorageLocationConflict ? "add-storage-location-conflict" : undefined} placeholder="Lagerort, z. B. Dachboden Kiste 3" value={addForm.storage_location} onChange={(e) => setAddForm({ ...addForm, storage_location: e.target.value })} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm" />
-                  <textarea value={addForm.notes} onChange={(e) => setAddForm({ ...addForm, notes: e.target.value })} placeholder="Eigene Notizen..." rows={3} className="w-full bg-bg-primary border border-border rounded-lg px-3 py-2 text-text-primary text-sm resize-none" />
-                </div>
-                <PhotoPicker
-                  itemId={0}
-                  existingPhotos={[]}
-                  removedPhotoIds={[]}
-                  onToggleExistingPhoto={() => {}}
-                  onMakePrimaryExistingPhoto={() => {}}
-                  localPhotos={addPhotoEntries}
-                  onSelectFiles={appendAddPhotos}
-                  onRemoveLocalPhoto={(photoId) => removeLocalPhoto(setAddPhotoEntries, photoId)}
-                  externalImageUrl={addForm.image_url}
-                  onExternalImageUrlChange={(value) => setAddForm({ ...addForm, image_url: value })}
-                />
-              </div>
-              <div className="flex gap-3 mt-4">
-                <button type="button" onClick={closeAddModal} className="flex-1 bg-bg-hover text-text-secondary py-2 rounded-lg">Abbrechen</button>
-                <button type="submit" disabled={addMutation.isPending} className="flex-1 bg-lego-yellow text-black font-bold py-2 rounded-lg disabled:opacity-50">
-                  {addMutation.isPending ? "Hinzufügen..." : "Hinzufügen"}
-                </button>
-              </div>
-              {addMutation.isError && <p className="text-no-go text-sm">{addMutation.error.message}</p>}
-            </form>
-          </div>
-        </div>
+        <InventoryAddDialog
+          productGroups={productGroups}
+          platforms={platforms}
+          removeLocalPhoto={removeLocalPhoto}
+          editMutation={editMutation}
+          addForm={addForm}
+          setAddForm={setAddForm}
+          handleAdd={handleAdd}
+          handleSetNumberChange={handleSetNumberChange}
+          lookupLoading={lookupLoading}
+          duplicates={duplicates}
+          setDuplicates={setDuplicates}
+          duplicateTarget={duplicateTarget}
+          addStorageLocationConflict={addStorageLocationConflict}
+          enteredStorageLocation={enteredStorageLocation}
+          addPhotoEntries={addPhotoEntries}
+          appendAddPhotos={appendAddPhotos}
+          setAddPhotoEntries={setAddPhotoEntries}
+          closeAddModal={closeAddModal}
+          addMutation={addMutation}
+        />
       )}
 
       {listingItem && (
@@ -1184,6 +488,7 @@ export default function Inventar() {
             setPhotoFirstModal(false);
             queryClient.invalidateQueries({ queryKey: ["inventory"] });
             queryClient.invalidateQueries({ queryKey: ["productGroups"] });
+            queryClient.invalidateQueries({ queryKey: ["portfolio", "cockpit"] });
           }}
         />
       )}

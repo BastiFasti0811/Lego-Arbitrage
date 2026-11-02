@@ -31,6 +31,30 @@ export async function copyListingText(listing) {
   }
 }
 
+// "Inserat vorbereiten" (POST /inventory/{id}/listings/prepare): Entwurf mit
+// Text und Preisvorschlag anlegen oder den vorhandenen nehmen, Text in die
+// Zwischenablage. Eingestellt wird von Hand oder per Einstell-Auftrag
+// (ADR 0002). Gemeinsamer Weg fuer "Verkaufen" am Posten und "Naechste 3".
+// Liefert true bei Erfolg; Fehler meldet der Toast.
+export async function prepareListingWithToast(itemId, platform, toast) {
+  try {
+    const result = await api.prepareListing(itemId, platform, null);
+    if (result.warning) toast.warning(result.warning);
+    const copied = await copyListingText(result.listing);
+    const label = PLATFORM_LABELS[platform];
+    const price = `${Math.round(result.listing.current_price)}\u20ac`;
+    toast.success(
+      copied
+        ? `${label}: Entwurf bereit, Text kopiert (${price})`
+        : `${label}: Entwurf bereit (${price}) — Text im Fenster kopieren`,
+    );
+    return true;
+  } catch (err) {
+    toast.error(`Inserat nicht vorbereitet: ${err.message}`);
+    return false;
+  }
+}
+
 function photoExtension(photo) {
   const fromName = /\.([a-z0-9]{2,5})$/i.exec(photo.original_filename || "");
   if (fromName) return fromName[1].toLowerCase();
@@ -79,10 +103,27 @@ export function hasDraft(item) {
   return (item.listings || []).some((x) => x.status === "DRAFT");
 }
 
+// Hochgeladene Fotos; ein externer Foto-Link zaehlt nicht, eingestellt wird
+// nur mit Foto (Backend: app.services.sales_cockpit, ka_posting).
+export function hasPhoto(item) {
+  return (item.photos || []).length > 0;
+}
+
+// Bereit zum Einstellen: Entwurf mit Preis und Foto, noch keine laufende
+// Anzeige. Dieselbe Regel zaehlt der Inventar-Kopf ("Entwuerfe bereit").
+export function isReadyToPost(item) {
+  return (
+    hasPhoto(item) &&
+    !isListed(item) &&
+    (item.listings || []).some((x) => x.status === "DRAFT" && Number(x.current_price) > 0)
+  );
+}
+
 export const LISTING_FILTERS = [
   { value: "", label: "Alle" },
   { value: "unlisted", label: "Nicht inseriert" },
   { value: "draft", label: "Entwurf vorbereitet" },
+  { value: "ready", label: "Bereit zum Einstellen" },
   { value: "listed", label: "Inseriert" },
   { value: "listed14", label: "Inseriert seit über 14 Tagen" },
   { value: "listed30", label: "Inseriert seit über 30 Tagen" },
@@ -94,6 +135,8 @@ export function matchesListingFilter(item, filter, now = Date.now()) {
       return !isListed(item);
     case "draft":
       return !isListed(item) && hasDraft(item);
+    case "ready":
+      return isReadyToPost(item);
     case "listed":
       return isListed(item);
     case "listed14":
@@ -103,6 +146,28 @@ export function matchesListingFilter(item, filter, now = Date.now()) {
     default:
       return true;
   }
+}
+
+export const PHOTO_FILTERS = [
+  { value: "", label: "Alle" },
+  { value: "without", label: "Ohne Foto" },
+  { value: "with", label: "Mit Foto" },
+];
+
+export function matchesPhotoFilter(item, filter) {
+  if (filter === "without") return !hasPhoto(item);
+  if (filter === "with") return hasPhoto(item);
+  return true;
+}
+
+// Alle Listen-Filter zusammen; Typ und Warengruppe filtert schon das Backend.
+export function filterInventory(items, { listingFilter = "", photoFilter = "", search = "" } = {}, now = Date.now()) {
+  return (items || []).filter(
+    (item) =>
+      matchesListingFilter(item, listingFilter, now) &&
+      matchesPhotoFilter(item, photoFilter) &&
+      matchesSearch(item, search),
+  );
 }
 
 function normalize(value) {

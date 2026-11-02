@@ -216,6 +216,8 @@ export const api = {
   inventoryPhotoUrl: (itemId, photoId) => `${BASE}/inventory/${itemId}/photos/${photoId}`,
   portfolioSummary: () => request("/inventory/summary"),
   goalProgress: () => request("/goals/progress"),
+  // Verkaufs-Cockpit im Inventar-Kopf: ohne Foto, Entwuerfe bereit, Einstell-Auftraege heute, Naechste 3.
+  salesCockpit: () => request("/inventory/cockpit"),
   inventoryHistory: () => request("/inventory/history"),
   listListings: (itemId) => request(`/inventory/${itemId}/listings`),
   createListing: (itemId, data) => request(`/inventory/${itemId}/listings`, { method: "POST", body: JSON.stringify(data) }),
