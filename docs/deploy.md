@@ -719,6 +719,31 @@ account so Git Credential Manager does not silently reuse the wrong identity.
 For the server, prefer a deploy key or a dedicated machine credential instead of
 interactive developer credentials.
 
+### Branch Protection For `main` (proposal, not active)
+
+As of 02.11.2026 `main` has no protection (`gh api .../branches/main/protection`
+answers 404). Proposal: a merge into `main` needs a green `verify` job. The
+owner account runs it once; agents do not change repository settings:
+
+```bash
+gh auth switch --user BastiFasti0811
+gh api -X PUT repos/BastiFasti0811/Lego-Arbitrage/branches/main/protection \
+  --input - <<'JSON'
+{
+  "required_status_checks": { "strict": false, "contexts": ["verify"] },
+  "enforce_admins": false,
+  "required_pull_request_reviews": null,
+  "restrictions": null
+}
+JSON
+gh api repos/BastiFasti0811/Lego-Arbitrage/branches/main/protection \
+  --jq '.required_status_checks.contexts'   # expect ["verify"]
+```
+
+`enforce_admins: false` keeps the owner able to push a hotfix or a revert
+directly (the rollback rule in the agent memory relies on `git revert` pushed
+to `main`). Undo: `gh api -X DELETE repos/BastiFasti0811/Lego-Arbitrage/branches/main/protection`.
+
 ### Grenzen des Uptime-Checks
 
 - Ein Deploy startet Container neu und kann den Check 2–4 Minuten rot färben; bei zwei Fehlläufen in Folge (Standard) kommt dann ein Fehlalarm samt Entwarnung. Wer das vermeiden will, setzt `FAIL_THRESHOLD` vor dem Deploy kurz höher.
