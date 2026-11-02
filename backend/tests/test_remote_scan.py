@@ -377,6 +377,7 @@ async def test_scan_watch_reads_config_runner_and_last_scan(db, monkeypatch):
 
 
 async def test_watchdog_alerts_on_missing_catawiki_scan(monkeypatch):
+    from app.services import pipeline_health
     from app.services.heartbeat import CatawikiScanWatch
     from app.tasks import health_check
 
@@ -423,7 +424,7 @@ async def test_watchdog_alerts_on_missing_catawiki_scan(monkeypatch):
         return False  # Telegram kaputt: dann wird auch nichts als gemeldet markiert
 
     monkeypatch.setattr(health_check, "async_session", _Session)
-    monkeypatch.setattr(health_check, "load_scan_watch", AsyncMock(return_value=watch))
+    monkeypatch.setattr(pipeline_health, "load_scan_watch", AsyncMock(return_value=watch))
     monkeypatch.setattr(health_check, "send_pipeline_health_alert", _send)
 
     result = await health_check._check_async()
@@ -434,10 +435,11 @@ async def test_watchdog_alerts_on_missing_catawiki_scan(monkeypatch):
 
 
 async def test_watchdog_survives_a_broken_catawiki_watch(monkeypatch):
+    from app.services import pipeline_health
     from app.tasks import health_check
 
-    monkeypatch.setattr(health_check, "load_scan_watch", AsyncMock(side_effect=RuntimeError("kaputt")))
-    monkeypatch.setattr(health_check, "evaluate_catawiki_scan",
+    monkeypatch.setattr(pipeline_health, "load_scan_watch", AsyncMock(side_effect=RuntimeError("kaputt")))
+    monkeypatch.setattr(pipeline_health, "evaluate_catawiki_scan",
                         lambda *args: pytest.fail("ohne Daten keine Catawiki-Bewertung"))
 
     class _Result:

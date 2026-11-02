@@ -402,6 +402,40 @@ silently broken scraper surfaces instead of going unnoticed. Inspect it any time
 curl -sS http://127.0.0.1/lego/api/system/status | jq
 ```
 
+Task success alone says nothing about results: both scrape tasks catch their
+own errors and report success. From 01.09. to 02.11.2026 the Kleinanzeigen
+lane "succeeded" twelve times a day with zero offers because the parser no
+longer matched the redesigned result page. The watchdog therefore also checks
+Nutzarbeit, and `/api/system/status` shows the same problems as the Telegram
+alert (`app/services/pipeline_health.py`):
+
+| Check | Problem name | Fires when |
+|---|---|---|
+| Price data | `pipeline.price_data_freshness` | active watchlist, newest price older than 26 h |
+| Valuation coverage | `pipeline.valuation_coverage` | last run left more than half the sets without a value |
+| Offers per source | `pipeline.offers_kleinanzeigen`, `_ebay`, `_amazon` | a scan task succeeded in the last 24 h, but no offer of that platform was seen (`last_seen_at`) in the same 24 h |
+| Catawiki | `pipeline.catawiki_home_runner`, `pipeline.catawiki_scan` | see the Catawiki section below |
+
+The status response carries `sources`: per platform the last successful scan
+(`last_scan_at`), the last offer seen and the last new offer, the counts for
+the last 24 h, and Catawiki's setup state. "Seen" instead of "new" on
+purpose: a scan that finds the same listings again works. Amazon brought two
+new offers between 25.10. and 01.11.2026 but kept seeing offers until the
+evening of 01.11.; a check on "new" would have alarmed on most of those days.
+
+Blocks during the six-hour scrape (`scrape_all_watched_sets`): a 403/429 marks
+only that source as blocked for the rest of the run (`blocked_sources` in the
+task result, log `scrape.source_blocked_for_run`); it gets no further request,
+the other sources continue. The run stops early (`aborted: true`) only when
+every source is blocked. For eBay, `get_price` first falls back from the
+sold search (403 on prod since October) to the median of active Buy-It-Now
+listings (`EBAY_ACTIVE`); eBay counts as blocked only when that fallback gets
+403 as well. The two-hour Kleinanzeigen lane still stops at the first block,
+since it asks only that one host. It reads detail pages only for listings
+not stored yet, and it sends a fixed desktop Chrome user agent: Kleinanzeigen
+serves a different layout to mobile agents, and its mobile detail page lacks
+the "Zustand" field.
+
 Tuning lives in `backend/.env`: `HEARTBEAT_ENABLED` (default `true`) and
 `HEARTBEAT_REALERT_HOURS` (default `6`, throttles repeat alerts per task).
 

@@ -44,7 +44,14 @@ async def test_scrape_set_prices_survives_utc_timestamp_setup(monkeypatch):
 
     results = await scrape_daily._scrape_set_prices_async("10300")
 
-    assert results == {"set_number": "10300", "prices": 0, "offers": 0, "errors": [], "blocked": False}
+    assert results == {
+        "set_number": "10300",
+        "prices": 0,
+        "offers": 0,
+        "errors": [],
+        "blocked": False,
+        "blocked_scrapers": [],
+    }
     assert session.committed is True
 
 
@@ -139,6 +146,11 @@ async def test_kleinanzeigen_lane_upserts_offers_per_watched_set(monkeypatch):
     _FakeKleinanzeigenScraper.responses = {"75300": [object()], "75322": [object(), object()]}
     _FakeKleinanzeigenScraper.calls = []
     monkeypatch.setattr(scrape_daily, "KleinanzeigenScraper", _FakeKleinanzeigenScraper)
+
+    async def _no_known_urls(_session, _lego_set, _platform):
+        return set()
+
+    monkeypatch.setattr(scrape_daily, "_known_offer_urls", _no_known_urls)
 
     upserted = []
 
@@ -306,22 +318,168 @@ async def test_a_blocked_offer_scraper_marks_the_run(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_the_watchlist_run_stops_at_the_blocked_set(monkeypatch):
-    session = _WatchlistSession(["10300", "10331", "42143"])
+async def test_a_blocked_source_is_skipped_for_the_rest_of_the_run(monkeypatch):
+    # Prod 01.11.2026: eBay antwortet 403, der Lauf brach nach dem ersten Set ab
+    # ({'total_sets': 31, 'success': 0, 'errors': 1, 'aborted': True}).
+    # Jetzt bekommt eBay keinen Abruf mehr, die anderen Quellen laufen weiter.
+    session = _WatchlistSession(["75388", "76934", "75300"])
     monkeypatch.setattr(scrape_daily, "async_session", lambda: session)
 
-    visited = []
+    calls = []
 
-    async def _fake_scrape(set_number):
-        visited.append(set_number)
-        return {"errors": [], "blocked": set_number == "10331"}
+    async def _fake_scrape(set_number, skip_scrapers=frozenset()):
+        calls.append((set_number, skip_scrapers))
+        if set_number == "75388":
+            return {"errors": ["EbaySoldScraper: HTTP 403"], "blocked": True, "blocked_scrapers": ["EbaySoldScraper"]}
+        return {"errors": [], "blocked": False, "blocked_scrapers": []}
 
     monkeypatch.setattr(scrape_daily, "_scrape_set_prices_async", _fake_scrape)
 
     summary = await scrape_daily._scrape_all_watched_async()
 
-    assert visited == ["10300", "10331"], "42143 haette den blockenden Host weiter belastet"
+    assert calls == [
+        ("75388", frozenset()),
+        ("76934", frozenset({"EbaySoldScraper"})),
+        ("75300", frozenset({"EbaySoldScraper"})),
+    ]
+    assert summary == {
+        "total_sets": 3,
+        "success": 2,
+        "errors": 1,
+        "aborted": False,
+        "blocked_sources": ["EbaySoldScraper"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_run_stops_once_every_source_is_blocked(monkeypatch):
+    class _Price:
+        pass
+
+    class _Offer:
+        pass
+
+    session = _WatchlistSession(["10300", "10331", "42143"])
+    monkeypatch.setattr(scrape_daily, "async_session", lambda: session)
+    monkeypatch.setattr(scrape_daily, "PRICE_SCRAPERS", [_Price])
+    monkeypatch.setattr(scrape_daily, "METADATA_SCRAPERS", [_Price])
+    monkeypatch.setattr(scrape_daily, "OFFER_SCRAPERS", [_Offer])
+
+    visited = []
+
+    async def _fake_scrape(set_number, skip_scrapers=frozenset()):
+        visited.append(set_number)
+        newly = {"10300": ["_Price"], "10331": ["_Offer"]}.get(set_number, [])
+        return {"errors": [f"{n}: HTTP 403" for n in newly], "blocked": bool(newly), "blocked_scrapers": newly}
+
+    monkeypatch.setattr(scrape_daily, "_scrape_set_prices_async", _fake_scrape)
+
+    summary = await scrape_daily._scrape_all_watched_async()
+
+    assert visited == ["10300", "10331"], "42143 haette nur noch gesperrte Quellen gefragt"
     assert summary["aborted"] is True
+    assert summary["blocked_sources"] == ["_Price", "_Offer"]
+
+
+@pytest.mark.asyncio
+async def test_a_block_on_the_last_set_is_not_an_abort(monkeypatch):
+    session = _WatchlistSession(["10300"])
+    monkeypatch.setattr(scrape_daily, "async_session", lambda: session)
+    monkeypatch.setattr(scrape_daily, "PRICE_SCRAPERS", [])
+    monkeypatch.setattr(scrape_daily, "METADATA_SCRAPERS", [])
+    monkeypatch.setattr(scrape_daily, "OFFER_SCRAPERS", [])
+
+    async def _fake_scrape(set_number, skip_scrapers=frozenset()):
+        return {"errors": ["X: HTTP 429"], "blocked": True, "blocked_scrapers": ["X"]}
+
+    monkeypatch.setattr(scrape_daily, "_scrape_set_prices_async", _fake_scrape)
+
+    summary = await scrape_daily._scrape_all_watched_async()
+
+    assert summary["aborted"] is False
+    assert summary["blocked_sources"] == ["X"]
+
+
+class _CountingScraper:
+    """Zaehlt Abrufe je Klasse; kann fuer get_price einen Status werfen."""
+
+    calls: list = []
+    price_status: int | None = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+    async def get_price(self, _set_number):
+        type(self).calls.append((type(self).__name__, "price"))
+        if type(self).price_status:
+            raise _blocked_error(type(self).price_status)
+        return None
+
+    async def get_set_info(self, _set_number):
+        type(self).calls.append((type(self).__name__, "info"))
+        return None
+
+    async def get_offers(self, _set_number):
+        type(self).calls.append((type(self).__name__, "offers"))
+        return []
+
+
+@pytest.mark.asyncio
+async def test_a_source_blocked_on_prices_gets_no_offer_request_for_the_same_set(monkeypatch):
+    # EbaySoldScraper steht in PRICE_SCRAPERS und OFFER_SCRAPERS: nach dem 403
+    # im Preisabruf darf die Angebotssuche denselben Host nicht noch einmal fragen.
+    class _Ebay(_CountingScraper):
+        price_status = 403
+
+    class _Amazon(_CountingScraper):
+        pass
+
+    _CountingScraper.calls = []
+    session = _FakeSession(SimpleNamespace(id=1, set_number="75388", uvp_eur=None))
+    monkeypatch.setattr(scrape_daily, "async_session", lambda: session)
+    monkeypatch.setattr(scrape_daily, "PRICE_SCRAPERS", [_Ebay])
+    monkeypatch.setattr(scrape_daily, "METADATA_SCRAPERS", [])
+    monkeypatch.setattr(scrape_daily, "OFFER_SCRAPERS", [_Ebay, _Amazon])
+
+    async def _fake_upsert(_session, _lego_set, offers, _now):
+        return len(offers)
+
+    monkeypatch.setattr(scrape_daily, "_upsert_offers", _fake_upsert)
+
+    results = await scrape_daily._scrape_set_prices_async("75388")
+
+    assert _CountingScraper.calls == [("_Ebay", "price"), ("_Amazon", "offers")]
+    assert results["blocked_scrapers"] == ["_Ebay"]
+    assert results["errors"] == ["_Ebay: HTTP 403"]
+
+
+@pytest.mark.asyncio
+async def test_skipped_sources_get_no_request_at_all(monkeypatch):
+    class _Ebay(_CountingScraper):
+        pass
+
+    class _BrickMerge(_CountingScraper):
+        pass
+
+    _CountingScraper.calls = []
+    session = _FakeSession(SimpleNamespace(id=1, set_number="76934", uvp_eur=None))
+    monkeypatch.setattr(scrape_daily, "async_session", lambda: session)
+    monkeypatch.setattr(scrape_daily, "PRICE_SCRAPERS", [_Ebay, _BrickMerge])
+    monkeypatch.setattr(scrape_daily, "METADATA_SCRAPERS", [_BrickMerge])
+    monkeypatch.setattr(scrape_daily, "OFFER_SCRAPERS", [_Ebay, _BrickMerge])
+
+    async def _fake_upsert(_session, _lego_set, offers, _now):
+        return len(offers)
+
+    monkeypatch.setattr(scrape_daily, "_upsert_offers", _fake_upsert)
+
+    results = await scrape_daily._scrape_set_prices_async("76934", skip_scrapers=frozenset({"_Ebay"}))
+
+    assert [name for name, _ in _CountingScraper.calls] == ["_BrickMerge"] * 3
+    assert results["errors"] == [] and results["blocked"] is False
 
 
 @pytest.mark.asyncio

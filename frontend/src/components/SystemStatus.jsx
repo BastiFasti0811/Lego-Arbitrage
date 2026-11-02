@@ -14,6 +14,14 @@ const TASK_LABELS = {
   "app.tasks.auction_watch.refresh_auction_watchlist": "Auktionen",
   "app.tasks.catawiki_scan.scan_configured_categories": "Catawiki-Scan",
   "app.tasks.update_inventory.update_inventory_valuations": "Inventar-Bewertung",
+  // Nutzarbeits-Pruefungen des Watchdogs: der Task lief, aber kam etwas an?
+  "pipeline.offers_kleinanzeigen": "Kleinanzeigen-Angebote",
+  "pipeline.offers_ebay": "eBay-Angebote",
+  "pipeline.offers_amazon": "Amazon-Angebote",
+  "pipeline.price_data_freshness": "Preisdaten",
+  "pipeline.valuation_coverage": "Bewertungsabdeckung",
+  "pipeline.catawiki_home_runner": "Catawiki-Heimscanner",
+  "pipeline.catawiki_scan": "Catawiki-Ergebnis",
 };
 
 function taskLabel(name) {
@@ -29,8 +37,12 @@ function formatAge(seconds) {
 
 // Bei "failing" ist das Detail die Fehlermeldung. Bei "stale" ist es das
 // Ergebnis des letzten ERFOLGREICHEN Laufs und damit irrefuehrend — dort
-// zaehlt, wie lange der Task schon ueberfaellig ist.
+// zaehlt, wie lange der Task schon ueberfaellig ist. Die Nutzarbeits-
+// Pruefungen (pipeline.*) haben keinen Lauf; ihr Detail ist der Befund.
 function describeProblem(task) {
+  if (task.task_name.startsWith("pipeline.")) {
+    return { state: "ohne Ergebnis", text: task.detail };
+  }
   if (task.status === "stale") {
     const age = formatAge(task.age_seconds);
     return { state: "ueberfaellig", text: age ? `letzter erfolgreicher Lauf vor ${age}` : null };
