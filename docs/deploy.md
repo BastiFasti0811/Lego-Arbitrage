@@ -26,6 +26,44 @@ point at it any more.
 - Local development can continue to use the existing `docker-compose.yml`
   with the local `nginx` proxy.
 
+### Security Headers
+
+[infra/Caddyfile](../infra/Caddyfile) sets four response headers on every
+path under `/lego/` (frontend, API, health), with `defer` so an upstream
+cannot override them:
+
+| Header | Value |
+| --- | --- |
+| `X-Frame-Options` | `DENY` |
+| `Content-Security-Policy` | `frame-ancestors 'none'` |
+| `X-Content-Type-Options` | `nosniff` |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+
+The repo file is the reference, not the running config. Changes to it reach
+prod only when Sebastian copies the `header /lego/* { ... }` block (and any
+route change) into the live file `/opt/SmartPrepMeal/Caddyfile` and reloads
+the shared Caddy:
+
+```bash
+docker exec smartprepmeal-caddy-1 caddy validate --config /etc/caddy/Caddyfile
+docker exec smartprepmeal-caddy-1 caddy reload --config /etc/caddy/Caddyfile
+curl -sI http://localhost/lego/ | grep -iE 'x-frame|content-security|x-content-type|referrer'
+```
+
+The `curl` must list all four headers. Agents and `scripts/deploy-prod.sh` do
+not touch the live Caddyfile; it also serves the SmartPrepMeal routes.
+
+Caddy has no route for the API docs (`/lego/docs`, `/lego/openapi.json`):
+the API answers them only with a session cookie, and a public route was
+attack surface without a use. Read the schema on victus with
+`docker exec lego-api-prod curl -fsS http://127.0.0.1:8000/openapi.json`.
+When the live Caddyfile is updated, drop its two `handle /lego/docs*` and
+`handle /lego/openapi.json` blocks as well.
+
+A full CSP (`default-src 'self'` and friends) is a later step. It needs a
+browser test against the prod build first: the frontend loads Google Fonts,
+shows photo previews from `blob:` URLs and uses inline styles.
+
 ## First-Time Server Setup
 
 1. Clone the repository into a stable app directory, for example
@@ -156,6 +194,15 @@ The script is the only supported way to deploy. It aborts before any git or
 docker call when the checkout is not on `main` (override with
 `DEPLOY_BRANCH`), because `git pull --ff-only` on another branch would deploy
 that branch. On success it prints the deployed commit.
+
+It also aborts when `git status --porcelain` lists anything (uncommitted
+edits or untracked files): the backend build copies the whole directory, so a
+stray file would ship in the image while `/health` reports a clean commit.
+Fix the change through GitHub instead. In an emergency
+`ALLOW_DIRTY_DEPLOY=1 bash scripts/deploy-prod.sh` deploys anyway; `/health`
+then reports `<sha>-dirty`, and the next clean deploy removes the suffix.
+`--auto-rollback` does not work after such a deploy when tracked files are
+modified: `scripts/rollback-prod.sh` refuses a dirty tree.
 
 The script first takes a non-blocking lock on
 `/tmp/lego-arbitrage-deploy.lock` (path overridable via `LOCK_FILE`), so a
@@ -455,7 +502,9 @@ disk as everything else on victus. The local archives alone do not survive a
 disk loss; the off-site copies do. The restic job is part of the NixOS host
 configuration, runs as root and is not managed from this repo; it encrypts
 with its own password. Archives are written with mode 0600: the dump contains
-`app_settings` (bot token, API keys).
+`app_settings` (bot token, API keys). Every run also sets the backup
+directory to 0700 and tightens older entries below it (files 0600, folders
+0700), which covers dumps from before the umask, `cron.log` and `manual/`.
 
 ```bash
 # One-off backup (dump + photo archive, verified, rotated, mirrored if BACKUP_REMOTE is set)
@@ -667,6 +716,21 @@ Setup (once, from the prod checkout, after the deploy that brought the scripts):
    without a job and sends nothing; the button "Catawiki jetzt scannen" in the
    watchlist triggers a real job within 10 minutes.
 
+Runner token: at least 24 characters (`MIN_TOKEN_LENGTH` in
+`backend/app/services/remote_scan.py`; the settings API rejects shorter
+values, and a shorter stored value opens nothing). Generate it with
+`openssl rand -hex 32` or let the installer do it. Every 401 on
+`/api/remote-scan/runner/*` logs `remote_scan.runner_token_rejected` in
+`lego-api-prod` with `reason` (`missing`, `mismatch`, `token_not_configured`,
+`configured_token_too_short`), path and client address (the Caddy container
+for requests through Caddy, `127.0.0.1` for the runner inside the api
+container), never the token. A run of `mismatch` lines means someone guesses:
+set a new token in the app and on the runner.
+
+```bash
+docker logs lego-api-prod --since 24h 2>&1 | grep runner_token_rejected
+```
+
 Alarm: the hourly pipeline watchdog (`check_pipeline_health`) reports
 `catawiki_home_runner` when the runner has not polled for more than 1 h
 (token and URLs set), and `catawiki_scan` when no scan arrived within 26 h
@@ -690,6 +754,31 @@ For local development, use remotes that clearly target the intended GitHub
 account so Git Credential Manager does not silently reuse the wrong identity.
 For the server, prefer a deploy key or a dedicated machine credential instead of
 interactive developer credentials.
+
+### Branch Protection For `main` (proposal, not active)
+
+As of 02.11.2026 `main` has no protection (`gh api .../branches/main/protection`
+answers 404). Proposal: a merge into `main` needs a green `verify` job. The
+owner account runs it once; agents do not change repository settings:
+
+```bash
+gh auth switch --user BastiFasti0811
+gh api -X PUT repos/BastiFasti0811/Lego-Arbitrage/branches/main/protection \
+  --input - <<'JSON'
+{
+  "required_status_checks": { "strict": false, "contexts": ["verify"] },
+  "enforce_admins": false,
+  "required_pull_request_reviews": null,
+  "restrictions": null
+}
+JSON
+gh api repos/BastiFasti0811/Lego-Arbitrage/branches/main/protection \
+  --jq '.required_status_checks.contexts'   # expect ["verify"]
+```
+
+`enforce_admins: false` keeps the owner able to push a hotfix or a revert
+directly (the rollback rule in the agent memory relies on `git revert` pushed
+to `main`). Undo: `gh api -X DELETE repos/BastiFasti0811/Lego-Arbitrage/branches/main/protection`.
 
 ### Grenzen des Uptime-Checks
 

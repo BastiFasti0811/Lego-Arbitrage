@@ -353,7 +353,7 @@ class _ClickBot:
         self.edits.append(kwargs)
 
 
-def _query(data, chat_id=42, username=None):
+def _query(data, chat_id=42, username=None, chat_type="private", user_id=None):
     markup = InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("🔗 Angebot öffnen", url=URL)],
@@ -361,9 +361,10 @@ def _query(data, chat_id=42, username=None):
         ]
     )
     message = SimpleNamespace(
-        chat=SimpleNamespace(id=chat_id, username=username), message_id=5, reply_markup=markup
+        chat=SimpleNamespace(id=chat_id, username=username, type=chat_type), message_id=5, reply_markup=markup
     )
-    return SimpleNamespace(id="q1", data=data, message=message)
+    user = SimpleNamespace(id=chat_id if user_id is None else user_id)
+    return SimpleNamespace(id="q1", data=data, message=message, from_user=user)
 
 
 @pytest.fixture
@@ -414,6 +415,47 @@ async def test_click_from_another_chat_changes_nothing(recorded):
     assert recorded == []
     assert text == telegram_callbacks.FOREIGN_CHAT_ANSWER
     assert bot.edits == []
+
+
+@pytest.mark.asyncio
+async def test_click_by_another_member_of_a_group_chat_changes_nothing(recorded):
+    # Gruppe als Alert-Chat: Chat-ID negativ, Klick von einem Mitglied.
+    bot = _ClickBot()
+    query = _query("dec:17:b", chat_id=-100123, chat_type="supergroup", user_id=666)
+
+    text = await telegram_callbacks.handle_callback(bot, query, "-100123")
+
+    assert recorded == []
+    assert text == telegram_callbacks.FOREIGN_CHAT_ANSWER
+    assert bot.edits == []
+
+
+@pytest.mark.asyncio
+async def test_click_without_sender_changes_nothing(recorded):
+    query = _query("dec:17:b")
+    query.from_user = None
+
+    text = await telegram_callbacks.handle_callback(_ClickBot(), query, "42")
+
+    assert recorded == []
+    assert text == telegram_callbacks.FOREIGN_CHAT_ANSWER
+
+
+@pytest.mark.parametrize(
+    ("chat_type", "chat_id", "user_id", "ok"),
+    [
+        ("private", 42, 42, True),
+        ("private", 42, 7, True),  # Telegram liefert im Privat-Chat nur den Inhaber
+        (None, 42, 42, True),  # aelteres Update ohne type: User-ID = Chat-ID genuegt
+        ("group", -5, 42, False),
+        ("supergroup", -100123, 42, False),
+        ("channel", -100999, 42, False),
+    ],
+)
+def test_clicked_by_chat_owner(chat_type, chat_id, user_id, ok):
+    chat = SimpleNamespace(id=chat_id, type=chat_type)
+    query = SimpleNamespace(from_user=SimpleNamespace(id=user_id))
+    assert telegram_callbacks.clicked_by_chat_owner(query, chat) is ok
 
 
 @pytest.mark.asyncio
@@ -589,3 +631,36 @@ async def test_new_token_starts_with_a_fresh_offset(monkeypatch):
     await asyncio.wait_for(telegram_callbacks.poll_callbacks(stop), timeout=2)
 
     assert seen == [("111:old", None), ("222:new", None)]
+
+
+# ── Deal-Alert als HTML (fremde Amazon-Titel) ─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_alert_is_html_and_escapes_foreign_titles(monkeypatch):
+    bot = _FakeBot()
+    _patch_send(monkeypatch, bot)
+    analysis = _analysis()
+    analysis.set_name = "Technic_Ferrari *SP3* [klick](https://evil.example) <b>&"
+    analysis.reason = "Preis < Markt & <script>"
+    analysis.suggestions = ["Tipp <i>"]
+    analysis.market_consensus.warnings = ["Quelle <x>"]
+
+    assert await telegram_bot.send_deal_alert(analysis, offer_url=URL, offer_id=17) is True
+
+    sent = bot.sent[0]
+    assert sent["parse_mode"] == "HTML"
+    text = sent["text"]
+    assert "<i>Technic_Ferrari *SP3* [klick](https://evil.example) &lt;b&gt;&amp;</i>" in text
+    assert "Preis &lt; Markt &amp; &lt;script&gt;" in text
+    assert "Tipp &lt;i&gt;" in text
+    assert "Quelle &lt;x&gt;" in text
+    assert "<b>LEGO 42143</b>" in text
+    assert "*" not in text.replace("*SP3*", "")
+
+
+def test_alert_text_has_only_the_tags_it_sets():
+    import re
+
+    text = telegram_bot._format_deal_message(_analysis())
+    assert set(re.findall(r"</?([a-z]+)>", text)) == {"b", "i"}

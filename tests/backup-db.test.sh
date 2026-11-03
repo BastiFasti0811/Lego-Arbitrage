@@ -218,6 +218,28 @@ run_backup BACKUP_KEEP=zero
 expect_rc 1
 [[ "$(count_files "$(BK)/lego_*")" == "0" ]] || fail "nothing may be written with a bad setting"
 
+# ── 16. Directory 0700, older world-readable files tightened ──
+make_sandbox permissions
+mkdir -p "$(BK)/manual"
+printf 'old' > "$(BK)/predeploy_20260630-000840.sql.gz"
+printf 'log' > "$(BK)/cron.log"
+printf 'copy' > "$(BK)/manual/lego_copy.sql.gz"
+chmod 755 "$(BK)" "$(BK)/manual"
+chmod 644 "$(BK)/predeploy_20260630-000840.sql.gz" "$(BK)/cron.log" "$(BK)/manual/lego_copy.sql.gz"
+run_backup
+expect_rc 0
+[[ "$(stat -c %a "$(BK)")" == "700" ]] || fail "backup dir should be 700, is $(stat -c %a "$(BK)")"
+[[ "$(stat -c %a "$(BK)/manual")" == "700" ]] || fail "sub dir should be 700"
+for f in predeploy_20260630-000840.sql.gz cron.log manual/lego_copy.sql.gz; do
+  [[ "$(stat -c %a "$(BK)/${f}")" == "600" ]] || fail "${f} should be 600, is $(stat -c %a "$(BK)/${f}")"
+done
+
+# ── 17. A fresh backup dir is created as 0700 ──
+make_sandbox permissions-fresh
+run_backup
+expect_rc 0
+[[ "$(stat -c %a "$(BK)")" == "700" ]] || fail "new backup dir should be 700"
+
 if (( FAILURES > 0 )); then
   echo "${FAILURES} backup-db test assertion(s) failed" >&2
   exit 1

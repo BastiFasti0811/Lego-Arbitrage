@@ -51,12 +51,33 @@ def is_own_chat(chat, configured: str | None) -> bool:
     return bool(username) and configured.lower() == f"@{username}".lower()
 
 
+def clicked_by_chat_owner(query, chat) -> bool:
+    """Nur der Inhaber des Privat-Chats darf entscheiden.
+
+    In einer Gruppe oder einem Kanal als Alert-Chat koennte sonst jedes
+    Mitglied "Gekauft"/"Abgelehnt" druecken. Im Privat-Chat ist die Chat-ID
+    die User-ID des Gegenuebers.
+    """
+    user = getattr(query, "from_user", None)
+    if chat is None or user is None:
+        return False
+    return getattr(chat, "type", None) == "private" or user.id == chat.id
+
+
 async def handle_callback(bot: Bot, query: CallbackQuery, chat_id: str | None, now: datetime | None = None) -> str:
     """Einen Klick verarbeiten; liefert den Text, mit dem der Knopf antwortet."""
     message = query.message
     chat = getattr(message, "chat", None)
     if not is_own_chat(chat, chat_id):
         logger.warning("telegram.callback_foreign_chat", chat=getattr(chat, "id", None))
+        text = FOREIGN_CHAT_ANSWER
+    elif not clicked_by_chat_owner(query, chat):
+        logger.warning(
+            "telegram.callback_foreign_user",
+            chat=getattr(chat, "id", None),
+            chat_type=getattr(chat, "type", None),
+            user=getattr(getattr(query, "from_user", None), "id", None),
+        )
         text = FOREIGN_CHAT_ANSWER
     elif is_legacy(query.data):
         text = LEGACY_ANSWER

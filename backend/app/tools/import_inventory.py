@@ -41,6 +41,7 @@ from app.models.base import async_session
 from app.models.inventory import InventoryItem, InventoryItemType
 from app.models.listing import OPEN_LISTING_STATUSES, Listing, ListingPlatform, ListingStatus
 from app.models.offer import OfferCondition
+from app.security.link_url import check_link_url
 from app.services.listing_rules import default_price_type
 
 logger = structlog.get_logger()
@@ -200,6 +201,10 @@ def _check_listings(item: ManifestItem) -> None:
             value = getattr(listing, name)
             if value and len(value) > limit:
                 raise ManifestError(f"{item.key}: {name} hat {len(value)} Zeichen, erlaubt sind {limit}")
+        try:
+            check_link_url(listing.url)
+        except ValueError as exc:
+            raise ManifestError(f"{item.key}: Listing-URL {listing.platform}: {exc}") from exc
 
 
 def _prepare(source: Path, manifest: Manifest) -> list[tuple[ManifestItem, InventoryAdd]]:

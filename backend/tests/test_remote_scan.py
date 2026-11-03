@@ -1,6 +1,7 @@
 """Catawiki-Scan ueber den Heimrechner: Token, Nutzdaten, Zeitplan, Auswertung."""
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -52,14 +53,50 @@ def test_verify_runner_token(provided, expected, ok):
     assert remote_scan.verify_runner_token(provided, expected) is ok
 
 
+def _runner_request():
+    return SimpleNamespace(
+        url=SimpleNamespace(path="/api/remote-scan/runner/job"), client=SimpleNamespace(host="10.0.0.9")
+    )
+
+
 async def test_runner_endpoints_reject_wrong_token(monkeypatch):
     monkeypatch.setattr(remote_scan_routes, "get_settings_map", AsyncMock(return_value={"remote_scan_token": TOKEN}))
-    await remote_scan_routes.require_runner_token(f"Bearer {TOKEN}")
+    await remote_scan_routes.require_runner_token(_runner_request(), f"Bearer {TOKEN}")
     with pytest.raises(HTTPException) as exc:
-        await remote_scan_routes.require_runner_token("Bearer falsch-falsch-falsch-falsch")
+        await remote_scan_routes.require_runner_token(_runner_request(), "Bearer falsch-falsch-falsch-falsch")
     assert exc.value.status_code == 401
     with pytest.raises(HTTPException):
-        await remote_scan_routes.require_runner_token(None)
+        await remote_scan_routes.require_runner_token(_runner_request(), None)
+
+
+@pytest.mark.parametrize(("configured", "header", "reason"), [
+    (TOKEN, "Bearer falsch-falsch-falsch-falsch", "mismatch"),
+    (TOKEN, None, "missing"),
+    (None, f"Bearer {TOKEN}", "token_not_configured"),
+    ("kurz", "Bearer kurz", "configured_token_too_short"),
+])
+async def test_rejected_runner_token_is_logged_without_the_value(monkeypatch, configured, header, reason):
+    settings_map = AsyncMock(return_value={"remote_scan_token": configured})
+    monkeypatch.setattr(remote_scan_routes, "get_settings_map", settings_map)
+    warnings = []
+    monkeypatch.setattr(remote_scan_routes.logger, "warning", lambda event, **kw: warnings.append((event, kw)))
+
+    with pytest.raises(HTTPException):
+        await remote_scan_routes.require_runner_token(_runner_request(), header)
+
+    assert warnings == [(
+        "remote_scan.runner_token_rejected",
+        {"reason": reason, "path": "/api/remote-scan/runner/job", "client": "10.0.0.9"},
+    )]
+    assert TOKEN not in repr(warnings)
+
+
+async def test_accepted_runner_token_logs_nothing(monkeypatch):
+    monkeypatch.setattr(remote_scan_routes, "get_settings_map", AsyncMock(return_value={"remote_scan_token": TOKEN}))
+    warnings = []
+    monkeypatch.setattr(remote_scan_routes.logger, "warning", lambda event, **kw: warnings.append(event))
+    await remote_scan_routes.require_runner_token(_runner_request(), f"Bearer {TOKEN}")
+    assert warnings == []
 
 
 def test_only_runner_paths_skip_the_cookie_check():

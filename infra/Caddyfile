@@ -1,6 +1,19 @@
 :80 {
     encode gzip zstd
 
+    # Security headers for everything under /lego/ (API, health, frontend).
+    # `defer` applies them after the upstream answered, so an upstream header
+    # of the same name cannot override them. Only frame-ancestors for now: a
+    # full CSP needs a browser test against the prod build first (Google Fonts,
+    # blob: image previews, inline styles), see docs/deploy.md#security-headers.
+    header /lego/* {
+        defer
+        X-Frame-Options "DENY"
+        Content-Security-Policy "frame-ancestors 'none'"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
     redir /lego /lego/
 
     handle /lego/api/* {
@@ -8,15 +21,10 @@
         reverse_proxy lego-api:8000
     }
 
-    handle /lego/docs* {
-        uri strip_prefix /lego
-        reverse_proxy lego-api:8000
-    }
-
-    handle /lego/openapi.json {
-        uri strip_prefix /lego
-        reverse_proxy lego-api:8000
-    }
+    # No route for /docs and /openapi.json: the API serves them only with a
+    # session cookie anyway (401 with DEBUG=false). Read them locally with
+    # `docker exec lego-api-prod curl -fsS http://127.0.0.1:8000/openapi.json`.
+    # Under /lego/docs the frontend now answers with its SPA page.
 
     handle /lego/health {
         uri strip_prefix /lego

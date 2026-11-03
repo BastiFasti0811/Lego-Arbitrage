@@ -21,6 +21,7 @@ from app.models import get_session
 from app.models.inventory import InventoryItem, InventoryStatus
 from app.models.listing import OPEN_LISTING_STATUSES, Listing, ListingStatus
 from app.models.listing_posting_job import OPEN_POSTING_STATUSES, ListingPostingJob, PostingJobStatus
+from app.security.link_url import OptionalLinkUrl
 from app.services import ebay_listing
 from app.services.ebay_api import (
     EbayClient,
@@ -61,7 +62,7 @@ class ListingCreate(BaseModel):
     platform: str
     current_price: float
     listed_at: date | None = None
-    url: str | None = None
+    url: OptionalLinkUrl = None
     min_price: float | None = None
     price_type: str | None = None
     check_interval_days: int = 14
@@ -70,7 +71,7 @@ class ListingCreate(BaseModel):
 
 class ListingUpdate(BaseModel):
     current_price: float | None = None
-    url: str | None = None
+    url: OptionalLinkUrl = None
     min_price: float | None = None
     status: str | None = None  # nur ACTIVE <-> PAUSED
     price_type: str | None = None
@@ -88,6 +89,7 @@ class ListingPrepareRequest(BaseModel):
 class ListingActivateRequest(BaseModel):
     """Nach dem Einstellen: nur die Adresse ist Pflicht, der Rest kommt vom Entwurf."""
 
+    # Kein LinkUrl: activate_draft prueft Schema und Plattform-Host selbst (400).
     url: str = Field(min_length=1, max_length=2000)
     current_price: float | None = None
     listed_at: date | None = None

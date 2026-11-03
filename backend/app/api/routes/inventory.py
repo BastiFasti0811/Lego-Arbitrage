@@ -42,6 +42,7 @@ from app.models.valuation_run import (
 )
 from app.scrapers import EbaySoldScraper
 from app.scrapers.base import UndecodableResponseError
+from app.security.link_url import OptionalLinkUrl
 from app.services.goal_progress import lego_listing_counts
 from app.tasks.celery_app import celery_app
 
@@ -96,13 +97,13 @@ class InventoryAdd(BaseModel):
     product_group: str | None = None
     search_query: str | None = None
     theme: str | None = Field(default=None, max_length=100)
-    image_url: str | None = None
+    image_url: OptionalLinkUrl = None
     buy_price: float | None = None
     buy_shipping: float = 0.0
     buy_date: date
     buy_platform: str | None = Field(default=None, max_length=100)
-    buy_url: str | None = None
-    reference_url: str | None = None
+    buy_url: OptionalLinkUrl = None
+    reference_url: OptionalLinkUrl = None
     condition: str = Field(default="NEW_SEALED", max_length=20)
     quantity: int = 1
     notes: str | None = None
@@ -139,13 +140,13 @@ class InventoryUpdate(BaseModel):
     product_group: str | None = Field(default=None, max_length=100)
     search_query: str | None = Field(default=None, max_length=300)
     theme: str | None = Field(default=None, max_length=100)
-    image_url: str | None = None
+    image_url: OptionalLinkUrl = None
     buy_price: float | None = None
     buy_shipping: float | None = None
     buy_date: date | None = None
     buy_platform: str | None = Field(default=None, max_length=100)
-    buy_url: str | None = None
-    reference_url: str | None = None
+    buy_url: OptionalLinkUrl = None
+    reference_url: OptionalLinkUrl = None
     condition: str | None = Field(default=None, max_length=20)
     quantity: int | None = None
     notes: str | None = None

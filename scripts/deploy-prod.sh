@@ -67,6 +67,29 @@ if [[ "${CURRENT_BRANCH}" != "${DEPLOY_BRANCH}" ]]; then
   exit 1
 fi
 
+# The images must be built from exactly the commit /health will report. Local
+# edits or stray files in the checkout would be baked in unseen (the backend
+# build copies the whole directory), so a dirty tree aborts the deploy.
+# Emergency override: ALLOW_DIRTY_DEPLOY=1 deploys anyway and tags the version
+# "<sha>-dirty", so /health shows that prod does not match any commit.
+ALLOW_DIRTY_DEPLOY="${ALLOW_DIRTY_DEPLOY:-0}"
+DIRTY_FILES="$(git status --porcelain)"
+DIRTY_SUFFIX=""
+if [[ -n "${DIRTY_FILES}" ]]; then
+  if [[ "${ALLOW_DIRTY_DEPLOY}" != "1" ]]; then
+    echo "Checkout has uncommitted or untracked files. Aborting deploy:" >&2
+    # here-string, no pipe: a long list must not end the script with SIGPIPE.
+    head -n 20 <<< "${DIRTY_FILES}" >&2
+    echo "Commit and push the change through GitHub, or remove the files (docs/deploy.md#deploy)." >&2
+    exit 1
+  fi
+  echo "Warning: deploying a dirty checkout (ALLOW_DIRTY_DEPLOY=1); version gets the suffix -dirty." >&2
+  if [[ "${AUTO_ROLLBACK}" == "1" ]] && ! git diff --quiet HEAD; then
+    echo "Warning: --auto-rollback cannot run with tracked changes (rollback-prod.sh refuses a dirty tree)." >&2
+  fi
+  DIRTY_SUFFIX="-dirty"
+fi
+
 # Commit that runs before this deploy: the rollback target if the new release
 # fails its health checks.
 PREV_SHA="$(git rev-parse HEAD)"
@@ -77,11 +100,12 @@ git pull --ff-only
 # arg (docker-compose.prod.yml -> GIT_SHA) and reported by /health as
 # "version"; the health poll below only succeeds once the API reports it, so
 # a deploy that silently kept the old containers fails loudly.
-GIT_SHA="$(git rev-parse HEAD)"
-if [[ -z "${GIT_SHA}" ]]; then
+HEAD_SHA="$(git rev-parse HEAD)"
+if [[ -z "${HEAD_SHA}" ]]; then
   echo "Could not determine the deployed commit (git rev-parse HEAD). Aborting deploy." >&2
   exit 1
 fi
+GIT_SHA="${HEAD_SHA}${DIRTY_SUFFIX}"
 export GIT_SHA
 
 # Build first, then migrate from the freshly built image (it contains the new
@@ -104,7 +128,7 @@ docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
 # target, and with --auto-rollback run it (the deploy lock stays held).
 fail_after_swap() {
   echo "Deploy of ${GIT_SHA} failed its health checks. Previous commit: ${PREV_SHA}" >&2
-  if [[ "${PREV_SHA}" == "${GIT_SHA}" ]]; then
+  if [[ "${PREV_SHA}" == "${HEAD_SHA}" ]]; then
     echo "Nothing to roll back to: the previous commit is the deployed one." >&2
     exit 1
   fi
@@ -157,7 +181,9 @@ fi
 FULL_HEALTH_WAIT="${FULL_HEALTH_WAIT:-150}"
 if [[ "${SKIP_FULL_HEALTH_CHECK:-0}" == "1" ]]; then
   echo "Full health check skipped (SKIP_FULL_HEALTH_CHECK=1)."
-elif ! bash scripts/health-check-prod.sh --expect-sha "${GIT_SHA}" --wait "${FULL_HEALTH_WAIT}"; then
+# --expect-sha takes a hex commit and matches it as a prefix, so a "-dirty"
+# version passes with the plain commit.
+elif ! bash scripts/health-check-prod.sh --expect-sha "${HEAD_SHA}" --wait "${FULL_HEALTH_WAIT}"; then
   fail_after_swap
 fi
 
