@@ -6,7 +6,7 @@ def test_metadata_describes_a_stored_secret_without_revealing_it():
     # deshalb die Maske, und der Zeichenzaehler meldete fuer jedes Secret "8".
     # Genau der Produktionsfall (Token mit 46 Zeichen, Chat-ID mit Bot-Namen)
     # blieb unsichtbar. Laenge und Whitespace kommen jetzt vom Server.
-    length, has_ws, tail = describe_stored_value("123456789:AAHxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+    length, has_ws, tail = describe_stored_value("123456789:SYNTHETIC_xxxxxxxxxxxxxxxxxxxxxxxxxxx")
     assert length == 47
     assert has_ws is False
     assert tail == "xxxx"
