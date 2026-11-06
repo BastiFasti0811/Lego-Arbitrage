@@ -106,7 +106,8 @@ def test_bot_token_in_a_telegram_error_is_redacted(capsys):
     quiet_http_client_loggers()
     quiet_http_client_loggers()  # zweimal: der Prozessor darf nur einmal haengen
 
-    token = "8656640958:AAFeLkDkfWetdML06hgp7BsrBU1N-WHg1NX"
+    # Synthetischer Wert im Format <id>:<35 Zeichen>, kein echter Token.
+    token = "123456789:SYNTHETIC_TEST_TOKEN_NOT_A_REAL_ONE"
     structlog.get_logger().warning("telegram.x", error=f"The token `{token}` was rejected by the server.")
 
     out = capsys.readouterr().out
@@ -124,7 +125,8 @@ def test_ordinary_values_with_colons_stay_untouched():
     assert redact_bot_tokens(None, None, dict(event)) == event
 
 
-TOKEN = "8656640958:AAFeLkDkfWetdML06hgp7BsrBU1N-WHg1NX"
+# Synthetisch, erfuellt aber das Schwaerzungsmuster in logging_setup._BOT_TOKEN.
+TOKEN = "123456789:SYNTHETIC_TEST_TOKEN_NOT_A_REAL_ONE"
 
 
 def test_token_inside_a_telegram_url_is_redacted():
